@@ -1,3 +1,7 @@
+# Pixi — installed environments are regenerated from pixi.toml + pixi.lock
+# (both of which ARE tracked). Never commit the multi-GB env tree.
+.pixi/
+
 # Python
 __pycache__/
 *.py[cod]

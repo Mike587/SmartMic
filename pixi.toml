@@ -1,0 +1,119 @@
+[workspace]
+channels = ["conda-forge"]
+name = "SmartMic"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+cellpose = ">=4.0.9,<5"
+
+[feature.smartmic]
+channels = ["pytorch", "nvidia", "conda-forge", "nodefaults", "https://conda.anaconda.org/pytorch"]
+
+[feature.smartmic.dependencies]
+python = "3.11.*"
+colormap = "*"
+czifile = "*"
+cudnn = "9.13.1.26.*"
+dask = "*"
+dask-image = "*"
+docker-py = "*"
+docutils = "*"
+fastapi = "*"
+flask = "*"
+fsspec = "*"
+ipyfilechooser = "*"
+ipykernel = "*"
+magicgui = "*"
+marimo = "*"
+matplotlib = "*"
+napari = ">=0.6.5"
+numpy = "*"
+ome-zarr = "*"
+#opencv = "*"
+pandas = "*"
+pip = "*"
+plotly = "*"
+pooch = "*"
+#pyqt = "5.*"
+pyqtgraph = "*"
+pytest = "*"
+pytest-cov = "*"
+pytorch = { version = "2.5.1.*", channel = "pytorch" }
+pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
+python-box = "*"
+python-dateutil = "*"
+qasync = "*"
+requests = "*"
+scikit-image = ">=0.19.3"
+seaborn = "*"
+setuptools = "*"
+shapely = "*"
+superqt = "*"
+#torchvision = { channel = "pytorch" }
+tqdm = "*"
+validators = "*"
+wheel = "*"
+xarray = "*"
+xmltodict = "*"
+zarr = "*"
+pillow = ">=9.3.0"
+#opencv-python = { pypi = true }  # Explicit PyPI source
+#torchvision = { version = "==2.5.1" }  # Fix WARN - exact version
+#pyqt = { pypi = true }              # PyPI pyqt5
+pyqt = "*"
+
+[feature.smartmic.pypi-dependencies]
+aicspylibczi = ">=3.3.1"
+betterproto = "==2.0.0b7"
+bioio = "*"
+bioio-czi = "*"
+bioio-imageio = "*"
+bioio-ome-tiff = "*"
+bioio-ome-zarr = "*"
+czmodel = "*"
+cztile = "*"
+czitools = "*"
+grpclib = "*"
+loguru = "*"
+mowidget = "*"
+napari-assistant = "*"
+napari-brightness-contrast = "*"
+napari-clusters-plotter = "*"
+napari-crop = "*"
+napari-czann-segment = "*"
+napari-czitools = "*"
+napari-layer-details-display = "*"
+napari-ome-zarr = "*"
+napari-plugin-search = "*"
+napari-simpleitk-image-processing = "*"
+napari-skimage-regionprops = "*"
+napari-orthogonal-views = "*"
+ngff-zarr = "*"
+onnxruntime-gpu = "==1.19.0"
+pylibczirw = "*"
+ryomen = "*"
+tiler = "*"
+wigglystuff = "*"
+gputil = "*"
+psutil = "*"
+opencv-python = "*"
+torchvision = "*"
+
+#zen-api = { path = "C:/Users/zeiss/Zeiss_OAD/OAD/ZEN-API/python_package/zen_api-2025.10.1/src/zen_api" }
+
+
+[environments]
+smartmic = { features = ["smartmic"], no-default-feature = true }
+
+[feature.smartmic.tasks]
+# Run the SmartMic proof-of-concept pipeline.
+poc = "python MS_SmartMic_PoC.py"
+
+
+
+
+
+
