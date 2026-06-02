@@ -42,6 +42,28 @@ environment variable:
 
     SMARTMIC_ZEISS_EXAMPLES=<path-to-python_examples>
 
+## Configuration (`config.ini`)
+
+The ZEN-API connection settings live in `config.ini`, which is **git-ignored**
+because it holds a machine-specific control-token (a secret). It is **not** in
+the repo — you must create it before running anything.
+
+Copy the template and fill in your own values:
+
+    copy config.ini.example config.ini   # Windows
+    # cp config.ini.example config.ini   # macOS/Linux
+
+Then edit `config.ini`:
+
+    [api]
+    host = 127.0.0.1
+    port = 5002
+    cert_file = C:\ProgramData\Carl Zeiss\ZenApiGateway\Certificates\ZenApiPersonalSigningRootCA.pem
+    control-token = <paste-your-ZEN-API-control-token-here>
+
+The `control-token` is issued by the ZEN application (ZEN-API gateway). Never
+commit `config.ini` — only `config.ini.example` is tracked.
+
 ## Running
 
 Use the existing `smartmic` pixi environment:
