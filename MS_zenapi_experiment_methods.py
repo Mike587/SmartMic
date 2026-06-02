@@ -43,11 +43,13 @@ import asyncio
 from pylibCZIrw import czi as pyczi
 from matplotlib import pyplot as plt
 import matplotlib.cm as cm
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 from pathlib import Path
 import time
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api / zen_api_utils resolve
 from zen_api_utils.misc import set_logging, initialize_zenapi
+from grpclib import GRPCError
+from grpclib.const import Status
 import uuid
 
 # Module-level constants used when the script is run directly (not via API).
@@ -101,6 +103,66 @@ open_czi = False
 # of the current working directory.
 script_dir = Path(__file__).parent
 config_path = script_dir / "config.ini"
+
+
+async def get_running_experiment_status() -> Optional[Dict]:
+    """Query the status of the currently active experiment, if any.
+
+    Calls ``ExperimentService.GetStatus`` with no experiment_id.  Per the ZEN
+    API contract this returns the status of one active experiment, or raises
+    ``FAILED_PRECONDITION`` ("No experiment is running") when nothing is active.
+
+    "Active" covers acquisitions started through ZEN / the API — standard
+    experiments, snap, live and continuous.  It does NOT report unrelated
+    activity such as a manual stage move outside an experiment.
+
+    Returns:
+        A dict of status fields if an experiment is active::
+
+            {
+                "is_experiment_running":  bool,
+                "is_acquisition_running": bool,
+                "images_acquired_index":  int,
+                "images_count":           int,
+                "scenes_index":           int,
+                "scenes_count":           int,
+            }
+
+        or ``None`` if the microscope is idle (no experiment running).
+
+    Raises:
+        GRPCError:  for any gRPC error other than FAILED_PRECONDITION.
+        Exception:  connection errors raised by ``initialize_zenapi``.
+    """
+    logger = set_logging()
+
+    channel, metadata = initialize_zenapi(config_path)
+    svc = ExperimentServiceStub(channel=channel, metadata=metadata)
+
+    try:
+        resp = await svc.get_status(ExperimentServiceGetStatusRequest())
+    except GRPCError as e:
+        if e.status == Status.FAILED_PRECONDITION:
+            logger.info("Experiment status: no experiment running (idle).")
+            return None
+        raise
+    finally:
+        channel.close()
+
+    s = resp.status
+    logger.info(
+        f"Experiment status: experiment_running={s.is_experiment_running} "
+        f"acquisition_running={s.is_acquisition_running} "
+        f"images={s.images_acquired_index}/{s.images_count}"
+    )
+    return {
+        "is_experiment_running": s.is_experiment_running,
+        "is_acquisition_running": s.is_acquisition_running,
+        "images_acquired_index": s.images_acquired_index,
+        "images_count": s.images_count,
+        "scenes_index": s.scenes_index,
+        "scenes_count": s.scenes_count,
+    }
 
 
 async def check_experiment_api(

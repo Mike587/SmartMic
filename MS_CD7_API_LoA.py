@@ -421,6 +421,39 @@ def get_sample_carrier_name() -> str:
     return get_sample_carrier_info()["name"]
 
 
+def get_running_experiment_status() -> Optional[Dict[str, Any]]:
+    """
+    Get the status of the currently active experiment, if any.
+
+    Returns:
+        Dict[str, Any] with keys is_experiment_running, is_acquisition_running,
+        images_acquired_index, images_count, scenes_index, scenes_count — or
+        None if the microscope is idle (no experiment running).
+
+    Note:
+        Reflects activity started through ZEN / the API (standard experiment,
+        snap, live, continuous). It does not report unrelated activity such as
+        a manual stage move outside an experiment.
+    """
+    return asyncio.run(MS_zenapi_experiment_methods.get_running_experiment_status())
+
+
+def is_microscope_busy() -> bool:
+    """
+    Check whether the microscope is currently running an experiment/acquisition.
+
+    Returns:
+        bool: True if an experiment or acquisition is running, False if idle.
+
+    Note:
+        See get_running_experiment_status for what "busy" covers.
+    """
+    status = get_running_experiment_status()
+    if status is None:
+        return False
+    return bool(status["is_experiment_running"] or status["is_acquisition_running"])
+
+
 
 
 
