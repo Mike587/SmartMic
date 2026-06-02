@@ -46,10 +46,7 @@ Focus notes
 
 import itertools
 import json
-import logging
-import os
 import random
-import subprocess
 import sys
 from pathlib import Path
 
@@ -109,71 +106,11 @@ import zeiss_paths  # noqa: F401  — side effect: extends sys.path
 
 try:
     import MS_CD7_API_LoA as ms          # synchronous wrappers around the ZEN gRPC API
-    import MS_Helper_function as helper  # logging, position loading, focus scoring
+    import MS_Helper_function as helper   # logging, position loading, focus scoring
+    from MS_image_analysis import run_analysis  # external analysis-script launcher
 except ImportError as e:
     print(f"[ERROR] Could not import MS_CD7_API_LoA: {e}")
     sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
-def run_analysis(image_path: Path, output_folder: Path, tag: str,
-                 log: logging.Logger) -> bool:
-    """
-    Launch the nuclei-detection script in its own pixi environment.
-
-    The analysis script is intentionally run as a subprocess so that its
-    dependencies (cellpose, scikit-image, etc.) don't need to be installed in
-    the ZEN API environment.  All PIXI_* environment variables are stripped
-    before the subprocess is launched so that the child process picks up its
-    own pixi environment rather than inheriting the parent's.
-
-    Args:
-        image_path:    Path to the .czi overview image to analyse.
-        output_folder: Folder where analysis results (nuclei.json, etc.) are written.
-        tag:           Filename prefix, e.g. "D9_P1".  Forwarded to --prefix.
-        log:           Run-level logger.
-
-    Returns:
-        True if the analysis script exited with code 0, False otherwise.
-    """
-    output_folder.mkdir(parents=True, exist_ok=True)
-
-    cmd = [
-        "pixi", "run", "python", str(ANALYSIS_SCRIPT),
-        str(image_path),
-        str(output_folder),
-        "--prefix", tag,
-    ]
-
-    log.info(f"Starting analysis for {tag}: {image_path.name}")
-
-    # Strip all pixi env vars so the analysis project uses its own environment
-    env = {k: v for k, v in os.environ.items() if not k.startswith("PIXI_")}
-
-    result = subprocess.run(
-        cmd,
-        cwd=ANALYSIS_SCRIPT_DIR,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-
-    if result.stdout:
-        for line in result.stdout.strip().splitlines():
-            log.info(f"[ANALYSIS] {line}")
-    if result.returncode != 0:
-        log.error(f"Analysis failed (exit code {result.returncode}):")
-        for line in result.stderr.strip().splitlines():
-            log.error(f"  {line}")
-        return False
-
-    log.info(f"Analysis completed successfully for {tag}.")
-    return True
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +233,8 @@ def main():
             # ── 6. Nuclei detection ───────────────────────────────────
             # Runs the analysis script as a subprocess; outputs a nuclei.json
             # with one entry per detected nucleus, including absolute XY coords.
-            success     = run_analysis(image_path, ANALYSIS_PATH, tag, log)
+            success     = run_analysis(image_path, ANALYSIS_PATH, tag, log,
+                                       ANALYSIS_SCRIPT, ANALYSIS_SCRIPT_DIR)
             nuclei_json = ANALYSIS_PATH / f"{tag}_nuclei.json"
             if not success or not nuclei_json.exists():
                 log.warning(f"Analysis produced no nuclei.json for {tag} — skipping detailed imaging.")

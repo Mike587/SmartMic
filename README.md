@@ -25,6 +25,7 @@ projects/examples that consume it live under `projects/`, one folder each.
 | `MS_zenapi_stage_LM.py` | XY-stage control |
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run |
 | `MS_Helper_function.py` | Logging, position loading, focus scoring |
+| `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env) |
 | `zeiss_paths.py` | Path bootstrap — see below |
 
 ### Projects (`projects/`)
