@@ -1,0 +1,5 @@
+[api]
+host = 127.0.0.1
+port = 5002
+cert_file = C:\ProgramData\Carl Zeiss\ZenApiGateway\Certificates\ZenApiPersonalSigningRootCA.pem
+control-token = <paste-your-ZEN-API-control-token-here>

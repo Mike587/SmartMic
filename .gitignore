@@ -9,6 +9,10 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 
+# ZEN API connection config — machine-specific and contains a control-token.
+# Copy config.ini.example -> config.ini and fill in your own values.
+config.ini
+
 # Editor / OS
 .vscode/
 .idea/

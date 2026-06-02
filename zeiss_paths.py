@@ -33,10 +33,20 @@ ZEISS_EXAMPLES = Path(
 # This project's own directory, so the MS_* modules can import each other.
 THIS_DIR = Path(__file__).resolve().parent
 
-for _p in (THIS_DIR, ZEISS_EXAMPLES):
-    _s = str(_p)
-    if _s not in sys.path:
-        sys.path.insert(0, _s)
+# IMPORTANT ordering:
+#   * THIS_DIR goes to the FRONT  -> this project's MS_* modules win.
+#   * ZEISS_EXAMPLES goes to the BACK -> used only as a fallback for
+#     zen_api / zen_api_utils (which do not exist in this project).
+# Otherwise the old MS_* copies still sitting in the Zeiss folder would
+# shadow the ones in this repository.
+_this = str(THIS_DIR)
+if _this in sys.path:
+    sys.path.remove(_this)
+sys.path.insert(0, _this)
+
+_zeiss = str(ZEISS_EXAMPLES)
+if _zeiss not in sys.path:
+    sys.path.append(_zeiss)
 
 if not (ZEISS_EXAMPLES / "zen_api").is_dir():
     sys.stderr.write(
