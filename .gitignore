@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# Data / acquisition outputs (kept on F: drive, never in the repo)
+*.czi
+*.czexp
+*.czexp.backup
+*.png
+*.log
+logs/
+log/
+output/
+temp_*.py

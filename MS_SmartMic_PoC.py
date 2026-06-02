@@ -1,0 +1,430 @@
+"""
+MS_SmartMic_PoC.py
+
+Proof-of-concept Smart Microscope automation pipeline.
+
+High-level workflow
+-------------------
+For each well-plate position loaded from POSITIONS_FILE:
+
+  1. OVERVIEW PASS
+     a. Move XY stage to well position.
+     b. Set objective + optovar (must happen before DF/SWAF so the optics
+        are parfocal for the focus search).
+     c. DefiniteFocus FindSurface  — locates the coverslip/sample surface.
+        Subsequent DFs start 100 µm below the last known surface to avoid
+        a full 3 mm sweep every time.
+     d. SWAF coarse (DV_001_swaf_001) + SWAF fine (DV_001_swaf_002)
+        — widefield software autofocus to fine-tune Z for the overview channel.
+     e. Acquire widefield overview image (DAPI_GFP_001).
+     f. Run cell-body / nuclei detection analysis on the overview CZI
+        (external Python script in its own pixi environment).
+
+  2. DETAILED PASS  (only if nuclei were detected in the overview)
+     For each of up to 3 randomly selected nuclei:
+     a. Move XY stage to the nucleus centroid (absolute coords from analysis).
+     b. Set objective + optovar.
+     c. DefiniteFocus FindSurface (adaptive start Z).
+     d. SWAF coarse (DAPI_LSM_onez_001_swaf_001) + SWAF fine (_002)
+        — LSM-channel autofocus, parfocal with the confocal acquisition.
+     e. Acquire single-plane reference image (DAPI_LSM_onez_001) to verify
+        focus at the SWAF2 position before committing to the z-stack.
+     f. Acquire confocal z-stack (DAPI_LSM_z-stack_001, 11 planes × 2 µm).
+     g. Log z-stack first/center/last Z and best-plane focus score.
+
+Focus notes
+-----------
+- DF FindSurface returns the ZDrive (encoder) position.  The actual imaging
+  plane (FocusPosition in the CZI XML) differs because DF applies a piezo /
+  correction offset on top of the encoder value.
+- DV SWAF and LSM SWAF are parfocally offset by ~3 µm on this system.  Always
+  use the channel-matched SWAF experiment for each modality.
+- last_surface_z_m tracks the surface Z across all positions so that each
+  subsequent DF can start just 100 µm below, reducing sweep time from ~15 s
+  to ~1 s.
+"""
+
+import itertools
+import json
+import logging
+import os
+import random
+import subprocess
+import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Configuration — edit these to adapt the pipeline to a different sample /
+# experiment set.  All paths use forward slashes; Windows handles both.
+# ---------------------------------------------------------------------------
+
+# Root output directory — all sub-folders live under this path
+ROOT_PATH           = Path("F:/UserData/mike/api/")
+OVERVIEW_IMAGE_PATH = ROOT_PATH / "overview"   # widefield overview CZI files
+ANALYSIS_PATH       = ROOT_PATH / "analysis"   # nuclei.json outputs from analysis
+DETAILED_FOLDER     = ROOT_PATH / "detailed"   # confocal single-plane + z-stack CZIs
+LOG_FOLDER          = ROOT_PATH / "log"        # timestamped run logs
+
+# ZEN experiment names (without .czexp extension)
+OVERVIEW_EXPERIMENT_NAME  = "DAPI_GFP_001"           # widefield overview (20×, DV)
+DETAILED_EXPERIMENT_NAME  = "DAPI_LSM_z-stack_001"   # confocal z-stack (11 planes, 2 µm step)
+ONCZ_EXPERIMENT_NAME      = "DAPI_LSM_onez_001"      # single confocal plane — focus reference
+                                                      # acquired at SWAF2 Z before the z-stack
+
+# Software autofocus experiments for the OVERVIEW (widefield/DV channel)
+# These are parfocal with DAPI_GFP_001.
+SWAF_EXPERIMENT_NAME      = "DV_001_swaf_001"   # coarse sweep — large Z range
+SWAF_EXPERIMENT_NAME_2    = "DV_001_swaf_002"   # fine sweep — small Z range around SWAF1 result
+
+# Software autofocus experiments for NUCLEUS DETAILED imaging (confocal/LSM channel)
+# These are parfocal with DAPI_LSM_onez_001 and DAPI_LSM_z-stack_001.
+# On this system the DV→LSM parfocality offset is ~3 µm, which is why separate
+# SWAF experiments are needed for each modality.
+NUCLEUS_SWAF_EXPERIMENT_NAME   = "DAPI_LSM_onez_001_swaf_001"   # coarse
+NUCLEUS_SWAF_EXPERIMENT_NAME_2 = "DAPI_LSM_onez_001_swaf_002"   # fine
+
+# Adaptive DF start Z: after the first successful FindSurface, all subsequent
+# FindSurface calls start this far below the last known surface position.
+# 100 µm is enough safety margin while reducing the sweep from ~3300 µm to ~100 µm.
+DF_APPROACH_MARGIN_M = 100e-6   # metres
+
+# Well-plate position file (.czexp) — contains the XYZ coordinates and
+# IsUsedForAcquisition flags for each well / sub-position.
+POSITIONS_FILE = Path(r"C:/ProgramData/Carl Zeiss/ZEN/Users/mike/Documents/Experiment Setups/384WP_TestPositions_004.czexp")
+
+# External nuclei-detection script (runs in a separate pixi environment so it
+# can have its own dependencies without conflicting with the ZEN API env).
+ANALYSIS_SCRIPT_DIR = Path(r"C:\Users\zeiss\Zeiss_OAD\OAD\ZEN-API\image_analysis\ia_PoC_002")
+ANALYSIS_SCRIPT     = ANALYSIS_SCRIPT_DIR / "analyze_czi.py"
+
+# ---------------------------------------------------------------------------
+
+# Extend sys.path so both this project's MS_* modules and the Zeiss-provided
+# zen_api / zen_api_utils packages (which live in the ZEN-API example folder)
+# can be imported regardless of the working directory the script is launched from.
+import zeiss_paths  # noqa: F401  — side effect: extends sys.path
+
+try:
+    import MS_CD7_API_LoA as ms          # synchronous wrappers around the ZEN gRPC API
+    import MS_Helper_function as helper  # logging, position loading, focus scoring
+except ImportError as e:
+    print(f"[ERROR] Could not import MS_CD7_API_LoA: {e}")
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def run_analysis(image_path: Path, output_folder: Path, tag: str,
+                 log: logging.Logger) -> bool:
+    """
+    Launch the nuclei-detection script in its own pixi environment.
+
+    The analysis script is intentionally run as a subprocess so that its
+    dependencies (cellpose, scikit-image, etc.) don't need to be installed in
+    the ZEN API environment.  All PIXI_* environment variables are stripped
+    before the subprocess is launched so that the child process picks up its
+    own pixi environment rather than inheriting the parent's.
+
+    Args:
+        image_path:    Path to the .czi overview image to analyse.
+        output_folder: Folder where analysis results (nuclei.json, etc.) are written.
+        tag:           Filename prefix, e.g. "D9_P1".  Forwarded to --prefix.
+        log:           Run-level logger.
+
+    Returns:
+        True if the analysis script exited with code 0, False otherwise.
+    """
+    output_folder.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "pixi", "run", "python", str(ANALYSIS_SCRIPT),
+        str(image_path),
+        str(output_folder),
+        "--prefix", tag,
+    ]
+
+    log.info(f"Starting analysis for {tag}: {image_path.name}")
+
+    # Strip all pixi env vars so the analysis project uses its own environment
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PIXI_")}
+
+    result = subprocess.run(
+        cmd,
+        cwd=ANALYSIS_SCRIPT_DIR,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    if result.stdout:
+        for line in result.stdout.strip().splitlines():
+            log.info(f"[ANALYSIS] {line}")
+    if result.returncode != 0:
+        log.error(f"Analysis failed (exit code {result.returncode}):")
+        for line in result.stderr.strip().splitlines():
+            log.error(f"  {line}")
+        return False
+
+    log.info(f"Analysis completed successfully for {tag}.")
+    return True
+
+
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def main():
+    log, _ = helper.setup_run_logger(LOG_FOLDER)
+    log.info("SmartMic PoC run started")
+    log.info(f"Positions file    : {POSITIONS_FILE}")
+    log.info(f"Overview exp      : {OVERVIEW_EXPERIMENT_NAME}")
+    log.info(f"Detailed exp      : {DETAILED_EXPERIMENT_NAME}")
+    log.info(f"Overview SWAF     : {SWAF_EXPERIMENT_NAME} / {SWAF_EXPERIMENT_NAME_2}")
+    log.info(f"Nucleus SWAF      : {NUCLEUS_SWAF_EXPERIMENT_NAME} / {NUCLEUS_SWAF_EXPERIMENT_NAME_2}")
+
+    # ------------------------------------------------------------------
+    # Load positions
+    # ------------------------------------------------------------------
+    positions = helper.load_positions_from_czexp(POSITIONS_FILE)
+    if not positions:
+        log.error("No positions loaded — aborting.")
+        return 1
+
+    # Sort by scene_index so wells stay in plate order, then group by well
+    positions.sort(key=lambda p: p["scene_index"])
+    wells = itertools.groupby(positions, key=lambda p: p["well"])
+    log.info(f"Loaded {len(positions)} stage positions from {POSITIONS_FILE.name}")
+
+    # Tracks the last successfully found surface Z (metres).
+    # Used to compute an adaptive DF start position so subsequent FindSurface
+    # calls avoid the full 3+ mm sweep from -300 µm.
+    last_surface_z_m = None
+
+    # ------------------------------------------------------------------
+    # Outer loop: wells → positions
+    # ------------------------------------------------------------------
+    for well, well_positions in wells:
+        log.info(f"=== Well {well} ===")
+
+        for pos in well_positions:
+            pos_name = pos["position_name"]
+            tag      = f"{well}_{pos_name}"   # e.g. "D9_P1" — used in all filenames
+
+            log.info(f"--- Position {tag}  x={pos['x_m']:.6f} m  y={pos['y_m']:.6f} m ---")
+
+            # ── 1. Move XY stage ──────────────────────────────────────
+            try:
+                ms.move_stage_to_new_xy_position(pos["x_m"], pos["y_m"])
+            except Exception as e:
+                log.warning(f"Cannot reach position {tag}: {e} — skipping.")
+                continue
+
+            # ── 2. Set objective + optovar ────────────────────────────
+            # Must happen BEFORE DF/SWAF so the focus search uses the same
+            # optical path as the acquisition.
+            # Objective 3 = Plan-Apochromat 20×/0.95
+            # Optovar   1 = 2× tubelens
+            ms.set_objective_set_optovar_sync(3, 1)
+
+            # ── 3. DefiniteFocus FindSurface ──────────────────────────
+            # First call starts at -300 µm (safe default).
+            # All subsequent calls start DF_APPROACH_MARGIN_M below the last
+            # known surface, reducing sweep time from ~15 s to ~1 s.
+            df_start = (last_surface_z_m - DF_APPROACH_MARGIN_M
+                        if last_surface_z_m is not None else None)
+            _, _, df_attempts = ms.run_definite_focus_find_surface(start_z_m=df_start)
+            z_fs_overview_um = ms.get_current_z_position() * 1e6
+            last_surface_z_m = z_fs_overview_um * 1e-6
+            log.info(f"FindSurface (overview) {tag}: zdrive={z_fs_overview_um:.3f} µm")
+            if df_attempts > 1:
+                log.warning(f"*** DF RETRY: FindSurface needed {df_attempts} attempts at {tag} ***")
+
+            # ── 4. SWAF coarse + fine (widefield/DV channel) ──────────
+            swaf_z_overview, swaf_attempts = ms.run_swaf(SWAF_EXPERIMENT_NAME)
+            if swaf_z_overview is not None:
+                log.info(f"SWAF1 (overview) {tag}: focus_pos={swaf_z_overview:.3f} µm"
+                         f"  (DF-SWAF1: {z_fs_overview_um - swaf_z_overview:+.3f} µm)")
+                if swaf_attempts > 1:
+                    log.warning(f"*** SWAF1 RETRY: succeeded after {swaf_attempts} attempts at {tag} ***")
+            else:
+                log.warning(f"*** SWAF1 FAILED after {swaf_attempts} attempts (overview) {tag}"
+                            f" — proceeding to SWAF2 from DF position ***")
+
+            swaf_z_overview2, swaf2_attempts = ms.run_swaf(SWAF_EXPERIMENT_NAME_2)
+            if swaf_z_overview2 is not None:
+                ref = swaf_z_overview if swaf_z_overview is not None else z_fs_overview_um
+                log.info(f"SWAF2 (overview) {tag}: focus_pos={swaf_z_overview2:.3f} µm"
+                         f"  (SWAF1-SWAF2: {ref - swaf_z_overview2:+.3f} µm)")
+                if swaf2_attempts > 1:
+                    log.warning(f"*** SWAF2 RETRY: succeeded after {swaf2_attempts} attempts at {tag} ***")
+            else:
+                log.warning(f"*** SWAF2 FAILED after {swaf2_attempts} attempts (overview) {tag}"
+                            f" — proceeding with SWAF1/DF position ***")
+
+            # ── 5. Acquire overview image ─────────────────────────────
+            ms.run_experiment(OVERVIEW_EXPERIMENT_NAME, OVERVIEW_IMAGE_PATH,
+                              f"{tag}_overview", False)
+
+            # Identify the CZI that was just written (newest file in the folder)
+            czi_files = list(OVERVIEW_IMAGE_PATH.glob("*.czi"))
+            if not czi_files:
+                log.error(f"No .czi found in {OVERVIEW_IMAGE_PATH} after overview — skipping {tag}.")
+                continue
+            image_path = max(czi_files, key=lambda p: p.stat().st_mtime)
+
+            # Log the CZI's embedded FocusPosition and Laplacian-variance focus score.
+            # FocusPosition ≠ ZDrive because DF applies a piezo correction on top.
+            czi_z_overview       = helper.get_focus_position_from_czi(image_path)
+            focus_score_overview = helper.compute_focus_score(image_path)
+            score_str = f"{focus_score_overview:.1f}" if focus_score_overview is not None else "n/a"
+            if czi_z_overview is not None:
+                log.info(f"Overview acquired: {tag}_overview"
+                         f"  czi_FocusPos={czi_z_overview:.3f} µm"
+                         f"  (DF_offset={czi_z_overview - z_fs_overview_um:+.3f} µm vs zdrive)"
+                         f"  focus_score={score_str}")
+            else:
+                log.info(f"Overview acquired: {tag}_overview  zdrive={z_fs_overview_um:.3f} µm"
+                         f"  (czi_FocusPos not found)  focus_score={score_str}")
+
+            # ── 6. Nuclei detection ───────────────────────────────────
+            # Runs the analysis script as a subprocess; outputs a nuclei.json
+            # with one entry per detected nucleus, including absolute XY coords.
+            success     = run_analysis(image_path, ANALYSIS_PATH, tag, log)
+            nuclei_json = ANALYSIS_PATH / f"{tag}_nuclei.json"
+            if not success or not nuclei_json.exists():
+                log.warning(f"Analysis produced no nuclei.json for {tag} — skipping detailed imaging.")
+                continue
+
+            nuclei = json.loads(nuclei_json.read_text())
+            if not nuclei:
+                log.info(f"No nuclei detected at {tag} — moving to next position.")
+                continue
+
+            # ── 7. Select nuclei for detailed imaging ─────────────────
+            # Pick up to 3 at random to keep run time predictable.
+            targets = random.sample(nuclei, min(3, len(nuclei)))
+            log.info(f"{len(nuclei)} nuclei detected — imaging {len(targets)} at random.")
+
+            # ── 8. Inner loop: detailed imaging per nucleus ───────────
+            for nucleus in targets:
+                x, y   = nucleus["abs_x_m"], nucleus["abs_y_m"]
+                nuc_id = nucleus["id"]
+                log.info(f"Moving to nucleus {nuc_id}  x={x:.6f} m  y={y:.6f} m")
+                try:
+                    # 8a. Move to nucleus centroid
+                    ms.move_stage_to_new_xy_position(x, y)
+
+                    # 8b. Set objective + optovar (same as overview on this system)
+                    ms.set_objective_set_optovar_sync(3, 1)
+
+                    # 8c. DefiniteFocus FindSurface (adaptive start Z)
+                    df_start_nuc = (last_surface_z_m - DF_APPROACH_MARGIN_M
+                                    if last_surface_z_m is not None else None)
+                    _, _, df_nuc_attempts = ms.run_definite_focus_find_surface(start_z_m=df_start_nuc)
+                    z_fs_nuc_um = ms.get_current_z_position() * 1e6
+                    last_surface_z_m = z_fs_nuc_um * 1e-6
+                    log.info(f"FindSurface (nucleus {nuc_id:04d}) {tag}: zdrive={z_fs_nuc_um:.3f} µm")
+                    if df_nuc_attempts > 1:
+                        log.warning(
+                            f"*** DF RETRY: FindSurface needed {df_nuc_attempts} attempts"
+                            f" (nucleus {nuc_id:04d}) {tag} ***"
+                        )
+
+                    # 8d. SWAF coarse + fine (LSM channel — parfocal with the confocal acquisition)
+                    # These experiments use the DAPI confocal channel, so SWAF2 sets Z
+                    # exactly where the confocal will image.  Using DV SWAF here would
+                    # introduce a ~3 µm parfocality error for the LSM acquisitions.
+                    swaf_z_nuc, swaf_nuc_attempts = ms.run_swaf(NUCLEUS_SWAF_EXPERIMENT_NAME)
+                    if swaf_z_nuc is not None:
+                        log.info(f"SWAF1 (nucleus {nuc_id:04d}) {tag}: focus_pos={swaf_z_nuc:.3f} µm"
+                                 f"  (DF-SWAF1: {z_fs_nuc_um - swaf_z_nuc:+.3f} µm)")
+                        if swaf_nuc_attempts > 1:
+                            log.warning(
+                                f"*** SWAF1 RETRY: succeeded after {swaf_nuc_attempts} attempts"
+                                f" (nucleus {nuc_id:04d}) {tag} ***"
+                            )
+                    else:
+                        log.warning(
+                            f"*** SWAF1 FAILED after {swaf_nuc_attempts} attempts"
+                            f" (nucleus {nuc_id:04d}) {tag} — proceeding to SWAF2 from DF position ***"
+                        )
+
+                    swaf_z_nuc2, swaf_nuc2_attempts = ms.run_swaf(NUCLEUS_SWAF_EXPERIMENT_NAME_2)
+                    if swaf_z_nuc2 is not None:
+                        ref_nuc = swaf_z_nuc if swaf_z_nuc is not None else z_fs_nuc_um
+                        log.info(f"SWAF2 (nucleus {nuc_id:04d}) {tag}: focus_pos={swaf_z_nuc2:.3f} µm"
+                                 f"  (SWAF1-SWAF2: {ref_nuc - swaf_z_nuc2:+.3f} µm)")
+                        if swaf_nuc2_attempts > 1:
+                            log.warning(
+                                f"*** SWAF2 RETRY: succeeded after {swaf_nuc2_attempts} attempts"
+                                f" (nucleus {nuc_id:04d}) {tag} ***"
+                            )
+                    else:
+                        log.warning(
+                            f"*** SWAF2 FAILED after {swaf_nuc2_attempts} attempts"
+                            f" (nucleus {nuc_id:04d}) {tag} — proceeding with SWAF1/DF position ***"
+                        )
+
+                    # 8e. Single-plane reference image at SWAF2 focus position.
+                    # Acquired before the z-stack so we can verify focus quality
+                    # without waiting for the full stack.  Non-fatal if the
+                    # experiment is missing — the z-stack still runs.
+                    try:
+                        ms.run_experiment(
+                            ONCZ_EXPERIMENT_NAME,
+                            DETAILED_FOLDER,
+                            f"{tag}_nucleus_{nuc_id:04d}_oncz",
+                            False,
+                        )
+                    except Exception as oncz_err:
+                        log.warning(f"oncz experiment skipped for nucleus {nuc_id:04d} at {tag}: {oncz_err}")
+
+                    # 8f. Confocal z-stack
+                    # The z-stack is centered on the current focus position (SWAF2).
+                    # 11 planes × 2 µm = 20 µm total range, ±10 µm around SWAF2.
+                    ms.run_experiment(
+                        DETAILED_EXPERIMENT_NAME,
+                        DETAILED_FOLDER,
+                        f"{tag}_nucleus_{nuc_id:04d}",
+                        False,
+                    )
+
+                    # 8g. Log z-stack metadata and focus quality
+                    nuc_czi         = DETAILED_FOLDER / f"{tag}_nucleus_{nuc_id:04d}.czi"
+                    czi_z_nuc       = helper.get_focus_position_from_czi(nuc_czi) if nuc_czi.exists() else None
+                    focus_score_nuc = helper.compute_focus_score(nuc_czi)   if nuc_czi.exists() else None
+                    nuc_score_str   = f"{focus_score_nuc:.1f}" if focus_score_nuc is not None else "n/a"
+                    if czi_z_nuc is not None:
+                        log.info(f"Detailed image saved: {tag}_nucleus_{nuc_id:04d}.czi"
+                                 f"  czi_FocusPos={czi_z_nuc:.3f} µm"
+                                 f"  (DF_offset={czi_z_nuc - z_fs_nuc_um:+.3f} µm vs zdrive)"
+                                 f"  focus_score={nuc_score_str}")
+                    else:
+                        log.info(f"Detailed image saved: {tag}_nucleus_{nuc_id:04d}.czi"
+                                 f"  zdrive={z_fs_nuc_um:.3f} µm  (czi_FocusPos not found)"
+                                 f"  focus_score={nuc_score_str}")
+
+                    # Log first/center/last plane Z so we can verify the stack
+                    # is centered on the SWAF2 focus position.
+                    zr = helper.get_zstack_z_range(nuc_czi) if nuc_czi.exists() else None
+                    if zr:
+                        log.info(
+                            f"Z-stack range: first={zr['first_um']:.3f} µm  "
+                            f"center={zr['center_um']:.3f} µm  "
+                            f"last={zr['last_um']:.3f} µm  "
+                            f"({zr['n_z']} planes @ {zr['step_um']:.1f} µm)"
+                        )
+
+                except Exception as e:
+                    log.warning(f"Skipping nucleus {nuc_id} at {tag}: {e}")
+
+    log.info("All positions processed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
