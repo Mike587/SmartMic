@@ -21,9 +21,11 @@ vendored here:
 | `MS_zenapi_stage_LM.py` | XY-stage control |
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run |
 | `MS_Helper_function.py` | Logging, position loading, focus scoring |
-| `MS_FocusSanityCheck.py` | Stand-alone focus-quality check |
-| `MS_focus_exploration.py` | Focus exploration / diagnostics |
 | `zeiss_paths.py` | Path bootstrap — see below |
+
+Exploratory, test, and scratch scripts live in `sandbox/`, which is **git-ignored**
+(kept locally, never pushed). Those scripts add the repo root to `sys.path`
+themselves so they can still import the core modules above.
 
 ## How the Zeiss dependency is resolved
 
