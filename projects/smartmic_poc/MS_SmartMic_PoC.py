@@ -85,6 +85,11 @@ NUCLEUS_SWAF_EXPERIMENT_NAME_2 = "DAPI_LSM_onez_001_swaf_002"   # fine
 # 100 µm is enough safety margin while reducing the sweep from ~3300 µm to ~100 µm.
 DF_APPROACH_MARGIN_M = 100e-6   # metres
 
+# Required sample carrier.  The pipeline's positions, objectives and focus
+# settings are tuned for this specific plate, so the run aborts immediately
+# if a different carrier is loaded in ZEN (queried via SampleCarrierService).
+EXPECTED_SAMPLE_CARRIER = "Multichamber 384"
+
 # Well-plate position file (.czexp) — contains the XYZ coordinates and
 # IsUsedForAcquisition flags for each well / sub-position.
 POSITIONS_FILE = Path(r"C:/ProgramData/Carl Zeiss/ZEN/Users/mike/Documents/Experiment Setups/384WP_TestPositions_004.czexp")
@@ -125,6 +130,25 @@ def main():
     log.info(f"Detailed exp      : {DETAILED_EXPERIMENT_NAME}")
     log.info(f"Overview SWAF     : {SWAF_EXPERIMENT_NAME} / {SWAF_EXPERIMENT_NAME_2}")
     log.info(f"Nucleus SWAF      : {NUCLEUS_SWAF_EXPERIMENT_NAME} / {NUCLEUS_SWAF_EXPERIMENT_NAME_2}")
+
+    # ------------------------------------------------------------------
+    # Verify the correct sample carrier is loaded BEFORE doing anything.
+    # The whole pipeline assumes EXPECTED_SAMPLE_CARRIER; running it against
+    # a different plate would drive the stage to wrong/unsafe positions.
+    # ------------------------------------------------------------------
+    try:
+        carrier_name = ms.get_sample_carrier_name()
+    except Exception as e:
+        log.error(f"Could not query the sample carrier from ZEN: {e} — aborting.")
+        return 1
+
+    if carrier_name != EXPECTED_SAMPLE_CARRIER:
+        log.error(
+            f"Wrong sample carrier loaded: '{carrier_name}' "
+            f"(expected '{EXPECTED_SAMPLE_CARRIER}') — aborting."
+        )
+        return 1
+    log.info(f"Sample carrier OK : '{carrier_name}'")
 
     # ------------------------------------------------------------------
     # Load positions
