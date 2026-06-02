@@ -11,9 +11,13 @@ vendored here:
 
 ## Layout
 
+The repo root holds the **reusable API wrapper** (the "library"). Individual
+projects/examples that consume it live under `projects/`, one folder each.
+
+### API wrapper (repo root)
+
 | File | Role |
 |------|------|
-| `MS_SmartMic_PoC.py` | Main proof-of-concept pipeline (entry point) |
 | `MS_CD7_API_LoA.py` | Synchronous wrappers around the ZEN gRPC API |
 | `MS_zenapi_focus.py` | DefiniteFocus / FocusService (Z-drive) helpers |
 | `MS_zenapi_swaf.py` | Software-autofocus experiment helpers |
@@ -22,6 +26,18 @@ vendored here:
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run |
 | `MS_Helper_function.py` | Logging, position loading, focus scoring |
 | `zeiss_paths.py` | Path bootstrap — see below |
+
+### Projects (`projects/`)
+
+| Folder | Role |
+|--------|------|
+| `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point) |
+
+Each project script adds the repo root to `sys.path` (two levels up) and then
+imports `zeiss_paths`, so it can use the wrapper modules and the Zeiss
+`zen_api` packages regardless of the working directory it is launched from.
+`config.ini` is resolved relative to each `MS_zenapi_*` module's own directory
+(the repo root), so it stays at the root and is shared by all projects.
 
 Exploratory, test, and scratch scripts live in `sandbox/`, which is **git-ignored**
 (kept locally, never pushed). Those scripts add the repo root to `sys.path`
@@ -68,4 +84,8 @@ commit `config.ini` — only `config.ini.example` is tracked.
 
 Use the existing `smartmic` pixi environment:
 
-    pixi run -e smartmic python MS_SmartMic_PoC.py
+    pixi run -e smartmic poc
+
+or run the script directly:
+
+    pixi run -e smartmic python projects/smartmic_poc/MS_SmartMic_PoC.py

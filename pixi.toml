@@ -110,7 +110,7 @@ smartmic = { features = ["smartmic"], no-default-feature = true }
 
 [feature.smartmic.tasks]
 # Run the SmartMic proof-of-concept pipeline.
-poc = "python MS_SmartMic_PoC.py"
+poc = "python projects/smartmic_poc/MS_SmartMic_PoC.py"
 
 
 

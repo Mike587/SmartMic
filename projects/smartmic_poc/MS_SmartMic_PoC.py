@@ -99,9 +99,12 @@ ANALYSIS_SCRIPT     = ANALYSIS_SCRIPT_DIR / "analyze_czi.py"
 
 # ---------------------------------------------------------------------------
 
-# Extend sys.path so both this project's MS_* modules and the Zeiss-provided
-# zen_api / zen_api_utils packages (which live in the ZEN-API example folder)
-# can be imported regardless of the working directory the script is launched from.
+# This script lives in projects/smartmic_poc/.  Add the repo root (two levels
+# up) to sys.path so the MS_* wrapper modules and zeiss_paths resolve, then
+# import zeiss_paths which extends sys.path further for the Zeiss-provided
+# zen_api / zen_api_utils packages (in the ZEN-API example folder).  This makes
+# imports work regardless of the working directory the script is launched from.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import zeiss_paths  # noqa: F401  — side effect: extends sys.path
 
 try:
