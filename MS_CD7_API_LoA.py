@@ -19,6 +19,7 @@ import MS_zenapi_experiment_methods
 import MS_zenapi_objectivechanger
 import MS_zenapi_stage_LM
 import MS_zenapi_swaf
+import MS_zenapi_sample_carrier
 import MS_Helper_function
 
 
@@ -391,11 +392,33 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
 def get_current_objective_and_optovar() -> Tuple[int, int]:
     """
     Get current objective and optovar positions.
-    
+
     Returns:
         Tuple[int, int]: (objective_position, optovar_position)
     """
     return asyncio.run(MS_zenapi_objectivechanger.get_current_objective_and_optovar())
+
+
+def get_sample_carrier_info() -> Dict[str, Any]:
+    """
+    Get information about the currently configured sample carrier.
+
+    Returns:
+        Dict[str, Any] with keys: name, rows, columns, material,
+        thickness, skirt, refractive_index. See
+        MS_zenapi_sample_carrier.get_sample_carrier_info for details.
+    """
+    return asyncio.run(MS_zenapi_sample_carrier.get_sample_carrier_info())
+
+
+def get_sample_carrier_name() -> str:
+    """
+    Get the name of the currently configured sample carrier.
+
+    Returns:
+        str: The sample-carrier name as reported by ZEN.
+    """
+    return get_sample_carrier_info()["name"]
 
 
 

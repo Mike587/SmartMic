@@ -23,6 +23,7 @@ projects/examples that consume it live under `projects/`, one folder each.
 | `MS_zenapi_swaf.py` | Software-autofocus experiment helpers |
 | `MS_zenapi_objectivechanger.py` | Objective / optovar control |
 | `MS_zenapi_stage_LM.py` | XY-stage control |
+| `MS_zenapi_sample_carrier.py` | Sample-carrier (well-plate) info query |
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run |
 | `MS_Helper_function.py` | Logging, position loading, focus scoring |
 | `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env) |
