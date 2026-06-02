@@ -181,6 +181,43 @@ async def get_current_objective_and_optovar():
     return pos_obj.value, pos_optovar.value
 
 
+async def get_current_objective_and_optovar_names():
+    """Return the current objective and optovar as ``(name, position)`` pairs.
+
+    Unlike :func:`get_current_objective_and_optovar`, which returns only the
+    hardware position indices, this resolves the human-readable names (e.g.
+    ``Plan-Apochromat 20x/0.8`` / ``2x``) so callers can verify the optics by
+    magnification/NA rather than by slot number.
+
+    Returns:
+        Tuple ``((obj_name, obj_position), (opt_name, opt_position))``.
+    """
+    channel, metadata = initialize_zenapi(config_path)
+    objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
+    optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+
+    try:
+        objectives = await objchanger_service.get_objectives(
+            ObjectiveChangerServiceGetObjectivesRequest()
+        )
+        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+
+        pos_obj = await objchanger_service.get_position(
+            ObjectiveChangerServiceGetPositionRequest()
+        )
+        pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
+
+        current_objective = get_objective_by_position(objectives, pos_obj.value)
+        current_optovar = get_optovar_by_position(optovars, pos_optovar.value)
+    finally:
+        channel.close()
+
+    return (
+        (current_objective.name, current_objective.position),
+        (current_optovar.name, current_optovar.position),
+    )
+
+
 async def main(args):
     """Command-line entry point.
 
@@ -201,6 +238,12 @@ async def main(args):
         if args[1] == "get_current":
             obj_pos, opt_pos = await get_current_objective_and_optovar()
             print(f"Current objective: {obj_pos}, Current optovar: {opt_pos}")
+        elif args[1] == "get_current_names":
+            (obj_name, obj_pos), (opt_name, opt_pos) = (
+                await get_current_objective_and_optovar_names()
+            )
+            print(f"Current objective: '{obj_name}' (position {obj_pos})")
+            print(f"Current optovar:   '{opt_name}' (position {opt_pos})")
         elif len(args) == 3:
             try:
                 obj_pos = int(args[1])

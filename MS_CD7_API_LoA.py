@@ -399,6 +399,23 @@ def get_current_objective_and_optovar() -> Tuple[int, int]:
     return asyncio.run(MS_zenapi_objectivechanger.get_current_objective_and_optovar())
 
 
+def get_current_objective_and_optovar_names() -> Tuple[Tuple[str, int], Tuple[str, int]]:
+    """
+    Get current objective and optovar as (name, position) pairs.
+
+    Resolves the human-readable hardware names (e.g. 'Plan-Apochromat 20x/0.95'
+    and '2x Tubelens') so callers can verify the optics by magnification/NA
+    rather than by slot number.
+
+    Returns:
+        Tuple[Tuple[str, int], Tuple[str, int]]:
+            ((objective_name, objective_position), (optovar_name, optovar_position))
+    """
+    return asyncio.run(
+        MS_zenapi_objectivechanger.get_current_objective_and_optovar_names()
+    )
+
+
 def get_sample_carrier_info() -> Dict[str, Any]:
     """
     Get information about the currently configured sample carrier.
