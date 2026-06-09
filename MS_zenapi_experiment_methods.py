@@ -449,6 +449,252 @@ async def check_experiment_api(
     return results
 
 
+def _normalize_experiment_xml(xml: str) -> str:
+    """Strip a UTF-8 BOM and the ``<?xml ...?>`` declaration from experiment XML.
+
+    ZEN's ``ExperimentService.Import`` expects the string to start at
+    ``<HardwareExperiment>`` (that is how ``Export`` returns it).  On-disk
+    ``.czexp`` files prepend a BOM and an ``<?xml ...?>`` prolog, which the
+    importer rejects with ``INVALID_ARGUMENT``.  This makes either form work.
+    """
+    if xml and xml[0] == "﻿":      # strip BOM if present
+        xml = xml[1:]
+    idx = xml.find("<HardwareExperiment")
+    if idx > 0:
+        xml = xml[idx:]
+    return xml
+
+
+async def run_experiment_from_xml(
+    xml: str,
+    configfile: str = "config.ini",
+    custom_image_folder: Union[str, Path, None] = None,
+    custom_filename: Union[str, None] = None,
+) -> Dict[str, Union[str, Path, None]]:
+    """Import an experiment from an XML string and run it.
+
+    This is the core primitive: it imports *xml* via ``ExperimentService.Import``
+    and runs the imported experiment.  The XML may be the raw
+    ``<HardwareExperiment>`` string (as returned by ``Export`` or built on the
+    fly) or full ``.czexp`` file content — a leading BOM / ``<?xml ...?>``
+    prolog is normalized away.
+
+    Args:
+        xml: The experiment XML string.
+        configfile: ZEN API ``config.ini`` path or filename relative to this
+            script (default ``"config.ini"``).
+        custom_image_folder: Directory the acquired ``.czi`` is moved to after
+            ZEN writes it to its default output folder.  Defaults to
+            ``F:/UserData/mike/api`` when ``None``.
+        custom_filename: Output base name (without ``.czi``).  A UUID-based
+            name is generated when ``None``.
+
+    Returns:
+        Dict with ``"exp_result_path"`` (Path to the result ``.czi``),
+        ``"snap_path"`` (always ``None`` here), and ``"experiment_id"`` (the
+        imported experiment's reference id).
+    """
+    logger = set_logging()
+    results: Dict[str, Union[str, Path, None]] = {}
+
+    xml = _normalize_experiment_xml(xml)
+
+    channel, metadata = initialize_zenapi(configfile)
+    logger.info("Create gRPC Channel and ExperimentService ...")
+    exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+
+    # Query where ZEN saves images by default (read-only).
+    save_path = await exp_service.get_image_output_path(
+        ExperimentServiceGetImageOutputPathRequest()
+    )
+    default_image_folder = Path(save_path.image_output_path)
+    logger.info("Default Saving Location for CZI Images:" + str(default_image_folder))
+
+    # Resolve the target output folder.
+    if custom_image_folder is not None:
+        image_folder = Path(custom_image_folder)
+    else:
+        image_folder = Path("F:/UserData/mike/api")
+    image_folder.mkdir(parents=True, exist_ok=True)
+    logger.info("Custom Saving Location for CZI Images:" + str(image_folder))
+
+    # Output base name.
+    if custom_filename is not None:
+        czi_name = custom_filename[:-4] if custom_filename.endswith(".czi") else custom_filename
+    else:
+        czi_name = f"zenapi_{str(uuid.uuid4())[:8]}"
+
+    # Import the experiment from the XML string.
+    logger.info("Importing Experiment from XML string ...")
+    imported_exp = await exp_service.import_(ExperimentServiceImportRequest(xml))
+    logger.info("Reference Id (imported): " + imported_exp.experiment_id)
+
+    # Avoid overwriting an existing file by appending a running counter.
+    base_czi_name = czi_name
+    counter = 1
+    while (image_folder / (czi_name + ".czi")).exists():
+        czi_name = f"{base_czi_name}_{counter:06d}"
+        counter += 1
+    if czi_name != base_czi_name:
+        logger.info(f"File {base_czi_name}.czi already exists. Using {czi_name}.czi instead.")
+
+    logger.info("Starting Experiment Execution ...")
+    logger.info(f"Using output name: {czi_name}")
+    exp_result = await exp_service.run_experiment(
+        ExperimentServiceRunExperimentRequest(
+            experiment_id=imported_exp.experiment_id, output_name=czi_name
+        )
+    )
+
+    exp_status = await exp_service.get_status(
+        ExperimentServiceGetStatusRequest(experiment_id=imported_exp.experiment_id)
+    )
+    logger.info(exp_status)
+
+    # Move the result from ZEN's default folder to the custom folder.
+    exp_default_path = default_image_folder / (exp_result.output_name + ".czi")
+    exp_custom_path = image_folder / (exp_result.output_name + ".czi")
+    if exp_default_path != exp_custom_path and exp_default_path.exists():
+        exp_default_path.rename(exp_custom_path)
+        logger.info(f"Moved experiment result from {exp_default_path} to {exp_custom_path}")
+        results["exp_result_path"] = exp_custom_path
+    else:
+        results["exp_result_path"] = exp_default_path
+    logger.info("Final Experiment Location: " + str(results["exp_result_path"]))
+
+    # Clean up any leftover .czi files in the ZEN default temp folder (the
+    # result has already been moved out, so it is not affected).
+    temp_files_after = list(default_image_folder.glob("*.czi"))
+    for temp_file in temp_files_after:
+        try:
+            temp_file.unlink()
+            logger.info(f"Cleaned up temp file: {temp_file}")
+        except Exception as e:
+            logger.warning(f"Could not delete temp file {temp_file}: {e}")
+
+    channel.close()
+    results["snap_path"] = None
+    results["experiment_id"] = imported_exp.experiment_id
+    return results
+
+
+async def run_experiment_from_path(
+    czexp_path: Union[str, Path],
+    configfile: str = "config.ini",
+    custom_image_folder: Union[str, Path, None] = None,
+    custom_filename: Union[str, None] = None,
+) -> Dict[str, Union[str, Path, None]]:
+    """Load an experiment from a ``.czexp`` file path and run it.
+
+    ZEN's ``ExperimentService.Load`` accepts a FULL PATH (without the ``.czexp``
+    extension), not just a name inside ZEN's experiment folder — so a per-run
+    modified experiment at any path can be loaded and run directly.
+
+    IMPORTANT: this LOADS the experiment (like :func:`check_experiment_api`) and
+    runs the loaded id.  It does NOT import the XML and run the imported id —
+    an imported experiment is not in a runnable state and ZEN throws a
+    NullReferenceException ("Object reference not set to an instance of an
+    object") at run for tile/regions experiments.
+
+    Args:
+        czexp_path: Path to the ``.czexp`` file to load and run.
+        configfile: ZEN API ``config.ini`` path or filename relative to this
+            script (default ``"config.ini"``).
+        custom_image_folder: Directory the acquired ``.czi`` is moved to.
+            Defaults to ``F:/UserData/mike/api`` when ``None``.
+        custom_filename: Output base name (without ``.czi``).
+
+    Returns:
+        Dict with ``"exp_result_path"``, ``"snap_path"`` (None) and
+        ``"experiment_id"`` (the loaded experiment's reference id).
+
+    Raises:
+        FileNotFoundError: if *czexp_path* does not exist.
+    """
+    logger = set_logging()
+    results: Dict[str, Union[str, Path, None]] = {}
+
+    czexp_path = Path(czexp_path)
+    if not czexp_path.exists():
+        raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
+
+    channel, metadata = initialize_zenapi(configfile)
+    logger.info("Create gRPC Channel and ExperimentService ...")
+    exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+
+    # Where ZEN saves images by default (read-only).
+    save_path = await exp_service.get_image_output_path(
+        ExperimentServiceGetImageOutputPathRequest()
+    )
+    default_image_folder = Path(save_path.image_output_path)
+    logger.info("Default Saving Location for CZI Images:" + str(default_image_folder))
+
+    if custom_image_folder is not None:
+        image_folder = Path(custom_image_folder)
+    else:
+        image_folder = Path("F:/UserData/mike/api")
+    image_folder.mkdir(parents=True, exist_ok=True)
+    logger.info("Custom Saving Location for CZI Images:" + str(image_folder))
+
+    if custom_filename is not None:
+        czi_name = custom_filename[:-4] if custom_filename.endswith(".czi") else custom_filename
+    else:
+        czi_name = f"zenapi_{str(uuid.uuid4())[:8]}"
+
+    # Load BY PATH (without the .czexp extension) → runnable experiment.
+    load_arg = str(czexp_path.with_suffix(""))
+    logger.info("Loading Experiment from path: " + load_arg)
+    loaded_exp = await exp_service.load(
+        ExperimentServiceLoadRequest(experiment_name=load_arg)
+    )
+    logger.info("Reference Id (loaded): " + loaded_exp.experiment_id)
+
+    # Avoid overwriting an existing result file.
+    base_czi_name = czi_name
+    counter = 1
+    while (image_folder / (czi_name + ".czi")).exists():
+        czi_name = f"{base_czi_name}_{counter:06d}"
+        counter += 1
+    if czi_name != base_czi_name:
+        logger.info(f"File {base_czi_name}.czi already exists. Using {czi_name}.czi instead.")
+
+    logger.info("Starting Experiment Execution ...")
+    logger.info(f"Using output name: {czi_name}")
+    exp_result = await exp_service.run_experiment(
+        ExperimentServiceRunExperimentRequest(
+            experiment_id=loaded_exp.experiment_id, output_name=czi_name
+        )
+    )
+
+    exp_status = await exp_service.get_status(
+        ExperimentServiceGetStatusRequest(experiment_id=loaded_exp.experiment_id)
+    )
+    logger.info(exp_status)
+
+    exp_default_path = default_image_folder / (exp_result.output_name + ".czi")
+    exp_custom_path = image_folder / (exp_result.output_name + ".czi")
+    if exp_default_path != exp_custom_path and exp_default_path.exists():
+        exp_default_path.rename(exp_custom_path)
+        logger.info(f"Moved experiment result from {exp_default_path} to {exp_custom_path}")
+        results["exp_result_path"] = exp_custom_path
+    else:
+        results["exp_result_path"] = exp_default_path
+    logger.info("Final Experiment Location: " + str(results["exp_result_path"]))
+
+    # Clean up any leftover .czi in the ZEN default temp folder.
+    for temp_file in list(default_image_folder.glob("*.czi")):
+        try:
+            temp_file.unlink()
+            logger.info(f"Cleaned up temp file: {temp_file}")
+        except Exception as e:
+            logger.warning(f"Could not delete temp file {temp_file}: {e}")
+
+    channel.close()
+    results["snap_path"] = None
+    results["experiment_id"] = loaded_exp.experiment_id
+    return results
+
+
 if __name__ == "__main__":
     logger = set_logging()
 

@@ -11,7 +11,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 
 
 import MS_zenapi_focus
@@ -271,6 +271,79 @@ def run_experiment(experiment_name: str,
         custom_image_folder=custom_folder,
         custom_filename=custom_filename,
         do_snap_and_live=do_snap_and_live
+    ))
+    print(f"Experiment results: {result}")
+    return result
+
+
+def run_experiment_from_path(czexp_path: Union[str, Path],
+                             custom_folder: Optional[Path] = None,
+                             custom_filename: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Run an experiment from a .czexp file path (instead of by name).
+
+    Reads the .czexp file, imports its XML into ZEN via ExperimentService.Import,
+    and runs the imported experiment.  The file does NOT need to live in ZEN's
+    experiment folder — any path works, including a per-run modified experiment
+    generated on the fly.
+
+    Args:
+        czexp_path (str|Path):           Path to the .czexp file to run.
+        custom_folder (Path, optional):  Output folder. Uses
+                                         DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
+        custom_filename (str, optional): Output base filename (without .czi).
+
+    Returns:
+        Dict[str, Any]: {exp_result_path, snap_path, experiment_id}
+
+    Raises:
+        FileNotFoundError: If czexp_path does not exist.
+    """
+    czexp_path = Path(czexp_path)
+    if not czexp_path.exists():
+        raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
+
+    if custom_folder is None:
+        custom_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
+    custom_folder = Path(custom_folder)
+
+    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_path(
+        czexp_path=czexp_path,
+        custom_image_folder=custom_folder,
+        custom_filename=custom_filename,
+    ))
+    print(f"Experiment results: {result}")
+    return result
+
+
+def run_experiment_from_xml(xml: str,
+                            custom_folder: Optional[Path] = None,
+                            custom_filename: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Run an experiment from an XML string (instead of a name or file path).
+
+    Imports the experiment XML into ZEN via ExperimentService.Import and runs
+    it.  Accepts a raw <HardwareExperiment> string (e.g. built on the fly) or
+    full .czexp content — a leading BOM / <?xml ...?> prolog is normalized away.
+    Use this to run a per-spheroid experiment without writing it to disk.
+
+    Args:
+        xml (str):                       The experiment XML string.
+        custom_folder (Path, optional):  Output folder. Uses
+                                         DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
+        custom_filename (str, optional): Output base filename (without .czi).
+
+    Returns:
+        Dict[str, Any]: {exp_result_path, snap_path, experiment_id}
+    """
+    if custom_folder is None:
+        custom_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
+    custom_folder = Path(custom_folder)
+
+    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_xml(
+        xml=xml,
+        custom_image_folder=custom_folder,
+        custom_filename=custom_filename,
     ))
     print(f"Experiment results: {result}")
     return result
