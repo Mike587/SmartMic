@@ -1,8 +1,9 @@
 # Exploratory / test / scratch scripts — kept locally, never pushed.
 sandbox/
 
-# Local-only project — kept locally, never pushed.
+# Local-only projects — kept locally, never pushed.
 projects/HD_Nuclei_from_slide/
+projects/Marc_SM/
 
 # Pixi — installed environments are regenerated from pixi.toml + pixi.lock
 # (both of which ARE tracked). Never commit the multi-GB env tree.

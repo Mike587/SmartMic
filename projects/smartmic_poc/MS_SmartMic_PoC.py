@@ -96,7 +96,7 @@ POSITIONS_FILE = Path(r"C:/ProgramData/Carl Zeiss/ZEN/Users/mike/Documents/Exper
 
 # External nuclei-detection script (runs in a separate pixi environment so it
 # can have its own dependencies without conflicting with the ZEN API env).
-ANALYSIS_SCRIPT_DIR = Path(r"C:\Users\zeiss\Zeiss_OAD\OAD\ZEN-API\image_analysis\ia_PoC_002")
+ANALYSIS_SCRIPT_DIR = Path(r"C:\Users\zeiss\Mike\Image_Analysis\ia_PoC_002")
 ANALYSIS_SCRIPT     = ANALYSIS_SCRIPT_DIR / "analyze_czi.py"
 
 # ---------------------------------------------------------------------------
