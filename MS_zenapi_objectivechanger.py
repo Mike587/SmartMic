@@ -181,6 +181,34 @@ async def get_current_objective_and_optovar():
     return pos_obj.value, pos_optovar.value
 
 
+async def list_objectives_and_optovars():
+    """Return the full objective and optovar inventory as ``(name, position)`` lists.
+
+    Read-only — does not move any hardware.  Useful for discovering which
+    position index corresponds to which magnification (e.g. the 5x objective
+    or the 1x optovar).
+
+    Returns:
+        Tuple ``(objectives, optovars)`` where each is a list of
+        ``(name, position)`` tuples.
+    """
+    channel, metadata = initialize_zenapi(config_path)
+    objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
+    optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+
+    try:
+        objectives = await objchanger_service.get_objectives(
+            ObjectiveChangerServiceGetObjectivesRequest()
+        )
+        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+    finally:
+        channel.close()
+
+    obj_list = [(o.name, o.position) for o in objectives.objectives]
+    opt_list = [(o.name, o.position) for o in optovars.optovars]
+    return obj_list, opt_list
+
+
 async def get_current_objective_and_optovar_names():
     """Return the current objective and optovar as ``(name, position)`` pairs.
 
@@ -238,6 +266,14 @@ async def main(args):
         if args[1] == "get_current":
             obj_pos, opt_pos = await get_current_objective_and_optovar()
             print(f"Current objective: {obj_pos}, Current optovar: {opt_pos}")
+        elif args[1] == "list":
+            obj_list, opt_list = await list_objectives_and_optovars()
+            print("Objectives:")
+            for name, position in obj_list:
+                print(f"  position {position}: '{name}'")
+            print("Optovars:")
+            for name, position in opt_list:
+                print(f"  position {position}: '{name}'")
         elif args[1] == "get_current_names":
             (obj_name, obj_pos), (opt_name, opt_pos) = (
                 await get_current_objective_and_optovar_names()
