@@ -120,8 +120,17 @@ def find_lsm_detector(root):
 
 
 def find_tile_regions(root):
-    """Return all <SingleTileRegion> elements (acquisition positions)."""
+    """Return all <SingleTileRegion> elements (single-position acquisitions)."""
     return list(root.iter("SingleTileRegion"))
+
+
+def find_stitch_regions(root):
+    """Return all <TileRegion> elements (multi-tile / stitch regions).
+
+    A stitch region is positioned by its <CenterPosition> (µm) and sized by
+    <ContourSize> / <Columns> / <Rows>, unlike a SingleTileRegion (<X>/<Y>).
+    """
+    return list(root.iter("TileRegion"))
 
 
 def find_zstack_setup(root):
@@ -130,6 +139,32 @@ def find_zstack_setup(root):
         if zs.find("First") is not None and zs.find("Last") is not None:
             return zs
     raise ValueError("ZStackSetup with First/Last not found")
+
+
+def find_processing_steps(root):
+    """Return all <ProcessingStep> elements (remote-processing / stitching steps)."""
+    return list(root.iter("ProcessingStep"))
+
+
+def is_stitching_configured(root):
+    """False if the only remote-processing step is the empty placeholder.
+
+    A stitch experiment saved with an unconfigured step (``<ProcessingStep
+    Id="NULL"/>`` and no children) runs in the ZEN UI — ZEN fills the stitching
+    defaults on open — but the API run aborts ("experiment not valid / failed to
+    start").  Returns True when no processing steps exist (nothing to validate)
+    or when a real step (Id != "NULL", or with an Algorithm/FunctionParameters
+    child) is present.
+    """
+    steps = find_processing_steps(root)
+    if not steps:
+        return True
+    for s in steps:
+        if (s.get("Id") or "NULL") != "NULL":
+            return True
+        if s.find("Algorithm") is not None or s.find("FunctionParameters") is not None:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +237,25 @@ def set_position(root, x_m, y_m, z_m=None, region_index=0):
     if z_m is not None:
         _require(r, "Z").text = _fmt_float(z_m * 1e6)
     return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
+
+
+def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
+    """Set a multi-tile (stitch) TileRegion's CenterPosition (written in µm).
+
+    Used to re-aim a stitch experiment (e.g. the OV) at a new well centre.
+    Optionally sets the region <Z>; leave z_m=None if the experiment runs its
+    own autofocus.
+    """
+    regions = find_stitch_regions(root)
+    if not regions:
+        raise ValueError("no TileRegion (stitch region) to set centre on")
+    r = regions[region_index]
+    _require(r, "CenterPosition").text = f"{_fmt_float(x_m * 1e6)},{_fmt_float(y_m * 1e6)}"
+    if z_m is not None:
+        z_el = r.find("Z")
+        if z_el is not None:
+            z_el.text = _fmt_float(z_m * 1e6)
+    return x_m * 1e6, y_m * 1e6
 
 
 def set_zstack_range(root, first_m, last_m, interval_m=None):
