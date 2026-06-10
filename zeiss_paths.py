@@ -44,12 +44,34 @@ if _this in sys.path:
     sys.path.remove(_this)
 sys.path.insert(0, _this)
 
+# python_examples ships zen_api_utils (and, in the OLD ZEN-API layout, a loose
+# zen_api folder too).
 _zeiss = str(ZEISS_EXAMPLES)
 if _zeiss not in sys.path:
     sys.path.append(_zeiss)
 
-if not (ZEISS_EXAMPLES / "zen_api").is_dir():
+# NEW ZEN-API layout (>= 2026.05): zen_api is a separate installable package at
+# ZEN-API/python_package/zen_api-<version>/src/.  Add the newest one's src so
+# `import zen_api` resolves without pip-installing it.  (The OLD layout had
+# zen_api loose in python_examples, already covered above.)
+_zen_api_srcs = sorted((ZEISS_EXAMPLES.parent / "python_package").glob("zen_api-*/src"))
+# The repo can ship MULTIPLE package versions, and the newest may be ahead of
+# the gateway / the shipped zen_api_utils.  Pin one with SMARTMIC_ZEN_API_VERSION
+# (e.g. "2025.10.1"); otherwise fall back to the newest available.
+_pin = os.environ.get("SMARTMIC_ZEN_API_VERSION")
+if _pin:
+    _pinned = [s for s in _zen_api_srcs if s.parent.name == f"zen_api-{_pin}"]
+    _zen_api_srcs = _pinned or _zen_api_srcs
+if _zen_api_srcs:
+    _src = str(_zen_api_srcs[-1])  # version dirs sort lexically; newest is last
+    if _src not in sys.path:
+        sys.path.append(_src)
+
+# Warn only if zen_api isn't resolvable from ANY location we added.
+_zen_api_locations = [ZEISS_EXAMPLES, *_zen_api_srcs]
+if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
     sys.stderr.write(
-        f"[zeiss_paths] WARNING: zen_api not found under {ZEISS_EXAMPLES}. "
+        f"[zeiss_paths] WARNING: zen_api not found under {ZEISS_EXAMPLES} or "
+        f"{ZEISS_EXAMPLES.parent / 'python_package'}/zen_api-*/src. "
         f"Set SMARTMIC_ZEISS_EXAMPLES to the correct python_examples path.\n"
     )
