@@ -147,16 +147,23 @@ def find_processing_steps(root):
 
 
 def is_stitching_configured(root):
-    """False if the only remote-processing step is the empty placeholder.
+    """False only if an ACTIVE remote-processing step is the empty placeholder.
 
-    A stitch experiment saved with an unconfigured step (``<ProcessingStep
-    Id="NULL"/>`` and no children) runs in the ZEN UI — ZEN fills the stitching
-    defaults on open — but the API run aborts ("experiment not valid / failed to
-    start").  Returns True when no processing steps exist (nothing to validate)
-    or when a real step (Id != "NULL", or with an Algorithm/FunctionParameters
-    child) is present.
+    A stitch experiment saved with an active but unconfigured step
+    (``<ProcessingStep Id="NULL"/>`` and no children) runs in the ZEN UI — ZEN
+    fills the defaults on open — but the API run aborts ("experiment not valid /
+    failed to start").  Returns True when:
+      * there is no <ExperimentRemoteProcessingSetup>, or
+      * it is IsActivated="false" (deactivated → nothing runs/validates), or
+      * a real step (Id != "NULL", or with an Algorithm/FunctionParameters
+        child) is present.
     """
-    steps = find_processing_steps(root)
+    setup = next(iter(root.iter("ExperimentRemoteProcessingSetup")), None)
+    if setup is None:
+        return True
+    if (setup.get("IsActivated") or "true").lower() == "false":
+        return True
+    steps = list(setup.iter("ProcessingStep"))
     if not steps:
         return True
     for s in steps:
