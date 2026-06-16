@@ -25,7 +25,8 @@ def run_analysis(image_path: Path,
                  tag: str,
                  log: logging.Logger,
                  analysis_script: Path,
-                 analysis_script_dir: Path = None) -> bool:
+                 analysis_script_dir: Path = None,
+                 extra_args=None) -> bool:
     """
     Launch an external image-analysis script in its own pixi environment.
 
@@ -71,6 +72,8 @@ def run_analysis(image_path: Path,
         str(output_folder),
         "--prefix", tag,
     ]
+    if extra_args:
+        cmd += [str(a) for a in extra_args]
 
     log.info(f"Starting analysis for {tag}: {image_path.name}")
 

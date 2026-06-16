@@ -246,6 +246,37 @@ def set_position(root, x_m, y_m, z_m=None, region_index=0):
     return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
 
 
+def add_single_tile_region(root, x_m, y_m, z_m=None, name="P1",
+                           region_id="639171104957762277"):
+    """Ensure a positioned <SingleTileRegion> exists; set its X/Y/Z (µm).
+
+    For an experiment whose <SingleTileRegions> container is empty (e.g. a FAZ
+    z-stack authored without a position), this CREATES the region so the
+    experiment can be positioned in holder/sample coordinates and run by path —
+    ZEN then applies the carrier calibration, exactly like the OV/DV (a raw
+    StageService move would be in machine coords and miss on a calibrated plate).
+    If a SingleTileRegion already exists it is updated in place.
+
+    With a CENTER-mode z-stack the <Z> is the stack centre, so pass the target
+    centre Z (e.g. the overview focus); leave z_m=None to write 0.
+    """
+    existing = list(root.iter("SingleTileRegion"))
+    if existing:
+        return set_position(root, x_m, y_m, z_m=z_m)
+    containers = list(root.iter("SingleTileRegions"))
+    if not containers:
+        raise ValueError("no <SingleTileRegions> container to add a region to")
+    st = ET.SubElement(containers[0], "SingleTileRegion")
+    st.set("Name", name)
+    st.set("Id", str(region_id))
+    ET.SubElement(st, "X").text = _fmt_float(x_m * 1e6)
+    ET.SubElement(st, "Y").text = _fmt_float(y_m * 1e6)
+    ET.SubElement(st, "Z").text = _fmt_float((z_m if z_m is not None else 0.0) * 1e6)
+    ET.SubElement(st, "IsUsedForAcquisition").text = "true"
+    ET.SubElement(st, "AdditionalValues")
+    return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
+
+
 def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
     """Set a multi-tile (stitch) TileRegion's CenterPosition (written in µm).
 
@@ -263,6 +294,24 @@ def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
         if z_el is not None:
             z_el.text = _fmt_float(z_m * 1e6)
     return x_m * 1e6, y_m * 1e6
+
+
+def clear_single_tile_regions(root):
+    """Remove standalone single-tile regions, leaving only <TileRegion> stitches.
+
+    A stitch experiment (e.g. the OV) may also carry stray <SingleTileRegion> /
+    <SingleTileRegionArray> entries.  ZEN acquires each as an EXTRA scene, so a
+    re-aimed OV would image both the intended well AND those leftover positions,
+    producing a multi-scene mosaic that breaks single-well analysis.  Removing
+    them keeps the OV to the one re-aimed TileRegion.  Returns the count removed.
+    """
+    removed = 0
+    for container_tag in ("SingleTileRegions", "SingleTileRegionArrays"):
+        for container in root.iter(container_tag):
+            for child in list(container):
+                container.remove(child)
+                removed += 1
+    return removed
 
 
 def set_zstack_range(root, first_m, last_m, interval_m=None):
@@ -394,6 +443,23 @@ def set_lsm_scan_speed_max(root):
         el.text = "true"
         return True
     return False
+
+
+def set_lsm_sampling_mode_user(root):
+    """Force SamplingMode=User on the LSM detector so the authored frame survives.
+
+    With SamplingMode=SR, ZEN auto-derives the XY frame to Nyquist on load/run and
+    IGNORES the authored FrameSize.  Switching to "User" makes ZEN honour the frame
+    exactly as authored — no automatic XY rescaling.  Returns the frame size string
+    that is now locked in (for logging), or None if there is no SamplingMode field.
+    """
+    det = find_lsm_detector(root)
+    sm = det.find("SamplingMode")
+    if sm is None:
+        return None
+    sm.text = "User"
+    fr = det.find("FrameSize")
+    return fr.text if fr is not None else "User"
 
 
 # ---------------------------------------------------------------------------
