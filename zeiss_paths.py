@@ -3,11 +3,14 @@ zeiss_paths.py
 
 Standalone SmartMic project bootstrap.
 
-The MS_* modules depend on two Zeiss-provided packages — ``zen_api`` and
-``zen_api_utils`` — which live in the Zeiss ZEN-API example folder, not in this
-repository.  Importing this module inserts that folder (and this project's own
-directory) onto ``sys.path`` so those imports resolve no matter where a script
-is launched from.
+The MS_* modules depend on the Zeiss-provided ``zen_api`` package (the
+auto-generated gRPC stubs), which lives in the Zeiss ZEN-API example/package
+tree, not in this repository.  Importing this module inserts that tree (and this
+project's own directory) onto ``sys.path`` so ``import zen_api`` resolves no
+matter where a script is launched from.
+
+(The ``zen_api_utils`` example glue is no longer a dependency — the helpers
+SmartMic used are vendored in ``MS_zenapi_helpers.py``.)
 
 Usage — import this FIRST, before any MS_* / zen_api import::
 
@@ -21,8 +24,9 @@ import os
 import sys
 from pathlib import Path
 
-# Location of the Zeiss ZEN-API python_examples folder that ships zen_api /
-# zen_api_utils.  Override with the SMARTMIC_ZEISS_EXAMPLES env var if needed.
+# Location of the Zeiss ZEN-API python_examples folder (used to locate zen_api;
+# in the OLD layout zen_api shipped loose here).  Override with the
+# SMARTMIC_ZEISS_EXAMPLES env var if needed.
 ZEISS_EXAMPLES = Path(
     os.environ.get(
         "SMARTMIC_ZEISS_EXAMPLES",
@@ -36,7 +40,7 @@ THIS_DIR = Path(__file__).resolve().parent
 # IMPORTANT ordering:
 #   * THIS_DIR goes to the FRONT  -> this project's MS_* modules win.
 #   * ZEISS_EXAMPLES goes to the BACK -> used only as a fallback for
-#     zen_api / zen_api_utils (which do not exist in this project).
+#     zen_api (which does not exist in this project).
 # Otherwise the old MS_* copies still sitting in the Zeiss folder would
 # shadow the ones in this repository.
 _this = str(THIS_DIR)
@@ -44,8 +48,8 @@ if _this in sys.path:
     sys.path.remove(_this)
 sys.path.insert(0, _this)
 
-# python_examples ships zen_api_utils (and, in the OLD ZEN-API layout, a loose
-# zen_api folder too).
+# In the OLD ZEN-API layout, python_examples also held a loose zen_api folder,
+# so keep it on the path as a fallback for that layout.
 _zeiss = str(ZEISS_EXAMPLES)
 if _zeiss not in sys.path:
     sys.path.append(_zeiss)
@@ -56,7 +60,7 @@ if _zeiss not in sys.path:
 # zen_api loose in python_examples, already covered above.)
 _zen_api_srcs = sorted((ZEISS_EXAMPLES.parent / "python_package").glob("zen_api-*/src"))
 # The repo can ship MULTIPLE package versions, and the newest may be ahead of
-# the gateway / the shipped zen_api_utils.  Pin one with SMARTMIC_ZEN_API_VERSION
+# the gateway.  Pin one with SMARTMIC_ZEN_API_VERSION
 # (e.g. "2025.10.1"); otherwise fall back to the newest available.
 _pin = os.environ.get("SMARTMIC_ZEN_API_VERSION")
 if _pin:

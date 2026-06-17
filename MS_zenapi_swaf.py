@@ -41,8 +41,8 @@ main                   -- CLI demo: configure and run SWAF on a named experiment
 import asyncio
 import sys
 from pathlib import Path
-import zeiss_paths  # noqa: F401  — extends sys.path so zen_api / zen_api_utils resolve
-from zen_api_utils.misc import set_logging, initialize_zenapi
+import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+from MS_zenapi_helpers import set_logging, initialize_zenapi
 from grpclib import GRPCError
 
 # Auto-generated gRPC stubs for experiment loading and cloning.
@@ -50,6 +50,7 @@ from zen_api.acquisition.v1beta import (
     ExperimentServiceStub,
     ExperimentServiceLoadRequest,
     ExperimentServiceCloneRequest,
+    ExperimentServiceSaveRequest,
 )
 
 # Auto-generated gRPC stubs for SWAF parameter access and execution.
@@ -157,6 +158,32 @@ async def run_software_autofocus(
         channel.close()
 
 
+def _show_swaf_info(logger, info) -> None:
+    """Log the SWAF parameters of an experiment (CLI-demo helper).
+
+    Vendored from ``zen_api_utils.experiment.show_swaf_info_LM`` so the demo
+    ``main`` no longer depends on ``zen_api_utils``.  Limits in metres are
+    logged in µm.
+
+    Args:
+        logger: the loguru logger to emit to.
+        info:   an ``ExperimentSwAutofocusServiceGetAutofocusParametersResponse``.
+    """
+    logger.info("------------  SWAF Information Start  ------------")
+    logger.info(f"Mode: {info.auto_focus_mode}")
+    logger.info(f"Sampling: {info.autofocus_sampling}")
+    logger.info(f"Contrast Measure: {info.contrast_measure}")
+    logger.info(f"Search Strategy: {info.search_strategy}")
+    logger.info(f"Lower Limit: {info.lower_limit * 1e6:.3f}")
+    logger.info(f"Upper Limit: {info.upper_limit * 1e6:.3f}")
+    logger.info(f"Offset: {info.offset * 1e6:.3f}")
+    logger.info(f"Reference Channel: {info.reference_channel_name}")
+    logger.info(f"Relative Range Auto: {info.relative_range_is_automatic}")
+    logger.info(f"Relative Search Range: {info.relative_search_range * 1e6:.3f}")
+    logger.info(f"Acquisition ROI: {info.use_acquisition_roi}")
+    logger.info("------------  SWAF Information End  ------------")
+
+
 async def main(args):
     """CLI demo: configure SWAF parameters on a cloned experiment, then run it.
 
@@ -173,8 +200,6 @@ async def main(args):
     Returns:
         None
     """
-    from zen_api_utils.experiment import show_swaf_info_LM, save_experiment
-
     # Set up the logger here so main() is self-contained (works even if it is
     # imported and called directly, not only via the __main__ guard below).
     logger = set_logging()
@@ -192,7 +217,7 @@ async def main(args):
             experiment_id=my_exp.experiment_id
         )
     )
-    show_swaf_info_LM(swaf_info)
+    _show_swaf_info(logger, swaf_info)
 
     logger.info("Cloning Experiment ...")
     my_exp_cloned = await exp_service.clone(
@@ -221,7 +246,14 @@ async def main(args):
     )
 
     # Persist the modified clone so it can be reused in future sessions.
-    await save_experiment(my_exp_cloned, exp_service, expname=expname_cloned, overwrite=True)
+    logger.info("Saving Experiment ...")
+    await exp_service.save(
+        ExperimentServiceSaveRequest(
+            experiment_id=my_exp_cloned.experiment_id,
+            experiment_name=expname_cloned,
+            allow_override=True,
+        )
+    )
 
     # Verify the saved parameters by reading them back from the clone.
     swaf_info = await swaf_service.get_autofocus_parameters(
@@ -229,7 +261,7 @@ async def main(args):
             experiment_id=my_exp_cloned.experiment_id
         )
     )
-    show_swaf_info_LM(swaf_info)
+    _show_swaf_info(logger, swaf_info)
 
     # Record the Z position before SWAF so we can report how much it moved.
     posZ_before = await focus_service.get_position(FocusServiceGetPositionRequest())

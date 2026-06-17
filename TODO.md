@@ -120,31 +120,29 @@ done deliberately as a single pass rather than folded into small edits.
       duplicated verbatim in every module. Resolve it once (e.g. in
       `zeiss_paths`) and import it.
 
-- [ ] **Reduce / vendor the `zen_api_utils` dependency.** The code still leans on
-      Zeiss example glue (`zen_api_utils`) rather than the raw `zen_api` stubs.
-      `zen_api` is pip-installable; `zen_api_utils` is NOT packaged, so vendoring
-      the few functions used is what would let SmartMic stop depending on the
-      `python_examples` folder. Three usage surfaces, by effort:
+- [x] **Reduce / vendor the `zen_api_utils` dependency.** ✅ DONE (2026-06-17).
+      All three usage surfaces are now vendored into `MS_zenapi_helpers.py`, so
+      the SmartMic library imports only `zen_api` and no longer needs the
+      un-packaged `zen_api_utils` example glue on `sys.path`:
 
-      * `zen_api_utils.objective` (LOCAL, easy) — 4 trivial pure-Python helpers
+      * `zen_api_utils.objective` — the 4 position-lookup helpers
         (`get_used_objective_positions`, `get_used_optovar_positions`,
-        `get_objective_by_position`, `get_optovar_by_position`), used only in
-        `MS_zenapi_objectivechanger.set_objective_set_optovar` and
-        `get_current_objective_and_optovar_names`. ~15 lines to inline, no deps.
-      * `zen_api_utils.experiment` (DEMO-ONLY, easy) — `show_swaf_info_LM` and
-        `save_experiment`, used only in `MS_zenapi_swaf.main()` (the CLI demo;
-        the production `run_software_autofocus` does not touch them).
-      * `zen_api_utils.misc` (PERVASIVE, the real one) — `initialize_zenapi`
-        (config.ini → SSL context → grpclib Channel + control-token metadata)
-        and `set_logging` (a loguru logger). Called in essentially EVERY public
-        function across all six modules. `initialize_zenapi` is ~30 lines of
-        stdlib `configparser`/`ssl`/`grpclib` and SmartMic's config.ini already
-        matches its `[api]` keys, so it vendors cleanly. For `set_logging`,
-        prefer standardizing on the existing stdlib
-        `MS_Helper_function.setup_run_logger` and dropping the loguru-based
-        helper (broader logging-consistency change). Best done together with the
-        "shared gRPC channel context manager" item above, since both wrap the
-        connection setup.
+        `get_objective_by_position`, `get_optovar_by_position`) are vendored
+        (duck-typed, no `zen_api` type imports) and imported by
+        `MS_zenapi_objectivechanger`.
+      * `zen_api_utils.experiment` (DEMO-ONLY) — `show_swaf_info_LM` is inlined
+        as `MS_zenapi_swaf._show_swaf_info`; `save_experiment` is replaced by a
+        direct `exp_service.save(...)` call in `MS_zenapi_swaf.main()`.
+      * `zen_api_utils.misc` — `initialize_zenapi` and `set_logging` are vendored
+        verbatim into `MS_zenapi_helpers` and imported by all six wrapper
+        modules. `verify_zen_api.py`, the README and `zeiss_paths.py` were
+        updated to drop the `zen_api_utils` references.
+
+      NOTE: `set_logging` was vendored AS-IS (loguru) to keep log formatting
+      identical and the change reviewable. Standardizing all logging onto the
+      stdlib `MS_Helper_function.setup_run_logger` (and dropping loguru) is the
+      separate "two logging systems coexist" item below — best folded into the
+      shared gRPC channel context manager pass.
 
 ---
 
@@ -204,9 +202,10 @@ newly logged and not yet applied.
       (`snap_path` can be `None`).
 
 - [ ] **Two logging systems coexist** — stdlib `setup_run_logger`
-      (`MS_Helper_function`, used by the PoC) vs loguru `set_logging`
-      (`zen_api_utils`, used by every `MS_zenapi_*` module). Consolidate onto
-      `setup_run_logger` (also tracked under the `zen_api_utils` item above).
+      (`MS_Helper_function`, used by the PoC) vs loguru `set_logging` (now
+      vendored in `MS_zenapi_helpers`, used by every `MS_zenapi_*` module).
+      Consolidate onto `setup_run_logger` and drop loguru (also noted under the
+      vendoring item above).
 
 - [ ] **Stale README projects table** — lists only `projects/smartmic_poc`, but
       `projects/` also holds `HD_Nuclei_from_slide` and `Marc_SM`.

@@ -3,11 +3,15 @@
 Smart-microscope automation built on top of the Zeiss ZEN gRPC API (ZEN-API).
 
 This repository contains **only the custom (`MS_*`) automation code**. It depends
-on two Zeiss-provided packages that ship with the ZEN-API examples and are **not**
+on one Zeiss-provided package that ships with the ZEN-API examples and is **not**
 vendored here:
 
 - `zen_api`        — auto-generated gRPC stubs
-- `zen_api_utils`  — Zeiss helper utilities
+
+The handful of `zen_api_utils` helpers SmartMic previously relied on
+(`initialize_zenapi`, `set_logging`, the objective/optovar position lookups, and
+the SWAF demo helpers) have been **vendored into `MS_zenapi_helpers.py`**, so the
+un-packaged `zen_api_utils` example glue is no longer required.
 
 ## Layout
 
@@ -27,6 +31,7 @@ projects/examples that consume it live under `projects/`, one folder each.
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run / status; run by name, path, or XML |
 | `MS_czexp_editor.py` | Read/modify ZEN `.czexp` files (position, z-stack, scan crop) |
 | `MS_Helper_function.py` | Logging, position loading, focus scoring |
+| `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init, logging, objective lookups) — replaces `zen_api_utils` |
 | `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env) |
 | `zeiss_paths.py` | Path bootstrap — see below |
 
@@ -48,9 +53,9 @@ themselves so they can still import the core modules above.
 
 ## How the Zeiss dependency is resolved
 
-`zeiss_paths.py` inserts the Zeiss `python_examples` folder onto `sys.path` at
-import time, so `zen_api` / `zen_api_utils` resolve without copying them here.
-Every module that needs them imports `zeiss_paths` first.
+`zeiss_paths.py` inserts the Zeiss `python_examples` folder (and the ZEN-API
+package `src`) onto `sys.path` at import time, so `zen_api` resolves without
+copying it here. Every module that needs it imports `zeiss_paths` first.
 
 Default location:
 

@@ -42,8 +42,8 @@ leftover ``.czi`` files in the default folder are cleaned up at the end.
 import asyncio
 from typing import Dict, Union, Optional
 from pathlib import Path
-import zeiss_paths  # noqa: F401  — extends sys.path so zen_api / zen_api_utils resolve
-from zen_api_utils.misc import set_logging, initialize_zenapi
+import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+from MS_zenapi_helpers import set_logging, initialize_zenapi
 from MS_Helper_function import DEFAULT_EXPERIMENT_OUTPUT_FOLDER  # single source for the default output folder
 from grpclib import GRPCError
 from grpclib.const import Status

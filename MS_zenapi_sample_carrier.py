@@ -28,8 +28,8 @@ get_sample_carrier_info  -- Read the full carrier description as a dict.
 
 import asyncio
 from pathlib import Path
-import zeiss_paths  # noqa: F401  — extends sys.path so zen_api / zen_api_utils resolve
-from zen_api_utils.misc import set_logging, initialize_zenapi
+import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+from MS_zenapi_helpers import set_logging, initialize_zenapi
 
 # Auto-generated gRPC stubs for the sample-carrier service.
 from zen_api.lm.hardware.v1 import (
