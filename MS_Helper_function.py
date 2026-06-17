@@ -15,7 +15,7 @@ import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Global variable for the default experiment output folder
 DEFAULT_EXPERIMENT_OUTPUT_FOLDER = Path("F:/UserData/mike/api")
@@ -27,7 +27,7 @@ DEFAULT_LOG_FOLDER = DEFAULT_EXPERIMENT_OUTPUT_FOLDER / "log"
 def setup_run_logger(
     log_folder: Path = None,
     name: str = "smartmic",
-) -> logging.Logger:
+) -> Tuple[logging.Logger, Path]:
     """
     Create a timestamped per-run log file and return a logger that emits to
     both the log file and stdout.
@@ -40,7 +40,8 @@ def setup_run_logger(
                     scripts in the same process to avoid handler collisions.
 
     Returns:
-        Configured logging.Logger instance.
+        Tuple ``(logger, log_file)`` — the configured ``logging.Logger`` and
+        the ``Path`` to the timestamped per-run log file it writes to.
     """
     if log_folder is None:
         log_folder = DEFAULT_LOG_FOLDER
@@ -83,9 +84,9 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
     """
     Load well-plate positions directly from a ZEN .czexp experiment file.
 
-    Uses the same XML parser as extract_positions.py and returns a flat list
-    of position dicts. Coordinates are converted from µm (as stored in the
-    .czexp) to metres. Only positions with ``is_used == True`` are returned.
+    Parses the experiment XML with the stdlib ``xml.etree`` parser and returns a
+    flat list of position dicts. Coordinates are converted from µm (as stored in
+    the .czexp) to metres. Only positions with ``is_used == True`` are returned.
 
     Args:
         file_path: Path to the .czexp file.
@@ -110,6 +111,9 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
         raise FileNotFoundError(f"czexp file not found: {file_path}")
 
     def _bool(text: str) -> bool:
+        # Default to True when the tag is missing/empty: a SingleTileRegion
+        # without an explicit IsUsedForAcquisition flag is treated as USED,
+        # matching ZEN's own behaviour (the flag is only written when False).
         return (text or "true").strip().lower() == "true"
 
     def _float(text: str, fallback: float = 0.0) -> float:

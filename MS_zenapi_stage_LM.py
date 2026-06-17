@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# File        : zenapi_stage_LM.py
+# Based on    : zenapi_stage_LM.py
 # Author      : SRh
 # Institution : Carl Zeiss Microscopy GmbH
 #
@@ -38,18 +38,9 @@ move_stage_to_new_xy_position      -- Lower Z, move XY, then wait for settling
 import asyncio
 from pathlib import Path
 import numpy as np
-import sys
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api / zen_api_utils resolve
 from zen_api_utils.misc import set_logging, initialize_zenapi
-import time
 import MS_zenapi_focus
-
-# Custom stage helper utilities (wraps the raw gRPC position structs).
-from zen_api_utils.stage import (
-    get_stageXY_position_simple,
-    move_to_stageXY_position_simple,
-    StageXYPosition,
-)
 
 # Auto-generated gRPC stubs for the XY stage service.
 from zen_api.lm.hardware.v2 import (
@@ -128,9 +119,7 @@ async def move_stage_to_new_xy_position(x: float, y: float):
     )
 
     # Perform the XY move (coordinates in metres).
-    new_posx = x
-    new_posy = y
-    await simple_stage_service.move_to(StageServiceMoveToRequest(x=new_posx, y=new_posy))
+    await simple_stage_service.move_to(StageServiceMoveToRequest(x=x, y=y))
 
     new_posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
     logger.info(
@@ -143,37 +132,13 @@ async def move_stage_to_new_xy_position(x: float, y: float):
 
     # Allow the stage to settle mechanically before the next operation.
     logger.info("Waiting for 3 seconds...")
-    time.sleep(3)
-
-    # Alternative move pattern using the zen_api_utils helper wrappers.
-    # Kept here as a usage reference; not executed during normal operation.
-    '''
-    new_posx = 103500 * 1e-6
-    new_posy = 71500 * 1e-6
-    await move_to_stageXY_position_simple(
-        simple_stage_service, stage_positionXY=StageXYPosition(new_posx, new_posy)
-    )
-    new_posXY = await get_stageXY_position_simple(simple_stage_service)
-    logger.info(
-        f"Stage XY Position 2: "
-        f"{np.round(new_posXY.x * 1e6, 2)} - {np.round(new_posXY.y * 1e6, 2)} [micron]"
-    )
-
-    logger.info("Waiting for 3 seconds...")
-    time.sleep(3)
-
-    # Move back to the initial position.
-    await simple_stage_service.move_to(StageServiceMoveToRequest(x=posXY.x, y=posXY.y))
-    posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-    logger.info(
-        f"Stage XY Position 1: "
-        f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
-    )
-    '''
+    await asyncio.sleep(3)
 
     channel.close()
 
 
 if __name__ == "__main__":
     logger = set_logging()
-    asyncio.run(main(sys.argv))
+    # Read-only demo: report the current XY stage position (does NOT move).
+    xy = asyncio.run(get_current_xy_stage_coordinates())
+    print(f"Current stage XY [m]: {xy}")

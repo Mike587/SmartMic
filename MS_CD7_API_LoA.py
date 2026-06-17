@@ -10,6 +10,7 @@
 #################################################################
 
 import asyncio
+import time
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, Union
 
@@ -42,8 +43,9 @@ X_STAGE_MAX = 0.12      # meters
 Y_STAGE_MIN = 0.0       # meters
 Y_STAGE_MAX = 0.09      # meters
 
-# Global variable for the default experiment output folder
-DEFAULT_EXPERIMENT_OUTPUT_FOLDER = Path("F:/UserData/mike/api")
+# Default experiment output folder — single-sourced from MS_Helper_function
+# so the literal path lives in exactly one place.
+DEFAULT_EXPERIMENT_OUTPUT_FOLDER = MS_Helper_function.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
 
 # NOTE: All functions in this module wrap async hardware API calls in synchronous
 # helpers. Each call creates its own event loop — do not mix with top-level async code.
@@ -426,7 +428,6 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
                 await MS_zenapi_objectivechanger.set_objective_set_optovar(objective_nr, optovar_nr)
                 
                 # Wait for the hardware to complete the change
-                import time
                 start_time = time.time()
                 
                 while time.time() - start_time < adjusted_timeout:

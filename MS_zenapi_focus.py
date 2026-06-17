@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# File        : zenapi_definite_focus_find.py
+# Based on    : zenapi_definite_focus_find.py
 # Author      : SRh
 # Institution : Carl Zeiss Microscopy GmbH
 #
@@ -44,7 +44,6 @@ and avoids shared-state issues when functions are called from a pipeline.
 
 import asyncio
 from pathlib import Path
-import sys
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api / zen_api_utils resolve
 from zen_api_utils.misc import set_logging, initialize_zenapi
@@ -71,7 +70,7 @@ config_path = script_dir / "config.ini"
 
 
 async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6):
-    """Run Definite Focus FindSurface with exponential-backoff retry logic.
+    """Run Definite Focus FindSurface with linear-backoff retry logic.
 
     Moves the Z-drive to *start_z_m* first so that DF always starts from a
     known position, which makes the surface search more reliable and faster.
@@ -156,7 +155,7 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
             )
 
             if attempt < max_retries - 1:
-                # Exponential backoff: wait 2 s, 4 s, 6 s … between retries.
+                # Linear backoff: wait 2 s, 4 s, 6 s … between retries.
                 wait_time = 2.0 * (attempt + 1)
                 logger.info(f"Waiting {wait_time:.1f} seconds before retry...")
                 await asyncio.sleep(wait_time)
@@ -274,7 +273,6 @@ async def move_focus_to_new_z_position(z: float):
     logger = set_logging()
 
     channel, metadata = initialize_zenapi(config_path)
-    definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
     focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
     try:
@@ -338,7 +336,6 @@ async def get_current_z_focus_position() -> float:
     logger = set_logging()
 
     channel, metadata = initialize_zenapi(config_path)
-    definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
     focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
     zpos = await focus_service.get_position(FocusServiceGetPositionRequest())

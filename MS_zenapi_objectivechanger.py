@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# File        : zenapi_objectivechanger.py
+# Based on    : zenapi_objectivechanger.py
 # Author      : SRh
 # Institution : Carl Zeiss Microscopy GmbH
 #
@@ -119,10 +119,9 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
     logger.info(
         f"Current Objective: {current_objective.name} Position: {current_objective.position}"
     )
-    obj_initial_position = current_objective.position
 
     # obj_new_position = 3  # example: hard-code for quick testing
-    out = await objchanger_service.move_to(
+    await objchanger_service.move_to(
         ObjectiveChangerServiceMoveToRequest(position_index=obj_new_position)
     )
     current_objective = get_objective_by_position(objectives, obj_new_position)
@@ -137,10 +136,9 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
     logger.info(
         f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
     )
-    optovar_initial_position = current_optovar.position
 
     # opt_new_position = 1  # example: hard-code for quick testing
-    out = await optovar_service.move_to(
+    await optovar_service.move_to(
         OptovarServiceMoveToRequest(position_index=opt_new_position)
     )
     current_optovar = get_optovar_by_position(optovars, opt_new_position)

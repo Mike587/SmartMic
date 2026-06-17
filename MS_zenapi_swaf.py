@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# File        : zenapi_swaf.py
+# Based on    : zenapi_swaf.py
 # Author      : SRh
 # Institution : Carl Zeiss Microscopy GmbH
 #
@@ -65,7 +65,7 @@ from zen_api.lm.acquisition.v1 import (
 
 # Auto-generated gRPC stubs for reading the Z-drive position after SWAF.
 from zen_api.lm.hardware.v2 import (
-    StageServiceGetPositionRequest,
+    FocusServiceGetPositionRequest,
     FocusServiceStub,
 )
 
@@ -175,6 +175,10 @@ async def main(args):
     """
     from zen_api_utils.experiment import show_swaf_info_LM, save_experiment
 
+    # Set up the logger here so main() is self-contained (works even if it is
+    # imported and called directly, not only via the __main__ guard below).
+    logger = set_logging()
+
     channel, metadata = initialize_zenapi(config_path)
     exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
     swaf_service = ExperimentSwAutofocusServiceStub(channel=channel, metadata=metadata)
@@ -228,7 +232,7 @@ async def main(args):
     show_swaf_info_LM(swaf_info)
 
     # Record the Z position before SWAF so we can report how much it moved.
-    posZ_before = await focus_service.get_position(StageServiceGetPositionRequest())
+    posZ_before = await focus_service.get_position(FocusServiceGetPositionRequest())
     logger.info(f"Z-Drive Position before SWAF [micron]: {posZ_before.value * 1e6:.3f}")
 
     # Run SWAF on the modified clone and handle a possible timeout/gRPC error.
