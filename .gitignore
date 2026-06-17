@@ -1,6 +1,12 @@
 # Exploratory / test / scratch scripts — kept locally, never pushed.
 sandbox/
 
+# Personal notes — kept locally, never pushed.
+mike-notes/
+
+# Local generated code map — regenerate as needed, not shared.
+overview.md
+
 # Local-only projects — kept locally, never pushed.
 projects/HD_Nuclei_from_slide/
 projects/Marc_SM/
