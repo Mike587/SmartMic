@@ -51,6 +51,10 @@ from zen_api.lm.hardware.v2 import (
 # config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
 from zeiss_paths import CONFIG_PATH as config_path
 
+# Seconds to wait after an XY move so the stage settles mechanically before the
+# caller proceeds (e.g. to autofocus). 1 s is enough on this system.
+STAGE_SETTLE_SECONDS = 1.0
+
 
 async def get_current_xy_stage_coordinates():
     """Return the current XY stage position in metres.
@@ -91,20 +95,20 @@ async def move_stage_to_new_xy_position(x: float, y: float):
         None
 
     Notes:
-        After the move the function waits 3 seconds to allow the stage
-        to mechanically settle before the caller proceeds.
-        The previous Z position is intentionally NOT restored here;
-        callers must re-focus (e.g. via Definite Focus) after moving.
+        After the move the function waits ``STAGE_SETTLE_SECONDS`` to allow the
+        stage to mechanically settle before the caller proceeds.
+        The Z-drive is left at 0 m on return — it is NOT moved back to its
+        pre-move position. Callers must establish focus at the new position
+        (e.g. via Definite Focus) before acquiring.
     """
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
         simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-        # Lower the objective to Z=0 before moving laterally to prevent collisions.
-        # TODO: restore original Z position after the move once collision-safe
-        # Z management is fully handled by the pipeline.
-        # z = asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
+        # Lower the objective to Z=0 before moving laterally to prevent
+        # collisions. The Z-drive is deliberately left at 0 afterwards; the
+        # caller re-focuses (e.g. Definite Focus) at the new position.
         new_z = 0
         await MS_zenapi_focus.move_focus_to_new_z_position(new_z)
 
@@ -123,12 +127,9 @@ async def move_stage_to_new_xy_position(x: float, y: float):
             f"{np.round(new_posXY.x * 1e6, 2)} - {np.round(new_posXY.y * 1e6, 2)} [micron]"
         )
 
-        # Restore Z to pre-move position (disabled; kept as reference).
-        # asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(z))
-
         # Allow the stage to settle mechanically before the next operation.
-        logger.info("Waiting for 3 seconds...")
-        await asyncio.sleep(3)
+        logger.info(f"Waiting for {STAGE_SETTLE_SECONDS} seconds...")
+        await asyncio.sleep(STAGE_SETTLE_SECONDS)
 
 
 if __name__ == "__main__":
