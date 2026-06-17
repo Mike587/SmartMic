@@ -102,19 +102,23 @@ These were noted during the review but not part of the original list. They are
 larger refactors that touch all `MS_zenapi_*` modules at once, so they should be
 done deliberately as a single pass rather than folded into small edits.
 
-- [ ] **Shared gRPC channel context manager.** Every async function repeats the
-      same boilerplate: `set_logging()` → `initialize_zenapi(config_path)` →
-      build stub(s) → … → `channel.close()`. Extract an
-      `async with open_zen_channel() as (channel, metadata): ...` helper and use
-      it across `focus`, `stage_LM`, `objectivechanger`, `swaf`,
-      `sample_carrier`, and `experiment_methods`.
+- [x] **Shared gRPC channel context manager.** ✅ DONE (2026-06-17).
+      `MS_zenapi_helpers.open_zen_channel(config_file)` is an
+      `@asynccontextmanager` that wraps `initialize_zenapi` and closes the
+      channel in its `finally`. Every async function across `focus`, `stage_LM`,
+      `objectivechanger`, `swaf`, `sample_carrier`, and `experiment_methods` now
+      uses `async with open_zen_channel(config_path) as (channel, metadata): ...`
+      — `initialize_zenapi(` and `channel.close()` no longer appear in any
+      wrapper module (only inside the helper). Verified: imports clean, and a
+      unit test confirms the channel closes on both the normal-exit and
+      exception paths.
 
-- [ ] **Fix inconsistent channel cleanup (folds into the item above).** Some
-      functions (`sample_carrier`, the newer `objectivechanger` ones) use
-      `try/finally` so the channel closes on error; others (`focus`, `stage_LM`,
-      `experiment_methods`) call `channel.close()` only on the happy path and
-      leak the channel if a gRPC call raises. The context manager fixes this
-      uniformly (close in its `__aexit__`).
+- [x] **Fix inconsistent channel cleanup (folds into the item above).** ✅ DONE.
+      The functions that previously called `channel.close()` only on the happy
+      path (`focus`, `stage_LM`, `experiment_methods`) — and so leaked the
+      channel when a gRPC call raised — now close uniformly via the context
+      manager's `finally`. The `try/finally` versions (`sample_carrier`, the
+      newer `objectivechanger` ones) were converted to the same helper.
 
 - [ ] **Centralize `config_path`.** `config_path = script_dir / "config.ini"` is
       duplicated verbatim in every module. Resolve it once (e.g. in
@@ -186,11 +190,10 @@ newly logged and not yet applied.
 
 ### Open (not yet fixed)
 
-- [ ] **Channel leaks on error paths.** `MS_zenapi_focus.move_focus_to_new_z_position`
-      re-raises without `channel.close()` (~lines 316–322); `check_experiment_api`
-      and the `run_experiment_*` helpers close only on the happy path. Folds into
-      the deferred `open_zen_channel()` context-manager item above — the
-      highest-value remaining reliability fix.
+- [x] **Channel leaks on error paths.** ✅ DONE (2026-06-17) — fixed by the
+      `open_zen_channel()` context-manager pass (see the Structural section
+      above). `move_focus_to_new_z_position`, `check_experiment_api` and the
+      `run_experiment_*` functions now close the channel on every path.
 
 - [ ] **Imported experiment never deleted** in `check_experiment_api` — the clone
       is deleted, but the experiment imported from XML (~line 403) is left loaded

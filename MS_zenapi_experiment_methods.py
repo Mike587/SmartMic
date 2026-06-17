@@ -43,7 +43,7 @@ import asyncio
 from typing import Dict, Union, Optional
 from pathlib import Path
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import set_logging, initialize_zenapi
+from MS_zenapi_helpers import set_logging, open_zen_channel
 from MS_Helper_function import DEFAULT_EXPERIMENT_OUTPUT_FOLDER  # single source for the default output folder
 from grpclib import GRPCError
 from grpclib.const import Status
@@ -242,33 +242,31 @@ async def get_running_experiment_status() -> Optional[Dict]:
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    svc = ExperimentServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        svc = ExperimentServiceStub(channel=channel, metadata=metadata)
 
-    try:
-        resp = await svc.get_status(ExperimentServiceGetStatusRequest())
-    except GRPCError as e:
-        if e.status == Status.FAILED_PRECONDITION:
-            logger.info("Experiment status: no experiment running (idle).")
-            return None
-        raise
-    finally:
-        channel.close()
+        try:
+            resp = await svc.get_status(ExperimentServiceGetStatusRequest())
+        except GRPCError as e:
+            if e.status == Status.FAILED_PRECONDITION:
+                logger.info("Experiment status: no experiment running (idle).")
+                return None
+            raise
 
-    s = resp.status
-    logger.info(
-        f"Experiment status: experiment_running={s.is_experiment_running} "
-        f"acquisition_running={s.is_acquisition_running} "
-        f"images={s.images_acquired_index}/{s.images_count}"
-    )
-    return {
-        "is_experiment_running": s.is_experiment_running,
-        "is_acquisition_running": s.is_acquisition_running,
-        "images_acquired_index": s.images_acquired_index,
-        "images_count": s.images_count,
-        "scenes_index": s.scenes_index,
-        "scenes_count": s.scenes_count,
-    }
+        s = resp.status
+        logger.info(
+            f"Experiment status: experiment_running={s.is_experiment_running} "
+            f"acquisition_running={s.is_acquisition_running} "
+            f"images={s.images_acquired_index}/{s.images_count}"
+        )
+        return {
+            "is_experiment_running": s.is_experiment_running,
+            "is_acquisition_running": s.is_acquisition_running,
+            "images_acquired_index": s.images_acquired_index,
+            "images_count": s.images_count,
+            "scenes_index": s.scenes_index,
+            "scenes_count": s.scenes_count,
+        }
 
 
 async def check_experiment_api(
@@ -331,172 +329,170 @@ async def check_experiment_api(
     # Resolve config.ini relative to this script (not the CWD) when not given.
     if configfile is None:
         configfile = config_path
-    channel, metadata = initialize_zenapi(configfile)
+    async with open_zen_channel(configfile) as (channel, metadata):
+        logger.info("Create gRPC Channel and ExperimentService ...")
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
 
-    logger.info("Create gRPC Channel and ExperimentService ...")
-    exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+        # Query where ZEN saves images by default, and resolve the target folder.
+        default_image_folder = await _get_default_image_folder(exp_service, logger)
+        image_folder = _resolve_image_folder(custom_image_folder, logger)
 
-    # Query where ZEN saves images by default, and resolve the target folder.
-    default_image_folder = await _get_default_image_folder(exp_service, logger)
-    image_folder = _resolve_image_folder(custom_image_folder, logger)
+        # Build output file base names.
+        if custom_filename is not None:
+            custom_base = custom_filename
+            if custom_base.endswith('.czi'):
+                custom_base = custom_base[:-4]
+            czi_name = custom_base
+            snap_output_name = f"{custom_base}_snap"
+        else:
+            # UUID suffix ensures uniqueness across concurrent pipeline runs.
+            unique_id = str(uuid.uuid4())[:8]
+            czi_name = f"zenapi_myimage_{unique_id}"  # without .czi extension
+            snap_output_name = f"snap_image_{unique_id}"
 
-    # Build output file base names.
-    if custom_filename is not None:
-        custom_base = custom_filename
-        if custom_base.endswith('.czi'):
-            custom_base = custom_base[:-4]
-        czi_name = custom_base
-        snap_output_name = f"{custom_base}_snap"
-    else:
-        # UUID suffix ensures uniqueness across concurrent pipeline runs.
-        unique_id = str(uuid.uuid4())[:8]
-        czi_name = f"zenapi_myimage_{unique_id}"  # without .czi extension
-        snap_output_name = f"snap_image_{unique_id}"
-
-    # List available experiments for reference and error reporting.
-    available_experiments = await exp_service.get_available_experiments(
-        ExperimentServiceGetAvailableExperimentsRequest()
-    )
-    logger.info(
-        f"Number of available Experiment File(s) inside ZEN folder: "
-        f"{len(available_experiments.experiments)}"
-    )
-
-    # for exp in available_experiments.experiments:
-    #    logger.info(exp.name + ".czexp")
-
-    logger.info("Loading Experiment ...")
-    try:
-        my_exp = await exp_service.load(
-            ExperimentServiceLoadRequest(experiment_name=experiment_name)
+        # List available experiments for reference and error reporting.
+        available_experiments = await exp_service.get_available_experiments(
+            ExperimentServiceGetAvailableExperimentsRequest()
         )
         logger.info(
-            "ExperimentName:" + my_experiment + " Reference Id: " + my_exp.experiment_id
+            f"Number of available Experiment File(s) inside ZEN folder: "
+            f"{len(available_experiments.experiments)}"
         )
-    except Exception as e:
-        logger.error(f"Failed to load experiment '{experiment_name}': {e}")
-        logger.info("Available experiments:")
-        for exp in available_experiments.experiments:
-            logger.info(f"  - {exp.name}")
-        raise
 
-    # --- Clone / save / export / import / delete round-trip ---
+        # for exp in available_experiments.experiments:
+        #    logger.info(exp.name + ".czexp")
 
-    logger.info("Cloning Experiment ...")
-    my_exp_cloned = await exp_service.clone(
-        ExperimentServiceCloneRequest(experiment_id=my_exp.experiment_id)
-    )
+        logger.info("Loading Experiment ...")
+        try:
+            my_exp = await exp_service.load(
+                ExperimentServiceLoadRequest(experiment_name=experiment_name)
+            )
+            logger.info(
+                "ExperimentName:" + my_experiment + " Reference Id: " + my_exp.experiment_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to load experiment '{experiment_name}': {e}")
+            logger.info("Available experiments:")
+            for exp in available_experiments.experiments:
+                logger.info(f"  - {exp.name}")
+            raise
 
-    # Remove any stale version of the test clone before saving.
-    if Path(exp_folder / (exp_cloned_name + ".czexp")).exists():
-        Path(exp_folder / (exp_cloned_name + ".czexp")).unlink()
-        logger.info("Overwrite experiment:" + exp_cloned_name + ".czexp")
+        # --- Clone / save / export / import / delete round-trip ---
 
-    logger.info("Saving Experiment ...")
-    await exp_service.save(
-        ExperimentServiceSaveRequest(
-            experiment_id=my_exp_cloned.experiment_id,
-            experiment_name=exp_cloned_name,
+        logger.info("Cloning Experiment ...")
+        my_exp_cloned = await exp_service.clone(
+            ExperimentServiceCloneRequest(experiment_id=my_exp.experiment_id)
         )
-    )
 
-    logger.info("Exporting Experiment as XML String ...")
-    exp_xml = await exp_service.export(
-        ExperimentServiceExportRequest(experiment_id=my_exp_cloned.experiment_id)
-    )
-    # Log a short excerpt so the XML structure is visible in the run log.
-    print(exp_xml.xml[:300])
+        # Remove any stale version of the test clone before saving.
+        if Path(exp_folder / (exp_cloned_name + ".czexp")).exists():
+            Path(exp_folder / (exp_cloned_name + ".czexp")).unlink()
+            logger.info("Overwrite experiment:" + exp_cloned_name + ".czexp")
 
-    logger.info("Importing Experiment from XML String ...")
-    imported_exp = await exp_service.import_(ExperimentServiceImportRequest(exp_xml.xml))
-    logger.info("Reference Id (imported): " + imported_exp.experiment_id)
+        logger.info("Saving Experiment ...")
+        await exp_service.save(
+            ExperimentServiceSaveRequest(
+                experiment_id=my_exp_cloned.experiment_id,
+                experiment_name=exp_cloned_name,
+            )
+        )
 
-    logger.info("Delete cloned Experiment ...")
-    await exp_service.delete(ExperimentServiceDeleteRequest(experiment_name=exp_cloned_name))
+        logger.info("Exporting Experiment as XML String ...")
+        exp_xml = await exp_service.export(
+            ExperimentServiceExportRequest(experiment_id=my_exp_cloned.experiment_id)
+        )
+        # Log a short excerpt so the XML structure is visible in the run log.
+        print(exp_xml.xml[:300])
 
-    if not Path(exp_folder / (exp_cloned_name + ".czexp")).exists():
-        logger.info("Deleted experiment:" + exp_cloned_name + ".czexp")
+        logger.info("Importing Experiment from XML String ...")
+        imported_exp = await exp_service.import_(ExperimentServiceImportRequest(exp_xml.xml))
+        logger.info("Reference Id (imported): " + imported_exp.experiment_id)
 
-    # --- Optional snap / live / continuous ---
+        logger.info("Delete cloned Experiment ...")
+        await exp_service.delete(ExperimentServiceDeleteRequest(experiment_name=exp_cloned_name))
 
-    if do_snap_and_live:
-        logger.info("Start SNAP Experiment ...")
+        if not Path(exp_folder / (exp_cloned_name + ".czexp")).exists():
+            logger.info("Deleted experiment:" + exp_cloned_name + ".czexp")
 
-        temp_files_before = list(default_image_folder.glob("*.czi"))
-        if temp_files_before:
+        # --- Optional snap / live / continuous ---
+
+        if do_snap_and_live:
+            logger.info("Start SNAP Experiment ...")
+
+            temp_files_before = list(default_image_folder.glob("*.czi"))
+            if temp_files_before:
+                logger.warning(
+                    f"Default folder {default_image_folder} contains "
+                    f"{len(temp_files_before)} CZI files before snap. "
+                    "They will be cleaned up later."
+                )
+
+            # output_name must be a plain filename without extension.  ZEN writes
+            # the file to default_image_folder; we move it afterwards.
+            snap = await exp_service.run_snap(
+                ExperimentServiceRunSnapRequest(
+                    experiment_id=my_exp.experiment_id,
+                    output_name=snap_output_name,
+                )
+            )
+
+            snap_default_path = default_image_folder / (snap.output_name + ".czi")
+            print("snap default path:")
+            print(snap_default_path)
+
+            # Move the snap to the custom folder if the paths differ.
+            snap_custom_path = image_folder / (snap.output_name + ".czi")
+            if snap_default_path != snap_custom_path and snap_default_path.exists():
+                snap_default_path.rename(snap_custom_path)
+                logger.info(f"Moved snap from {snap_default_path} to {snap_custom_path}")
+                results["snap_path"] = snap_custom_path
+            else:
+                results["snap_path"] = snap_default_path
+
+            logger.info("Final Snap Location: " + str(results["snap_path"]))
+
+            logger.info("Starting Live ...")
+            await exp_service.start_live(
+                ExperimentServiceStartLiveRequest(
+                    experiment_id=my_exp.experiment_id, track_index=0
+                )
+            )
+
+            logger.info("Stopping Live ...")
+            await exp_service.stop(ExperimentServiceStopRequest(experiment_id=my_exp.experiment_id))
+            # await asyncio.sleep(waittime)  # may be needed once ZEN gRPC handles stop latency
+
+            logger.info("Starting Continuous ...")
+            await exp_service.start_continuous(
+                ExperimentServiceStartContinuousRequest(experiment_id=my_exp.experiment_id)
+            )
+
+            logger.info("Stopping Continuous ...")
+            await exp_service.stop(ExperimentServiceStopRequest(experiment_id=my_exp.experiment_id))
+            # TODO: remove this sleep once ZEN gRPC handles stop latency internally.
+            await asyncio.sleep(waittime)
+
+        else:
+            logger.info("Skipping snap, live, and continuous acquisition steps.")
+            results["snap_path"] = None
+
+        # --- Full experiment run ---
+
+        temp_files_before_exp = list(default_image_folder.glob("*.czi"))
+        if temp_files_before_exp:
             logger.warning(
                 f"Default folder {default_image_folder} contains "
-                f"{len(temp_files_before)} CZI files before snap. "
-                "They will be cleaned up later."
+                f"{len(temp_files_before_exp)} CZI files before experiment. "
+                "They will be cleaned up after moving."
             )
 
-        # output_name must be a plain filename without extension.  ZEN writes
-        # the file to default_image_folder; we move it afterwards.
-        snap = await exp_service.run_snap(
-            ExperimentServiceRunSnapRequest(
-                experiment_id=my_exp.experiment_id,
-                output_name=snap_output_name,
-            )
+        results["exp_result_path"] = await _run_experiment_and_collect(
+            exp_service, my_exp.experiment_id, default_image_folder, image_folder,
+            czi_name, logger,
         )
 
-        snap_default_path = default_image_folder / (snap.output_name + ".czi")
-        print("snap default path:")
-        print(snap_default_path)
-
-        # Move the snap to the custom folder if the paths differ.
-        snap_custom_path = image_folder / (snap.output_name + ".czi")
-        if snap_default_path != snap_custom_path and snap_default_path.exists():
-            snap_default_path.rename(snap_custom_path)
-            logger.info(f"Moved snap from {snap_default_path} to {snap_custom_path}")
-            results["snap_path"] = snap_custom_path
-        else:
-            results["snap_path"] = snap_default_path
-
-        logger.info("Final Snap Location: " + str(results["snap_path"]))
-
-        logger.info("Starting Live ...")
-        await exp_service.start_live(
-            ExperimentServiceStartLiveRequest(
-                experiment_id=my_exp.experiment_id, track_index=0
-            )
-        )
-
-        logger.info("Stopping Live ...")
-        await exp_service.stop(ExperimentServiceStopRequest(experiment_id=my_exp.experiment_id))
-        # await asyncio.sleep(waittime)  # may be needed once ZEN gRPC handles stop latency
-
-        logger.info("Starting Continuous ...")
-        await exp_service.start_continuous(
-            ExperimentServiceStartContinuousRequest(experiment_id=my_exp.experiment_id)
-        )
-
-        logger.info("Stopping Continuous ...")
-        await exp_service.stop(ExperimentServiceStopRequest(experiment_id=my_exp.experiment_id))
-        # TODO: remove this sleep once ZEN gRPC handles stop latency internally.
-        await asyncio.sleep(waittime)
-
-    else:
-        logger.info("Skipping snap, live, and continuous acquisition steps.")
-        results["snap_path"] = None
-
-    # --- Full experiment run ---
-
-    temp_files_before_exp = list(default_image_folder.glob("*.czi"))
-    if temp_files_before_exp:
-        logger.warning(
-            f"Default folder {default_image_folder} contains "
-            f"{len(temp_files_before_exp)} CZI files before experiment. "
-            "They will be cleaned up after moving."
-        )
-
-    results["exp_result_path"] = await _run_experiment_and_collect(
-        exp_service, my_exp.experiment_id, default_image_folder, image_folder,
-        czi_name, logger,
-    )
-
-    channel.close()
-    results["experiment_id"] = my_exp.experiment_id
-    return results
+        results["experiment_id"] = my_exp.experiment_id
+        return results
 
 
 def _normalize_experiment_xml(xml: str) -> str:
@@ -553,28 +549,27 @@ async def run_experiment_from_xml(
     # Resolve config.ini relative to this script (not the CWD) when not given.
     if configfile is None:
         configfile = config_path
-    channel, metadata = initialize_zenapi(configfile)
-    logger.info("Create gRPC Channel and ExperimentService ...")
-    exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(configfile) as (channel, metadata):
+        logger.info("Create gRPC Channel and ExperimentService ...")
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
 
-    default_image_folder = await _get_default_image_folder(exp_service, logger)
-    image_folder = _resolve_image_folder(custom_image_folder, logger)
-    czi_name = _make_czi_basename(custom_filename)
+        default_image_folder = await _get_default_image_folder(exp_service, logger)
+        image_folder = _resolve_image_folder(custom_image_folder, logger)
+        czi_name = _make_czi_basename(custom_filename)
 
-    # Import the experiment from the XML string.
-    logger.info("Importing Experiment from XML string ...")
-    imported_exp = await exp_service.import_(ExperimentServiceImportRequest(xml))
-    logger.info("Reference Id (imported): " + imported_exp.experiment_id)
+        # Import the experiment from the XML string.
+        logger.info("Importing Experiment from XML string ...")
+        imported_exp = await exp_service.import_(ExperimentServiceImportRequest(xml))
+        logger.info("Reference Id (imported): " + imported_exp.experiment_id)
 
-    results["exp_result_path"] = await _run_experiment_and_collect(
-        exp_service, imported_exp.experiment_id, default_image_folder, image_folder,
-        czi_name, logger,
-    )
+        results["exp_result_path"] = await _run_experiment_and_collect(
+            exp_service, imported_exp.experiment_id, default_image_folder, image_folder,
+            czi_name, logger,
+        )
 
-    channel.close()
-    results["snap_path"] = None
-    results["experiment_id"] = imported_exp.experiment_id
-    return results
+        results["snap_path"] = None
+        results["experiment_id"] = imported_exp.experiment_id
+        return results
 
 
 async def run_experiment_from_path(
@@ -621,31 +616,30 @@ async def run_experiment_from_path(
     # Resolve config.ini relative to this script (not the CWD) when not given.
     if configfile is None:
         configfile = config_path
-    channel, metadata = initialize_zenapi(configfile)
-    logger.info("Create gRPC Channel and ExperimentService ...")
-    exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(configfile) as (channel, metadata):
+        logger.info("Create gRPC Channel and ExperimentService ...")
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
 
-    default_image_folder = await _get_default_image_folder(exp_service, logger)
-    image_folder = _resolve_image_folder(custom_image_folder, logger)
-    czi_name = _make_czi_basename(custom_filename)
+        default_image_folder = await _get_default_image_folder(exp_service, logger)
+        image_folder = _resolve_image_folder(custom_image_folder, logger)
+        czi_name = _make_czi_basename(custom_filename)
 
-    # Load BY PATH (without the .czexp extension) → runnable experiment.
-    load_arg = str(czexp_path.with_suffix(""))
-    logger.info("Loading Experiment from path: " + load_arg)
-    loaded_exp = await exp_service.load(
-        ExperimentServiceLoadRequest(experiment_name=load_arg)
-    )
-    logger.info("Reference Id (loaded): " + loaded_exp.experiment_id)
+        # Load BY PATH (without the .czexp extension) → runnable experiment.
+        load_arg = str(czexp_path.with_suffix(""))
+        logger.info("Loading Experiment from path: " + load_arg)
+        loaded_exp = await exp_service.load(
+            ExperimentServiceLoadRequest(experiment_name=load_arg)
+        )
+        logger.info("Reference Id (loaded): " + loaded_exp.experiment_id)
 
-    results["exp_result_path"] = await _run_experiment_and_collect(
-        exp_service, loaded_exp.experiment_id, default_image_folder, image_folder,
-        czi_name, logger,
-    )
+        results["exp_result_path"] = await _run_experiment_and_collect(
+            exp_service, loaded_exp.experiment_id, default_image_folder, image_folder,
+            czi_name, logger,
+        )
 
-    channel.close()
-    results["snap_path"] = None
-    results["experiment_id"] = loaded_exp.experiment_id
-    return results
+        results["snap_path"] = None
+        results["experiment_id"] = loaded_exp.experiment_id
+        return results
 
 
 if __name__ == "__main__":

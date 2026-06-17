@@ -29,7 +29,7 @@ get_sample_carrier_info  -- Read the full carrier description as a dict.
 import asyncio
 from pathlib import Path
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import set_logging, initialize_zenapi
+from MS_zenapi_helpers import set_logging, open_zen_channel
 
 # Auto-generated gRPC stubs for the sample-carrier service.
 from zen_api.lm.hardware.v1 import (
@@ -66,13 +66,9 @@ async def get_sample_carrier_info() -> dict:
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
-
-    try:
+    async with open_zen_channel(config_path) as (channel, metadata):
+        service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
         info = await service.get_info(SampleCarrierServiceGetInfoRequest())
-    finally:
-        channel.close()
 
     logger.info(
         f"Sample carrier: '{info.name}'  "

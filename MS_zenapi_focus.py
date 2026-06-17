@@ -46,7 +46,7 @@ import asyncio
 from pathlib import Path
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import set_logging, initialize_zenapi
+from MS_zenapi_helpers import set_logging, open_zen_channel
 
 # Auto-generated gRPC stubs for the Z-drive (FocusService)
 from zen_api.lm.hardware.v2 import (
@@ -103,109 +103,108 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
-    focus_service = FocusServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
+        focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-    # Move Z-drive to the requested starting position before the DF search.
-    await focus_service.move_to(FocusServiceMoveToRequest(value=start_z_m))
-    zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-    logger.info(f"Initial Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
+        # Move Z-drive to the requested starting position before the DF search.
+        await focus_service.move_to(FocusServiceMoveToRequest(value=start_z_m))
+        zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+        logger.info(f"Initial Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
 
-    success = False
-    last_exception = None
-    attempts_used = 0
+        success = False
+        last_exception = None
+        attempts_used = 0
 
-    for attempt in range(max_retries):
-        attempts_used = attempt + 1
+        for attempt in range(max_retries):
+            attempts_used = attempt + 1
 
-        if attempt > 0:
-            logger.warning(f"*** DF FindSurface RETRY {attempt}/{max_retries - 1} ***")
+            if attempt > 0:
+                logger.warning(f"*** DF FindSurface RETRY {attempt}/{max_retries - 1} ***")
 
-        try:
-            # Run DF FindSurface; the returned zposition is in metres.
-            zpos_find_surface = await definite_focus_service.find_surface(
-                DefiniteFocusServiceFindSurfaceRequest()
-            )
-            fs_z_um = zpos_find_surface.zposition * 1e6
-            logger.info(f"Z-Position (FindSurface): {fs_z_um:.3f} [micron]")
-
-            # Sanity-check: DF returning a negative Z means it locked onto its
-            # own starting position rather than the actual sample surface.
-            if fs_z_um < 0:
-                raise RuntimeError(
-                    f"FindSurface returned z={fs_z_um:.1f} µm — "
-                    "likely failed to locate surface (expected positive Z)."
-                )
-
-            zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-            logger.info(f"Z-Position (ZDrive) after FS: {zpos.value * 1e6:.3f} [micron]")
-
-            # Persist the focus position so recall_focus can use it later.
-            await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
-            logger.info(f"Focus Position {zpos.value * 1e6:.3f} [micron] stored.")
-
-            success = True
-            break
-
-        except Exception as e:
-            last_exception = e
-            logger.error(
-                f"Definite Focus find_surface failed (attempt {attempt + 1}/{max_retries}): {e}"
-            )
-
-            if attempt < max_retries - 1:
-                # Linear backoff: wait 2 s, 4 s, 6 s … between retries.
-                wait_time = 2.0 * (attempt + 1)
-                logger.info(f"Waiting {wait_time:.1f} seconds before retry...")
-                await asyncio.sleep(wait_time)
-
-                # Nudge Z upward (50, 100, 150 µm …) before the next attempt
-                # to give DF a fresh starting point.
-                try:
-                    offset = (attempt + 1) * 50e-6  # metres
-                    retry_z = start_z_m + offset
-                    await focus_service.move_to(FocusServiceMoveToRequest(value=retry_z))
-                    logger.info(f"Moved to Z: {retry_z * 1e6:.1f} microns before retry")
-                except Exception as move_e:
-                    logger.error(f"Could not move Z before retry: {move_e}")
-
-    if not success:
-        logger.error(f"Definite Focus find_surface failed after {max_retries} attempts")
-        # Best-effort: store whatever the current Z is so that the pipeline
-        # can at least attempt a recall_focus rather than being completely lost.
-        try:
-            current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-            logger.info(
-                f"Current Z-Position after all failed attempts: "
-                f"{current_zpos.value * 1e6:.3f} [micron]"
-            )
             try:
-                await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
-                logger.info(
-                    f"Stored current focus position {current_zpos.value * 1e6:.3f} [micron] "
-                    "despite find_surface failure"
+                # Run DF FindSurface; the returned zposition is in metres.
+                zpos_find_surface = await definite_focus_service.find_surface(
+                    DefiniteFocusServiceFindSurfaceRequest()
                 )
-            except Exception as e2:
-                logger.error(f"Could not store focus position: {e2}")
-        except Exception as e3:
-            logger.error(f"Could not get current position after find_surface failure: {e3}")
+                fs_z_um = zpos_find_surface.zposition * 1e6
+                logger.info(f"Z-Position (FindSurface): {fs_z_um:.3f} [micron]")
 
-        raise last_exception
+                # Sanity-check: DF returning a negative Z means it locked onto its
+                # own starting position rather than the actual sample surface.
+                if fs_z_um < 0:
+                    raise RuntimeError(
+                        f"FindSurface returned z={fs_z_um:.1f} µm — "
+                        "likely failed to locate surface (expected positive Z)."
+                    )
 
-    # Reference: move Z up by 500 µm then use recall_focus to return.
-    # Kept here as a usage example; not executed during normal operation.
-    '''
-    await focus_service.move_to(FocusServiceMoveToRequest(value=zpos.value + 500 * 1e-6))
-    new_posZ = await focus_service.get_position(FocusServiceGetPositionRequest())
-    logger.info(f"New Z-Drive: {new_posZ.value * 1e6:.3f} [micron]")
+                zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+                logger.info(f"Z-Position (ZDrive) after FS: {zpos.value * 1e6:.3f} [micron]")
 
-    zpos_recall = await definite_focus_service.recall_focus(DefiniteFocusServiceRecallFocusRequest())
-    logger.info(f"Z-Position (RecallFocus): {zpos_recall.zposition * 1e6:.3f} [micron]")
-    '''
+                # Persist the focus position so recall_focus can use it later.
+                await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
+                logger.info(f"Focus Position {zpos.value * 1e6:.3f} [micron] stored.")
 
-    channel.close()
-    return success, attempts_used
+                success = True
+                break
+
+            except Exception as e:
+                last_exception = e
+                logger.error(
+                    f"Definite Focus find_surface failed (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+
+                if attempt < max_retries - 1:
+                    # Linear backoff: wait 2 s, 4 s, 6 s … between retries.
+                    wait_time = 2.0 * (attempt + 1)
+                    logger.info(f"Waiting {wait_time:.1f} seconds before retry...")
+                    await asyncio.sleep(wait_time)
+
+                    # Nudge Z upward (50, 100, 150 µm …) before the next attempt
+                    # to give DF a fresh starting point.
+                    try:
+                        offset = (attempt + 1) * 50e-6  # metres
+                        retry_z = start_z_m + offset
+                        await focus_service.move_to(FocusServiceMoveToRequest(value=retry_z))
+                        logger.info(f"Moved to Z: {retry_z * 1e6:.1f} microns before retry")
+                    except Exception as move_e:
+                        logger.error(f"Could not move Z before retry: {move_e}")
+
+        if not success:
+            logger.error(f"Definite Focus find_surface failed after {max_retries} attempts")
+            # Best-effort: store whatever the current Z is so that the pipeline
+            # can at least attempt a recall_focus rather than being completely lost.
+            try:
+                current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+                logger.info(
+                    f"Current Z-Position after all failed attempts: "
+                    f"{current_zpos.value * 1e6:.3f} [micron]"
+                )
+                try:
+                    await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
+                    logger.info(
+                        f"Stored current focus position {current_zpos.value * 1e6:.3f} [micron] "
+                        "despite find_surface failure"
+                    )
+                except Exception as e2:
+                    logger.error(f"Could not store focus position: {e2}")
+            except Exception as e3:
+                logger.error(f"Could not get current position after find_surface failure: {e3}")
+
+            raise last_exception
+
+        # Reference: move Z up by 500 µm then use recall_focus to return.
+        # Kept here as a usage example; not executed during normal operation.
+        '''
+        await focus_service.move_to(FocusServiceMoveToRequest(value=zpos.value + 500 * 1e-6))
+        new_posZ = await focus_service.get_position(FocusServiceGetPositionRequest())
+        logger.info(f"New Z-Drive: {new_posZ.value * 1e6:.3f} [micron]")
+
+        zpos_recall = await definite_focus_service.recall_focus(DefiniteFocusServiceRecallFocusRequest())
+        logger.info(f"Z-Position (RecallFocus): {zpos_recall.zposition * 1e6:.3f} [micron]")
+        '''
+
+        return success, attempts_used
 
 
 async def definite_focus_recall(max_retries: int = 3):
@@ -224,35 +223,33 @@ async def definite_focus_recall(max_retries: int = 3):
         *attempts_used* is the number of attempts that were made.
     """
     logger = set_logging()
-    channel, metadata = initialize_zenapi(config_path)
-    definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
-    focus_service = FocusServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
+        focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-    last_exception = None
-    for attempt in range(max_retries):
-        try:
-            z_recall = await definite_focus_service.recall_focus(
-                DefiniteFocusServiceRecallFocusRequest()
-            )
-            z_um = z_recall.zposition * 1e6
-            logger.info(f"RecallFocus Z-Position: {z_um:.3f} [micron]")
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                z_recall = await definite_focus_service.recall_focus(
+                    DefiniteFocusServiceRecallFocusRequest()
+                )
+                z_um = z_recall.zposition * 1e6
+                logger.info(f"RecallFocus Z-Position: {z_um:.3f} [micron]")
 
-            zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-            logger.info(f"ZDrive after RecallFocus: {zpos.value * 1e6:.3f} [micron]")
+                zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+                logger.info(f"ZDrive after RecallFocus: {zpos.value * 1e6:.3f} [micron]")
 
-            channel.close()
-            return zpos.value * 1e6, attempt + 1
+                return zpos.value * 1e6, attempt + 1
 
-        except Exception as e:
-            last_exception = e
-            logger.error(f"RecallFocus failed (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                # Linear backoff: 2 s, 4 s, 6 s …
-                await asyncio.sleep(2.0 * (attempt + 1))
+            except Exception as e:
+                last_exception = e
+                logger.error(f"RecallFocus failed (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    # Linear backoff: 2 s, 4 s, 6 s …
+                    await asyncio.sleep(2.0 * (attempt + 1))
 
-    logger.error(f"RecallFocus failed after {max_retries} attempts")
-    channel.close()
-    return None, max_retries
+        logger.error(f"RecallFocus failed after {max_retries} attempts")
+        return None, max_retries
 
 
 async def move_focus_to_new_z_position(z: float):
@@ -272,56 +269,52 @@ async def move_focus_to_new_z_position(z: float):
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    focus_service = FocusServiceStub(channel=channel, metadata=metadata)
-
-    try:
-        await focus_service.move_to(FocusServiceMoveToRequest(value=z))
-        zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-        logger.info(f"Z-Position after move: {zpos.value * 1e6:.3f} [micron]")
-
-    except Exception as e:
-        logger.error(f"Error moving focus to z={z}: {e}")
+    async with open_zen_channel(config_path) as (channel, metadata):
+        focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
         try:
-            current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-            logger.info(f"Current Z-Position: {current_zpos.value * 1e6:.3f} [micron]")
+            await focus_service.move_to(FocusServiceMoveToRequest(value=z))
+            zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+            logger.info(f"Z-Position after move: {zpos.value * 1e6:.3f} [micron]")
 
-            if abs(z) < 1e-6:
-                # Target is effectively zero — check if we are already close enough.
-                tolerance = 10e-6  # 10 µm tolerance
-                if abs(current_zpos.value) < tolerance:
-                    logger.info(
-                        f"Already close to z=0 ({current_zpos.value * 1e6:.3f} micron). "
-                        "Continuing..."
-                    )
-                    channel.close()
-                    return
-                else:
-                    # Hardware may not accept z=0 exactly; try 10 µm as a safe alternative.
-                    logger.info("Trying to move to z=10e-6 instead...")
-                    try:
-                        await focus_service.move_to(FocusServiceMoveToRequest(value=10e-6))
-                        new_zpos = await focus_service.get_position(
-                            FocusServiceGetPositionRequest()
-                        )
+        except Exception as e:
+            logger.error(f"Error moving focus to z={z}: {e}")
+
+            try:
+                current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+                logger.info(f"Current Z-Position: {current_zpos.value * 1e6:.3f} [micron]")
+
+                if abs(z) < 1e-6:
+                    # Target is effectively zero — check if we are already close enough.
+                    tolerance = 10e-6  # 10 µm tolerance
+                    if abs(current_zpos.value) < tolerance:
                         logger.info(
-                            f"Z-Position after alternative move: "
-                            f"{new_zpos.value * 1e6:.3f} [micron]"
+                            f"Already close to z=0 ({current_zpos.value * 1e6:.3f} micron). "
+                            "Continuing..."
                         )
-                        channel.close()
                         return
-                    except Exception as e3:
-                        logger.error(f"Alternative move also failed: {e3}")
-                        raise e
-            else:
+                    else:
+                        # Hardware may not accept z=0 exactly; try 10 µm as a safe alternative.
+                        logger.info("Trying to move to z=10e-6 instead...")
+                        try:
+                            await focus_service.move_to(FocusServiceMoveToRequest(value=10e-6))
+                            new_zpos = await focus_service.get_position(
+                                FocusServiceGetPositionRequest()
+                            )
+                            logger.info(
+                                f"Z-Position after alternative move: "
+                                f"{new_zpos.value * 1e6:.3f} [micron]"
+                            )
+                            return
+                        except Exception as e3:
+                            logger.error(f"Alternative move also failed: {e3}")
+                            raise e
+                else:
+                    raise e
+
+            except Exception as e2:
+                logger.error(f"Could not get current position: {e2}")
                 raise e
-
-        except Exception as e2:
-            logger.error(f"Could not get current position: {e2}")
-            raise e
-
-    channel.close()
 
 
 async def get_current_z_focus_position() -> float:
@@ -335,14 +328,13 @@ async def get_current_z_focus_position() -> float:
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    focus_service = FocusServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-    zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-    logger.info(f"Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
+        zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+        logger.info(f"Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
 
-    channel.close()
-    return zpos.value
+        return zpos.value
 
 
 if __name__ == "__main__":

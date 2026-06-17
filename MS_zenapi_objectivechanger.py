@@ -46,7 +46,7 @@ import sys
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import (
     set_logging,
-    initialize_zenapi,
+    open_zen_channel,
     get_used_objective_positions,
     get_objective_by_position,
     get_used_optovar_positions,
@@ -88,65 +88,63 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-    optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
+        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
 
-    # Fetch the full hardware inventory so we can resolve names from positions.
-    objectives = await objchanger_service.get_objectives(
-        ObjectiveChangerServiceGetObjectivesRequest()
-    )
-    optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+        # Fetch the full hardware inventory so we can resolve names from positions.
+        objectives = await objchanger_service.get_objectives(
+            ObjectiveChangerServiceGetObjectivesRequest()
+        )
+        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
 
-    logger.info("-------- Available objectives and Optovars  ----------------------------")
+        logger.info("-------- Available objectives and Optovars  ----------------------------")
 
-    used_obj_positions = get_used_objective_positions(objectives)
-    used_opt_positions = get_used_optovar_positions(optovars)
-    logger.info(f"Used objective positions: {used_obj_positions}")
-    logger.info(f"Used optovar positions: {used_opt_positions}")
+        used_obj_positions = get_used_objective_positions(objectives)
+        used_opt_positions = get_used_optovar_positions(optovars)
+        logger.info(f"Used objective positions: {used_obj_positions}")
+        logger.info(f"Used optovar positions: {used_opt_positions}")
 
-    for obj in objectives.objectives:
-        logger.info(f"Objective: {obj.name} - Position: {obj.position}")
+        for obj in objectives.objectives:
+            logger.info(f"Objective: {obj.name} - Position: {obj.position}")
 
-    for opt in optovars.optovars:
-        logger.info(f"Optovar: {opt.name} - Position: {opt.position}")
+        for opt in optovars.optovars:
+            logger.info(f"Optovar: {opt.name} - Position: {opt.position}")
 
-    logger.info("------------------ Move Objectives -----------------------")
+        logger.info("------------------ Move Objectives -----------------------")
 
-    # Record where we started so the change is explicit in the log.
-    pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
-    current_objective = get_objective_by_position(objectives, pos_obj.value)
-    logger.info(
-        f"Current Objective: {current_objective.name} Position: {current_objective.position}"
-    )
+        # Record where we started so the change is explicit in the log.
+        pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
+        current_objective = get_objective_by_position(objectives, pos_obj.value)
+        logger.info(
+            f"Current Objective: {current_objective.name} Position: {current_objective.position}"
+        )
 
-    # obj_new_position = 3  # example: hard-code for quick testing
-    await objchanger_service.move_to(
-        ObjectiveChangerServiceMoveToRequest(position_index=obj_new_position)
-    )
-    current_objective = get_objective_by_position(objectives, obj_new_position)
-    logger.info(
-        f"New Objective: {current_objective.name} Position: {current_objective.position}"
-    )
+        # obj_new_position = 3  # example: hard-code for quick testing
+        await objchanger_service.move_to(
+            ObjectiveChangerServiceMoveToRequest(position_index=obj_new_position)
+        )
+        current_objective = get_objective_by_position(objectives, obj_new_position)
+        logger.info(
+            f"New Objective: {current_objective.name} Position: {current_objective.position}"
+        )
 
-    logger.info("------------------ Move Optovars -----------------------")
+        logger.info("------------------ Move Optovars -----------------------")
 
-    pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
-    current_optovar = get_optovar_by_position(optovars, pos_optovar.value)
-    logger.info(
-        f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
-    )
+        pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
+        current_optovar = get_optovar_by_position(optovars, pos_optovar.value)
+        logger.info(
+            f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
+        )
 
-    # opt_new_position = 1  # example: hard-code for quick testing
-    await optovar_service.move_to(
-        OptovarServiceMoveToRequest(position_index=opt_new_position)
-    )
-    current_optovar = get_optovar_by_position(optovars, opt_new_position)
-    logger.info(
-        f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
-    )
-
-    channel.close()
+        # opt_new_position = 1  # example: hard-code for quick testing
+        await optovar_service.move_to(
+            OptovarServiceMoveToRequest(position_index=opt_new_position)
+        )
+        current_optovar = get_optovar_by_position(optovars, opt_new_position)
+        logger.info(
+            f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
+        )
 
 
 async def get_current_objective_and_optovar():
@@ -161,22 +159,21 @@ async def get_current_objective_and_optovar():
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-    optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
+        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
 
-    objectives = await objchanger_service.get_objectives(
-        ObjectiveChangerServiceGetObjectivesRequest()
-    )
-    optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+        objectives = await objchanger_service.get_objectives(
+            ObjectiveChangerServiceGetObjectivesRequest()
+        )
+        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
 
-    pos_obj = await objchanger_service.get_position(
-        ObjectiveChangerServiceGetPositionRequest()
-    )
-    pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
+        pos_obj = await objchanger_service.get_position(
+            ObjectiveChangerServiceGetPositionRequest()
+        )
+        pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
 
-    channel.close()
-    return pos_obj.value, pos_optovar.value
+        return pos_obj.value, pos_optovar.value
 
 
 async def list_objectives_and_optovars():
@@ -190,17 +187,14 @@ async def list_objectives_and_optovars():
         Tuple ``(objectives, optovars)`` where each is a list of
         ``(name, position)`` tuples.
     """
-    channel, metadata = initialize_zenapi(config_path)
-    objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-    optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
+        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
 
-    try:
         objectives = await objchanger_service.get_objectives(
             ObjectiveChangerServiceGetObjectivesRequest()
         )
         optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
-    finally:
-        channel.close()
 
     obj_list = [(o.name, o.position) for o in objectives.objectives]
     opt_list = [(o.name, o.position) for o in optovars.optovars]
@@ -218,11 +212,10 @@ async def get_current_objective_and_optovar_names():
     Returns:
         Tuple ``((obj_name, obj_position), (opt_name, opt_position))``.
     """
-    channel, metadata = initialize_zenapi(config_path)
-    objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-    optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
+        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
 
-    try:
         objectives = await objchanger_service.get_objectives(
             ObjectiveChangerServiceGetObjectivesRequest()
         )
@@ -235,8 +228,6 @@ async def get_current_objective_and_optovar_names():
 
         current_objective = get_objective_by_position(objectives, pos_obj.value)
         current_optovar = get_optovar_by_position(optovars, pos_optovar.value)
-    finally:
-        channel.close()
 
     return (
         (current_objective.name, current_objective.position),

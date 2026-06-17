@@ -39,7 +39,7 @@ import asyncio
 from pathlib import Path
 import numpy as np
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import set_logging, initialize_zenapi
+from MS_zenapi_helpers import set_logging, open_zen_channel
 import MS_zenapi_focus
 
 # Auto-generated gRPC stubs for the XY stage service.
@@ -66,18 +66,17 @@ async def get_current_xy_stage_coordinates():
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-    # StageService returns positions in metres; convert to µm for the log only.
-    posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-    logger.info(
-        f"Stage XY Position 1: "
-        f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
-    )
+        # StageService returns positions in metres; convert to µm for the log only.
+        posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
+        logger.info(
+            f"Stage XY Position 1: "
+            f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
+        )
 
-    channel.close()
-    return [posXY.x, posXY.y]
+        return [posXY.x, posXY.y]
 
 
 async def move_stage_to_new_xy_position(x: float, y: float):
@@ -102,39 +101,37 @@ async def move_stage_to_new_xy_position(x: float, y: float):
     """
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-    # Lower the objective to Z=0 before moving laterally to prevent collisions.
-    # TODO: restore original Z position after the move once collision-safe
-    # Z management is fully handled by the pipeline.
-    # z = asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
-    new_z = 0
-    await MS_zenapi_focus.move_focus_to_new_z_position(new_z)
+        # Lower the objective to Z=0 before moving laterally to prevent collisions.
+        # TODO: restore original Z position after the move once collision-safe
+        # Z management is fully handled by the pipeline.
+        # z = asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
+        new_z = 0
+        await MS_zenapi_focus.move_focus_to_new_z_position(new_z)
 
-    posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-    logger.info(
-        f"Stage XY Position 1: "
-        f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
-    )
+        posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
+        logger.info(
+            f"Stage XY Position 1: "
+            f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
+        )
 
-    # Perform the XY move (coordinates in metres).
-    await simple_stage_service.move_to(StageServiceMoveToRequest(x=x, y=y))
+        # Perform the XY move (coordinates in metres).
+        await simple_stage_service.move_to(StageServiceMoveToRequest(x=x, y=y))
 
-    new_posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-    logger.info(
-        f"Stage XY Position 2: "
-        f"{np.round(new_posXY.x * 1e6, 2)} - {np.round(new_posXY.y * 1e6, 2)} [micron]"
-    )
+        new_posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
+        logger.info(
+            f"Stage XY Position 2: "
+            f"{np.round(new_posXY.x * 1e6, 2)} - {np.round(new_posXY.y * 1e6, 2)} [micron]"
+        )
 
-    # Restore Z to pre-move position (disabled; kept as reference).
-    # asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(z))
+        # Restore Z to pre-move position (disabled; kept as reference).
+        # asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(z))
 
-    # Allow the stage to settle mechanically before the next operation.
-    logger.info("Waiting for 3 seconds...")
-    await asyncio.sleep(3)
-
-    channel.close()
+        # Allow the stage to settle mechanically before the next operation.
+        logger.info("Waiting for 3 seconds...")
+        await asyncio.sleep(3)
 
 
 if __name__ == "__main__":

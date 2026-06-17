@@ -44,6 +44,7 @@ NOT require the Zeiss tree to be resolvable.
 import configparser
 import ssl
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Tuple, Union
 
@@ -117,6 +118,36 @@ def initialize_zenapi(
     )
     metadata = [("control-token", config["api"]["control-token"])]
     return channel, metadata
+
+
+@asynccontextmanager
+async def open_zen_channel(config_file: Union[str, Path] = "config.ini"):
+    """Async context manager: open a ZEN-API gRPC channel and ALWAYS close it.
+
+    Wraps :func:`initialize_zenapi` and guarantees ``channel.close()`` runs on
+    exit, whether the ``async with`` body completes normally or raises.  This is
+    the single place channel lifetime is managed, so the wrapper functions no
+    longer leak a channel when a gRPC call fails mid-function.
+
+    Usage::
+
+        async with open_zen_channel(config_path) as (channel, metadata):
+            svc = SomeServiceStub(channel=channel, metadata=metadata)
+            ...   # any raise here still closes the channel
+
+    Args:
+        config_file: Path to the ``config.ini`` (forwarded to
+            :func:`initialize_zenapi`).
+
+    Yields:
+        Tuple ``(channel, metadata)`` — the open :class:`~grpclib.client.Channel`
+        and the control-token metadata list.
+    """
+    channel, metadata = initialize_zenapi(config_file)
+    try:
+        yield channel, metadata
+    finally:
+        channel.close()
 
 
 # ---------------------------------------------------------------------------

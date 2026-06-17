@@ -42,7 +42,7 @@ import asyncio
 import sys
 from pathlib import Path
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import set_logging, initialize_zenapi
+from MS_zenapi_helpers import set_logging, open_zen_channel
 from grpclib import GRPCError
 
 # Auto-generated gRPC stubs for experiment loading and cloning.
@@ -111,9 +111,8 @@ async def run_software_autofocus(
         failed.  *attempts_used* is the number of attempts made.
     """
     logger = set_logging()
-    channel, metadata = initialize_zenapi(config_path)
 
-    try:
+    async with open_zen_channel(config_path) as (channel, metadata):
         exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
         swaf_service = ExperimentSwAutofocusServiceStub(channel=channel, metadata=metadata)
 
@@ -153,9 +152,6 @@ async def run_software_autofocus(
 
         logger.error(f"SWAF ({experiment_name}) failed after {max_retries} attempt(s).")
         return None, max_retries
-
-    finally:
-        channel.close()
 
 
 def _show_swaf_info(logger, info) -> None:
@@ -204,86 +200,84 @@ async def main(args):
     # imported and called directly, not only via the __main__ guard below).
     logger = set_logging()
 
-    channel, metadata = initialize_zenapi(config_path)
-    exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
-    swaf_service = ExperimentSwAutofocusServiceStub(channel=channel, metadata=metadata)
-    focus_service = FocusServiceStub(channel=channel, metadata=metadata)
+    async with open_zen_channel(config_path) as (channel, metadata):
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+        swaf_service = ExperimentSwAutofocusServiceStub(channel=channel, metadata=metadata)
+        focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-    my_exp = await exp_service.load(ExperimentServiceLoadRequest(experiment_name=expname))
+        my_exp = await exp_service.load(ExperimentServiceLoadRequest(experiment_name=expname))
 
-    # Read and display current SWAF settings before any modification.
-    swaf_info = await swaf_service.get_autofocus_parameters(
-        ExperimentSwAutofocusServiceGetAutofocusParametersRequest(
-            experiment_id=my_exp.experiment_id
-        )
-    )
-    _show_swaf_info(logger, swaf_info)
-
-    logger.info("Cloning Experiment ...")
-    my_exp_cloned = await exp_service.clone(
-        ExperimentServiceCloneRequest(experiment_id=my_exp.experiment_id)
-    )
-
-    # Update the SWAF parameters on the clone.
-    # Commented-out keyword args are shown here as a reference for available
-    # options; they cannot be combined with relative_search_range when
-    # relative_range_is_automatic is True (the default).
-    await swaf_service.set_autofocus_parameters(
-        ExperimentSwAutofocusServiceSetAutofocusParametersRequest(
-            experiment_id=my_exp_cloned.experiment_id,
-            autofocus_mode=AutofocusMode.CONTRAST,
-            contrast_measure=AutofocusContrastMeasure.LOW_SIGNAL,
-            search_strategy="Full",
-            autofocus_sampling=AutofocusSampling.MEDIUM,
-            # offset=0.5 * 1e-6,          # Z offset in [m] from the found position
-            use_acquisition_roi=True,      # use full frame, not the Focus Region ROI
-            reference_channel_name="EGFP",
-            # relative_range_is_automatic=False,  # set False to supply an explicit range
-            relative_search_range=123 * 1e-6,     # search range in [m]; requires auto=True
-            # lower_limit=-50 * 1e-6,    # absolute lower Z limit in [m] (auto must be False)
-            # upper_limit=50 * 1e-6,     # absolute upper Z limit in [m] (auto must be False)
-        )
-    )
-
-    # Persist the modified clone so it can be reused in future sessions.
-    logger.info("Saving Experiment ...")
-    await exp_service.save(
-        ExperimentServiceSaveRequest(
-            experiment_id=my_exp_cloned.experiment_id,
-            experiment_name=expname_cloned,
-            allow_override=True,
-        )
-    )
-
-    # Verify the saved parameters by reading them back from the clone.
-    swaf_info = await swaf_service.get_autofocus_parameters(
-        ExperimentSwAutofocusServiceGetAutofocusParametersRequest(
-            experiment_id=my_exp_cloned.experiment_id
-        )
-    )
-    _show_swaf_info(logger, swaf_info)
-
-    # Record the Z position before SWAF so we can report how much it moved.
-    posZ_before = await focus_service.get_position(FocusServiceGetPositionRequest())
-    logger.info(f"Z-Drive Position before SWAF [micron]: {posZ_before.value * 1e6:.3f}")
-
-    # Run SWAF on the modified clone and handle a possible timeout/gRPC error.
-    try:
-        swaf_response = await swaf_service.find_auto_focus(
-            ExperimentSwAutofocusServiceFindAutoFocusRequest(
-                experiment_id=my_exp_cloned.experiment_id,
-                timeout=12,  # seconds
+        # Read and display current SWAF settings before any modification.
+        swaf_info = await swaf_service.get_autofocus_parameters(
+            ExperimentSwAutofocusServiceGetAutofocusParametersRequest(
+                experiment_id=my_exp.experiment_id
             )
         )
-        logger.info(f"Z-Drive Position after SWAF: {swaf_response.focus_position:.3f}")
+        _show_swaf_info(logger, swaf_info)
 
-    except GRPCError as e:
-        logger.error(e.message)
-        logger.info(
-            f"Z-Drive Position after SWAF error: {posZ_before.value * 1e6:.3f}"
+        logger.info("Cloning Experiment ...")
+        my_exp_cloned = await exp_service.clone(
+            ExperimentServiceCloneRequest(experiment_id=my_exp.experiment_id)
         )
 
-    channel.close()
+        # Update the SWAF parameters on the clone.
+        # Commented-out keyword args are shown here as a reference for available
+        # options; they cannot be combined with relative_search_range when
+        # relative_range_is_automatic is True (the default).
+        await swaf_service.set_autofocus_parameters(
+            ExperimentSwAutofocusServiceSetAutofocusParametersRequest(
+                experiment_id=my_exp_cloned.experiment_id,
+                autofocus_mode=AutofocusMode.CONTRAST,
+                contrast_measure=AutofocusContrastMeasure.LOW_SIGNAL,
+                search_strategy="Full",
+                autofocus_sampling=AutofocusSampling.MEDIUM,
+                # offset=0.5 * 1e-6,          # Z offset in [m] from the found position
+                use_acquisition_roi=True,      # use full frame, not the Focus Region ROI
+                reference_channel_name="EGFP",
+                # relative_range_is_automatic=False,  # set False to supply an explicit range
+                relative_search_range=123 * 1e-6,     # search range in [m]; requires auto=True
+                # lower_limit=-50 * 1e-6,    # absolute lower Z limit in [m] (auto must be False)
+                # upper_limit=50 * 1e-6,     # absolute upper Z limit in [m] (auto must be False)
+            )
+        )
+
+        # Persist the modified clone so it can be reused in future sessions.
+        logger.info("Saving Experiment ...")
+        await exp_service.save(
+            ExperimentServiceSaveRequest(
+                experiment_id=my_exp_cloned.experiment_id,
+                experiment_name=expname_cloned,
+                allow_override=True,
+            )
+        )
+
+        # Verify the saved parameters by reading them back from the clone.
+        swaf_info = await swaf_service.get_autofocus_parameters(
+            ExperimentSwAutofocusServiceGetAutofocusParametersRequest(
+                experiment_id=my_exp_cloned.experiment_id
+            )
+        )
+        _show_swaf_info(logger, swaf_info)
+
+        # Record the Z position before SWAF so we can report how much it moved.
+        posZ_before = await focus_service.get_position(FocusServiceGetPositionRequest())
+        logger.info(f"Z-Drive Position before SWAF [micron]: {posZ_before.value * 1e6:.3f}")
+
+        # Run SWAF on the modified clone and handle a possible timeout/gRPC error.
+        try:
+            swaf_response = await swaf_service.find_auto_focus(
+                ExperimentSwAutofocusServiceFindAutoFocusRequest(
+                    experiment_id=my_exp_cloned.experiment_id,
+                    timeout=12,  # seconds
+                )
+            )
+            logger.info(f"Z-Drive Position after SWAF: {swaf_response.focus_position:.3f}")
+
+        except GRPCError as e:
+            logger.error(e.message)
+            logger.info(
+                f"Z-Drive Position after SWAF error: {posZ_before.value * 1e6:.3f}"
+            )
 
 
 if __name__ == "__main__":
