@@ -142,11 +142,10 @@ done deliberately as a single pass rather than folded into small edits.
         modules. `verify_zen_api.py`, the README and `zeiss_paths.py` were
         updated to drop the `zen_api_utils` references.
 
-      NOTE: `set_logging` was vendored AS-IS (loguru) to keep log formatting
-      identical and the change reviewable. Standardizing all logging onto the
-      stdlib `MS_Helper_function.setup_run_logger` (and dropping loguru) is the
-      separate "two logging systems coexist" item below — best folded into the
-      shared gRPC channel context manager pass.
+      NOTE: `set_logging` was initially vendored AS-IS (loguru) to keep the
+      change reviewable, then later reimplemented on the stdlib `logging` stack —
+      see the now-resolved "two logging systems coexist" item below. The library
+      no longer imports loguru.
 
 ---
 
@@ -199,16 +198,24 @@ newly logged and not yet applied.
       is deleted, but the experiment imported from XML (~line 403) is left loaded
       in ZEN on every run.
 
-- [ ] **Two default CZI-name schemes** — `check_experiment_api` builds
-      `zenapi_myimage_<uuid>` inline while `_make_czi_basename` produces
-      `zenapi_<uuid>`. Use the helper. Its return annotation also omits `None`
+- [x] **Two default CZI-name schemes** — ✅ DONE (2026-06-17).
+      `check_experiment_api` now builds its base name via `_make_czi_basename`
+      (default `zenapi_<uuid>`, matching `run_experiment_from_xml` /
+      `run_experiment_from_path`) and derives the snap name as `<base>_snap`.
+      Its return annotation was widened to `Dict[str, Union[str, Path, None]]`
       (`snap_path` can be `None`).
 
-- [ ] **Two logging systems coexist** — stdlib `setup_run_logger`
-      (`MS_Helper_function`, used by the PoC) vs loguru `set_logging` (now
-      vendored in `MS_zenapi_helpers`, used by every `MS_zenapi_*` module).
-      Consolidate onto `setup_run_logger` and drop loguru (also noted under the
-      vendoring item above).
+- [x] **Two logging systems coexist** — ✅ DONE (2026-06-17). `set_logging` in
+      `MS_zenapi_helpers` is now a stdlib `logging` helper (loguru dropped from
+      the library) that returns the shared `"smartmic"` logger — the same name
+      `MS_Helper_function.setup_run_logger` configures. So when the PoC calls
+      `setup_run_logger` first, the wrapper modules' `set_logging()` reuses that
+      configured logger and their output lands in the per-run log file; used
+      standalone, `set_logging` attaches a UTF-8 stdout handler (idempotent, no
+      duplicate handlers). Both stdout handlers now use `sys.stdout.reconfigure`
+      instead of an owning `TextIOWrapper`, so they coexist without closing the
+      shared buffer. (loguru remains in `pixi.toml` only as a transitive dep of
+      other packages — the SmartMic library no longer imports it.)
 
 - [x] **README projects table lists only `smartmic_poc`** — NOT a bug, this is
       by design. `smartmic_poc` is the only *public/shared* project; all other

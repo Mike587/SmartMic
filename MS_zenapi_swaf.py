@@ -162,7 +162,7 @@ def _show_swaf_info(logger, info) -> None:
     logged in µm.
 
     Args:
-        logger: the loguru logger to emit to.
+        logger: the logger to emit to.
         info:   an ``ExperimentSwAutofocusServiceGetAutofocusParametersResponse``.
     """
     logger.info("------------  SWAF Information Start  ------------")

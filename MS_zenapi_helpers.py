@@ -30,18 +30,30 @@ functions actually used here, the SmartMic library depends solely on
 
 What is vendored
 ----------------
-* :func:`set_logging`        -- loguru logger config (from ``misc.py``)
+* :func:`set_logging`        -- stdlib logger setup (replaces the loguru-based
+                                ``misc.set_logging``; see below)
 * :func:`initialize_zenapi`  -- config.ini → SSL context → grpclib Channel +
                                 control-token metadata (from ``misc.py``)
+* :func:`open_zen_channel`   -- async context manager around ``initialize_zenapi``
 * objective / optovar position lookups (from ``objective.py``)
 
-These reproduce the upstream behaviour exactly so the wrapper modules did not
-have to change beyond their import lines.  Only third-party imports
-(``grpclib``, ``loguru``) and the stdlib are used — importing this module does
-NOT require the Zeiss tree to be resolvable.
+Only third-party imports (``grpclib``) and the stdlib are used — importing this
+module does NOT require the Zeiss tree to be resolvable.
+
+Logging
+-------
+``set_logging`` returns a plain :mod:`logging` logger (NOT loguru anymore) on the
+shared ``"smartmic"`` logger name, the same name used by
+:func:`MS_Helper_function.setup_run_logger`.  This unifies SmartMic onto one
+logging stack: when a pipeline (e.g. the PoC) has already called
+``setup_run_logger`` to attach a per-run file handler, the wrapper modules'
+``set_logging()`` returns that same configured logger, so their output lands in
+the run log file too.  When a wrapper module is used standalone, ``set_logging``
+attaches a UTF-8 stdout handler so logs still print.
 """
 
 import configparser
+import logging
 import ssl
 import sys
 from contextlib import asynccontextmanager
@@ -49,25 +61,54 @@ from pathlib import Path
 from typing import List, Tuple, Union
 
 from grpclib.client import Channel
-from loguru import logger
+
+# Shared with MS_Helper_function.setup_run_logger so both configure/return the
+# SAME logger object.  Keep the format in sync with that function.
+_LOGGER_NAME = "smartmic"
+_LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
+_LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 
-def set_logging():
-    """Configure and return a loguru logger writing colourised lines to stdout.
+def _ensure_utf8_stdout() -> None:
+    """Best-effort: make ``sys.stdout`` encode UTF-8 so characters like µ don't
+    crash on a Windows cp1252 console.
 
-    Vendored verbatim from ``zen_api_utils.misc.set_logging`` so SmartMic no
-    longer imports it.  Existing handlers are removed first, so repeated calls
-    do not accumulate duplicate sinks.
+    Uses ``reconfigure`` (Python 3.7+) to mutate the existing stream in place
+    rather than wrapping it in a new owning ``TextIOWrapper`` — wrapping would
+    close the shared underlying buffer when the wrapper is dropped, breaking any
+    other handler on stdout.  No-op if stdout cannot be reconfigured.
+    """
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def set_logging(name: str = _LOGGER_NAME) -> logging.Logger:
+    """Return the shared stdlib logger, attaching a stdout handler if needed.
+
+    Replaces the previous loguru-based helper so the whole SmartMic library uses
+    ONE logging stack (stdlib :mod:`logging`).
+
+    Returns ``logging.getLogger(name)``.  If that logger already has handlers —
+    e.g. :func:`MS_Helper_function.setup_run_logger` configured it with a per-run
+    file handler — it is returned untouched, so wrapper-module logs flow into the
+    same run log.  Otherwise a UTF-8-wrapped stdout handler is attached (so
+    standalone use of a wrapper module still prints, and special characters like
+    µ don't crash a Windows cp1252 terminal).  Idempotent: repeated calls never
+    accumulate duplicate handlers.
 
     Returns:
-        loguru.Logger: the configured logger instance.
+        logging.Logger: the shared, handler-equipped logger.
     """
-    logger.remove()
-    logger.add(
-        sys.stdout,
-        colorize=True,
-        format="<green>{time}s</green> - <level>{level}</level> - <level>{message}</level>",
-    )
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+    if not logger.handlers:
+        _ensure_utf8_stdout()
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        logger.addHandler(handler)
     return logger
 
 

@@ -42,6 +42,13 @@ def setup_run_logger(
     Returns:
         Tuple ``(logger, log_file)`` — the configured ``logging.Logger`` and
         the ``Path`` to the timestamped per-run log file it writes to.
+
+    Note:
+        Uses the same logger name (``"smartmic"``) and line format as
+        ``MS_zenapi_helpers.set_logging``.  Call this once at the start of a run
+        to attach the per-run file handler; the wrapper modules' ``set_logging``
+        then reuses this same configured logger, so their output also lands in
+        the run log.  Keep the format below in sync with that helper.
     """
     if log_folder is None:
         log_folder = DEFAULT_LOG_FOLDER
@@ -67,11 +74,16 @@ def setup_run_logger(
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    # Wrap stdout with UTF-8 so special characters don't crash on Windows cp1252 terminals
-    import io
-    sh_stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace") \
-        if hasattr(sys.stdout, "buffer") else sys.stdout
-    sh = logging.StreamHandler(sh_stream)
+    # Make stdout encode UTF-8 so special characters (e.g. µ) don't crash on a
+    # Windows cp1252 terminal.  reconfigure() mutates the existing stream in
+    # place — unlike wrapping it in a new TextIOWrapper, which would close the
+    # shared buffer when dropped and break any other stdout handler.
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     logger.addHandler(sh)
 

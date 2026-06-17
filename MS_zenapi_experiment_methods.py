@@ -275,7 +275,7 @@ async def check_experiment_api(
     custom_image_folder: Union[str, Path, None] = None,
     custom_filename: Union[str, None] = None,
     do_snap_and_live: bool = False,
-) -> Dict[str, Union[str, Path]]:
+) -> Dict[str, Union[str, Path, None]]:
     """Exercise the full ZEN ExperimentService API and run a single acquisition.
 
     Performs the following steps in order:
@@ -337,18 +337,11 @@ async def check_experiment_api(
         default_image_folder = await _get_default_image_folder(exp_service, logger)
         image_folder = _resolve_image_folder(custom_image_folder, logger)
 
-        # Build output file base names.
-        if custom_filename is not None:
-            custom_base = custom_filename
-            if custom_base.endswith('.czi'):
-                custom_base = custom_base[:-4]
-            czi_name = custom_base
-            snap_output_name = f"{custom_base}_snap"
-        else:
-            # UUID suffix ensures uniqueness across concurrent pipeline runs.
-            unique_id = str(uuid.uuid4())[:8]
-            czi_name = f"zenapi_myimage_{unique_id}"  # without .czi extension
-            snap_output_name = f"snap_image_{unique_id}"
+        # Build output file base names.  Use the shared _make_czi_basename helper
+        # so the default scheme matches run_experiment_from_xml /
+        # run_experiment_from_path (zenapi_<uuid>); the snap reuses that base.
+        czi_name = _make_czi_basename(custom_filename)
+        snap_output_name = f"{czi_name}_snap"
 
         # List available experiments for reference and error reporting.
         available_experiments = await exp_service.get_available_experiments(
