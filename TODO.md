@@ -199,18 +199,19 @@ newly logged and not yet applied.
       above). `move_focus_to_new_z_position`, `check_experiment_api` and the
       `run_experiment_*` functions now close the channel on every path.
 
-- [ ] **`check_experiment_api` leaks an imported experiment / conflates smoke
-      test with production.** The clone is deleted by name, but the experiment
-      created by `import_` (the round-trip step) is registered in ZEN's session
-      and never deleted/unloaded — it accumulates on every call. `delete` takes
-      `experiment_name`; the import may have none, so a narrow fix needs a
-      delete-by-id/unload (verify against the ZEN API). Bigger picture: this
-      function is BOTH the API smoke test (clone→save→export→import→delete) AND
-      the production acquisition path the PoC calls for every overview/nucleus —
-      so production needlessly runs the whole round-trip each image. Preferred
-      fix: split a lean load→run→collect path for the PoC from the full smoke
-      test, which also makes the leak moot. (Behaviour change to the PoC's
-      acquisition path — decide before doing.)
+- [x] **`check_experiment_api` conflated smoke test with production** — ✅ DONE
+      (2026-06-17). Split out a lean `run_experiment_by_name` (load → run →
+      collect, no round-trip, no snap/live) and repointed `MS_CD7_API_LoA.run_experiment`
+      to it; `do_snap_and_live=True` still routes to `check_experiment_api` for
+      the full smoke test. The PoC's per-image acquisitions therefore no longer
+      run the clone/export/import/delete round-trip, so they no longer leave an
+      imported experiment loaded in ZEN on every image.
+      NOTE: `check_experiment_api` itself still imports one experiment per call
+      that cannot be cleaned up — the ZEN `ExperimentService` exposes no
+      delete-by-id or unload (`delete` takes only `experiment_name`, and an
+      imported experiment has none). This is acceptable now that the function is
+      an occasional smoke test rather than a per-image call; revisit if/when ZEN
+      adds an unload API.
 
 - [x] **Two default CZI-name schemes** — ✅ DONE (2026-06-17).
       `check_experiment_api` now builds its base name via `_make_czi_basename`

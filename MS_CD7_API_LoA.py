@@ -243,37 +243,56 @@ def run_experiment(experiment_name: str,
                    custom_filename: Optional[str] = None, 
                    do_snap_and_live: bool = False) -> Dict[str, Any]:
     """
-    Run an experiment with the specified parameters.
-    
+    Run an experiment by name with the specified parameters.
+
+    By default this uses the lean acquisition path
+    (``run_experiment_by_name``): load the named experiment, run it, collect the
+    result. When ``do_snap_and_live=True`` it instead routes to
+    ``check_experiment_api`` — the full API smoke test that also exercises
+    clone/export/import/delete and snap/live/continuous. Normal pipeline
+    acquisitions should leave ``do_snap_and_live=False``.
+
     Args:
         experiment_name (str): Name of the experiment to run
         custom_folder (Path, optional): Custom output folder. Uses DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
         custom_filename (str, optional): Custom filename for output
-        do_snap_and_live (bool): Whether to do snap and live operations
-        
+        do_snap_and_live (bool): When True, run the full smoke-test path
+            (snap + live + continuous + serialization round-trip) instead of a
+            plain acquisition.
+
     Returns:
-        Dict[str, Any]: Experiment results
-        
+        Dict[str, Any]: Experiment results ({exp_result_path, snap_path,
+        experiment_id}).
+
     Raises:
         ValueError: If experiment_name is empty or invalid
     """
     # Validate experiment name
     if not experiment_name or not isinstance(experiment_name, str):
         raise ValueError(f"Invalid experiment name: {experiment_name}")
-    
+
     # If custom_folder is not provided, use the global default
     if custom_folder is None:
         custom_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
-    
+
     # Ensure custom_folder is a Path object
     custom_folder = Path(custom_folder)
 
-    result = asyncio.run(MS_zenapi_experiment_methods.check_experiment_api(
-        experiment_name=experiment_name,
-        custom_image_folder=custom_folder,
-        custom_filename=custom_filename,
-        do_snap_and_live=do_snap_and_live
-    ))
+    if do_snap_and_live:
+        # Full API exercise incl. snap/live/continuous + serialization round-trip.
+        result = asyncio.run(MS_zenapi_experiment_methods.check_experiment_api(
+            experiment_name=experiment_name,
+            custom_image_folder=custom_folder,
+            custom_filename=custom_filename,
+            do_snap_and_live=True,
+        ))
+    else:
+        # Lean production acquisition: load by name -> run -> collect.
+        result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_by_name(
+            experiment_name=experiment_name,
+            custom_image_folder=custom_folder,
+            custom_filename=custom_filename,
+        ))
     print(f"Experiment results: {result}")
     return result
 

@@ -27,9 +27,19 @@
 Experiment lifecycle helpers for ZEN blue / ZEN core via gRPC.
 
 This module wraps the ZEN gRPC ``ExperimentService`` (acquisition.v1beta).
-The main entry point is :func:`check_experiment_api`, which exercises every
-available experiment method in a single call.  It is used both as a smoke-test
-and as the acquisition back-end in the SmartMic pipeline.
+
+Two kinds of entry point:
+
+* **Acquisition** (production) — :func:`run_experiment_by_name`,
+  :func:`run_experiment_from_path`, :func:`run_experiment_from_xml`.  Each loads
+  (or imports) a runnable experiment, runs it, and collects the result.  These
+  are the lean paths the SmartMic pipeline uses for every image.
+* **Smoke test** — :func:`check_experiment_api`, which exercises *every*
+  available experiment method in one call (load, clone, save, export, import,
+  delete, optional snap/live/continuous, run).  Use it to validate the API
+  against a live gateway; it is NOT the per-image acquisition path (it runs a
+  full serialization round-trip and leaves an imported experiment loaded in
+  ZEN, which would accumulate if called for every image).
 
 Image-output strategy
 ---------------------
@@ -620,6 +630,72 @@ async def run_experiment_from_path(
         logger.info("Loading Experiment from path: " + load_arg)
         loaded_exp = await exp_service.load(
             ExperimentServiceLoadRequest(experiment_name=load_arg)
+        )
+        logger.info("Reference Id (loaded): " + loaded_exp.experiment_id)
+
+        results["exp_result_path"] = await _run_experiment_and_collect(
+            exp_service, loaded_exp.experiment_id, default_image_folder, image_folder,
+            czi_name, logger,
+        )
+
+        results["snap_path"] = None
+        results["experiment_id"] = loaded_exp.experiment_id
+        return results
+
+
+async def run_experiment_by_name(
+    experiment_name: str,
+    configfile: Union[str, Path, None] = None,
+    custom_image_folder: Union[str, Path, None] = None,
+    custom_filename: Union[str, None] = None,
+) -> Dict[str, Union[str, Path, None]]:
+    """Load an experiment by name and run it — the lean production acquisition path.
+
+    This is what the SmartMic pipeline calls for every image: load the named
+    experiment, run it, move the result to *custom_image_folder*, and clean up.
+    It deliberately does NOT perform the clone / save / export / import / delete
+    round-trip or the snap / live / continuous steps that
+    :func:`check_experiment_api` does — those belong to the API smoke test, not
+    to a per-image acquisition.  (The round-trip also leaves an imported
+    experiment loaded in ZEN on every call, which would accumulate if it ran for
+    every image.)
+
+    Args:
+        experiment_name: Name of the experiment to load (without the ``.czexp``
+            extension).
+        configfile: ZEN API ``config.ini`` path.  When ``None`` (the default) it
+            resolves to ``config.ini`` next to this script, independent of the
+            current working directory.
+        custom_image_folder: Directory the acquired ``.czi`` is moved to after
+            ZEN writes it to its default output folder.  Defaults to
+            ``F:/UserData/mike/api`` when ``None``.
+        custom_filename: Output base name (without ``.czi``).  A UUID-based name
+            is generated when ``None``.
+
+    Returns:
+        Dict with ``"exp_result_path"`` (Path to the result ``.czi``),
+        ``"snap_path"`` (always ``None`` here), and ``"experiment_id"`` (the
+        loaded experiment's reference id).  Same shape as
+        :func:`check_experiment_api` and the other ``run_experiment_*`` helpers.
+    """
+    logger = set_logging()
+    results: Dict[str, Union[str, Path, None]] = {}
+
+    # Resolve config.ini relative to this script (not the CWD) when not given.
+    if configfile is None:
+        configfile = config_path
+    async with open_zen_channel(configfile) as (channel, metadata):
+        logger.info("Create gRPC Channel and ExperimentService ...")
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
+
+        default_image_folder = await _get_default_image_folder(exp_service, logger)
+        image_folder = _resolve_image_folder(custom_image_folder, logger)
+        czi_name = _make_czi_basename(custom_filename)
+
+        # Load BY NAME → runnable experiment (no import round-trip).
+        logger.info("Loading Experiment ...")
+        loaded_exp = await exp_service.load(
+            ExperimentServiceLoadRequest(experiment_name=experiment_name)
         )
         logger.info("Reference Id (loaded): " + loaded_exp.experiment_id)
 
