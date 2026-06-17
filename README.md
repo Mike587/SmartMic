@@ -41,6 +41,14 @@ projects/examples that consume it live under `projects/`, one folder each.
 |--------|------|
 | `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point) |
 
+**By design, `smartmic_poc` is the only project tracked/shared in this repo.**
+All other project folders under `projects/` are **local-only** and **git-ignored**
+(kept on the local machine, never pushed) — they hold facility- or user-specific
+work that should not ship with the shared library. New local projects are added
+to `.gitignore` per folder (see the existing `projects/HD_Nuclei_from_slide/` and
+`projects/Marc_SM/` entries). Treat this table as listing only the *public* PoC,
+not the full on-disk contents of `projects/`.
+
 Each project script adds the repo root to `sys.path` (two levels up) and then
 imports `zeiss_paths`, so it can use the wrapper modules and the Zeiss
 `zen_api` packages regardless of the working directory it is launched from.

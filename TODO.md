@@ -210,8 +210,11 @@ newly logged and not yet applied.
       Consolidate onto `setup_run_logger` and drop loguru (also noted under the
       vendoring item above).
 
-- [ ] **Stale README projects table** — lists only `projects/smartmic_poc`, but
-      `projects/` also holds `HD_Nuclei_from_slide` and `Marc_SM`.
+- [x] **README projects table lists only `smartmic_poc`** — NOT a bug, this is
+      by design. `smartmic_poc` is the only *public/shared* project; all other
+      `projects/` folders (e.g. `HD_Nuclei_from_slide`, `Marc_SM`) are local-only
+      and git-ignored on purpose. Documented this intent in the README's Projects
+      section (2026-06-17) so the table isn't mistaken for stale.
 
 - [ ] **PoC ignores `run_experiment`'s returned `exp_result_path`** and re-globs
       the folder for the newest `*.czi` (`MS_SmartMic_PoC.py` ~line 237) — fragile
