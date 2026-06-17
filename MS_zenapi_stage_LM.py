@@ -36,7 +36,6 @@ move_stage_to_new_xy_position      -- Lower Z, move XY, then wait for settling
 """
 
 import asyncio
-from pathlib import Path
 import numpy as np
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
@@ -49,10 +48,8 @@ from zen_api.lm.hardware.v2 import (
     StageServiceMoveToRequest,
 )
 
-# Resolve config.ini relative to this script so the module works regardless
-# of the current working directory.
-script_dir = Path(__file__).parent
-config_path = script_dir / "config.ini"
+# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
+from zeiss_paths import CONFIG_PATH as config_path
 
 
 async def get_current_xy_stage_coordinates():

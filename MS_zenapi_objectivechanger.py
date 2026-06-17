@@ -39,10 +39,8 @@ get_current_objective_and_optovar -- Query the current positions of both devices
 """
 
 import asyncio
-from pathlib import Path
 import sys
 
-# from typing import List
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import (
     set_logging,
@@ -65,10 +63,8 @@ from zen_api.lm.hardware.v2 import (
     OptovarServiceGetOptovarsRequest,
 )
 
-# Resolve config.ini relative to this script so the module works regardless
-# of the current working directory.
-script_dir = Path(__file__).parent
-config_path = script_dir / "config.ini"
+# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
+from zeiss_paths import CONFIG_PATH as config_path
 
 
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int):

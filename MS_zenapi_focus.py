@@ -43,7 +43,6 @@ and avoids shared-state issues when functions are called from a pipeline.
 """
 
 import asyncio
-from pathlib import Path
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
@@ -63,10 +62,8 @@ from zen_api.lm.acquisition.v1 import (
     DefiniteFocusServiceRecallFocusRequest,
 )
 
-# Resolve config.ini relative to this script so the module works regardless
-# of the current working directory.
-script_dir = Path(__file__).parent
-config_path = script_dir / "config.ini"
+# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
+from zeiss_paths import CONFIG_PATH as config_path
 
 
 async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6):

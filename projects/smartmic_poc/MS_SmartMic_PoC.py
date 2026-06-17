@@ -44,7 +44,6 @@ Focus notes
   to ~1 s.
 """
 
-import itertools
 import json
 import random
 import sys
@@ -158,9 +157,18 @@ def main():
         log.error("No positions loaded — aborting.")
         return 1
 
-    # Sort by scene_index so wells stay in plate order, then group by well
+    # Sort by scene_index so wells stay in plate order, then group by well.
+    # Use an order-preserving dict rather than itertools.groupby: groupby only
+    # groups CONSECUTIVE items, so if a well's positions are not contiguous in
+    # scene order they would be split into several groups (and imaged as if they
+    # were different wells). The dict groups all positions of a well regardless
+    # of order, while wells are still visited in plate order (by the scene_index
+    # of each well's first position).
     positions.sort(key=lambda p: p["scene_index"])
-    wells = itertools.groupby(positions, key=lambda p: p["well"])
+    wells_by_name = {}
+    for p in positions:
+        wells_by_name.setdefault(p["well"], []).append(p)
+    wells = wells_by_name.items()
     log.info(f"Loaded {len(positions)} stage positions from {POSITIONS_FILE.name}")
 
     # Tracks the last successfully found surface Z (metres).
@@ -230,15 +238,17 @@ def main():
                             f" — proceeding with SWAF1/DF position ***")
 
             # ── 5. Acquire overview image ─────────────────────────────
-            ms.run_experiment(OVERVIEW_EXPERIMENT_NAME, OVERVIEW_IMAGE_PATH,
-                              f"{tag}_overview", False)
-
-            # Identify the CZI that was just written (newest file in the folder)
-            czi_files = list(OVERVIEW_IMAGE_PATH.glob("*.czi"))
-            if not czi_files:
-                log.error(f"No .czi found in {OVERVIEW_IMAGE_PATH} after overview — skipping {tag}.")
+            # Use the result path returned by run_experiment instead of globbing
+            # the folder for the newest *.czi: globbing is racy (can pick up a
+            # leftover file) and misses the collision-counter suffix the
+            # acquisition may append. exp_result_path is authoritative.
+            ov_result = ms.run_experiment(OVERVIEW_EXPERIMENT_NAME, OVERVIEW_IMAGE_PATH,
+                                          f"{tag}_overview", False)
+            image_path = ov_result.get("exp_result_path")
+            if image_path is None or not Path(image_path).exists():
+                log.error(f"No overview CZI produced for {tag} — skipping.")
                 continue
-            image_path = max(czi_files, key=lambda p: p.stat().st_mtime)
+            image_path = Path(image_path)
 
             # Log the CZI's embedded FocusPosition and Laplacian-variance focus score.
             # FocusPosition ≠ ZDrive because DF applies a piezo correction on top.
@@ -351,17 +361,21 @@ def main():
                     # 8f. Confocal z-stack
                     # The z-stack is centered on the current focus position (SWAF2).
                     # 11 planes × 2 µm = 20 µm total range, ±10 µm around SWAF2.
-                    ms.run_experiment(
+                    zstack_result = ms.run_experiment(
                         DETAILED_EXPERIMENT_NAME,
                         DETAILED_FOLDER,
                         f"{tag}_nucleus_{nuc_id:04d}",
                         False,
                     )
 
-                    # 8g. Log z-stack metadata and focus quality
-                    nuc_czi         = DETAILED_FOLDER / f"{tag}_nucleus_{nuc_id:04d}.czi"
-                    czi_z_nuc       = helper.get_focus_position_from_czi(nuc_czi) if nuc_czi.exists() else None
-                    focus_score_nuc = helper.compute_focus_score(nuc_czi)   if nuc_czi.exists() else None
+                    # 8g. Log z-stack metadata and focus quality.
+                    # Use the returned result path (authoritative; accounts for any
+                    # collision-counter suffix) rather than reconstructing the name.
+                    nuc_czi_raw     = zstack_result.get("exp_result_path")
+                    nuc_czi         = Path(nuc_czi_raw) if nuc_czi_raw else None
+                    nuc_exists      = nuc_czi is not None and nuc_czi.exists()
+                    czi_z_nuc       = helper.get_focus_position_from_czi(nuc_czi) if nuc_exists else None
+                    focus_score_nuc = helper.compute_focus_score(nuc_czi)        if nuc_exists else None
                     nuc_score_str   = f"{focus_score_nuc:.1f}" if focus_score_nuc is not None else "n/a"
                     if czi_z_nuc is not None:
                         log.info(f"Detailed image saved: {tag}_nucleus_{nuc_id:04d}.czi"
@@ -375,7 +389,7 @@ def main():
 
                     # Log first/center/last plane Z so we can verify the stack
                     # is centered on the SWAF2 focus position.
-                    zr = helper.get_zstack_z_range(nuc_czi) if nuc_czi.exists() else None
+                    zr = helper.get_zstack_z_range(nuc_czi) if nuc_exists else None
                     if zr:
                         log.info(
                             f"Z-stack range: first={zr['first_um']:.3f} µm  "

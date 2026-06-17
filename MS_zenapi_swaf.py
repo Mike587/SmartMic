@@ -70,10 +70,8 @@ from zen_api.lm.hardware.v2 import (
     FocusServiceStub,
 )
 
-# Resolve config.ini relative to this script so the module works regardless
-# of the current working directory.
-script_dir = Path(__file__).parent
-config_path = script_dir / "config.ini"
+# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
+from zeiss_paths import CONFIG_PATH as config_path
 
 # Default experiment names used by the CLI demo (main function).
 expname = "ZEN_API_SWAF"

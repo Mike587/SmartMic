@@ -120,9 +120,14 @@ done deliberately as a single pass rather than folded into small edits.
       manager's `finally`. The `try/finally` versions (`sample_carrier`, the
       newer `objectivechanger` ones) were converted to the same helper.
 
-- [ ] **Centralize `config_path`.** `config_path = script_dir / "config.ini"` is
-      duplicated verbatim in every module. Resolve it once (e.g. in
-      `zeiss_paths`) and import it.
+- [x] **Centralize `config_path`.** ✅ DONE (2026-06-17). Resolved once as
+      `zeiss_paths.CONFIG_PATH` (absolute, repo root); all six wrapper modules now
+      do `from zeiss_paths import CONFIG_PATH as config_path` instead of
+      recomputing `Path(__file__).parent / "config.ini"`. The now-unused
+      `from pathlib import Path` was dropped from the four modules that only used
+      it for that. `MS_zenapi_helpers` stays decoupled from `zeiss_paths` (its
+      `initialize_zenapi`/`open_zen_channel` keep their plain `"config.ini"`
+      default; the modules pass `config_path` explicitly).
 
 - [x] **Reduce / vendor the `zen_api_utils` dependency.** ✅ DONE (2026-06-17).
       All three usage surfaces are now vendored into `MS_zenapi_helpers.py`, so
@@ -194,9 +199,18 @@ newly logged and not yet applied.
       above). `move_focus_to_new_z_position`, `check_experiment_api` and the
       `run_experiment_*` functions now close the channel on every path.
 
-- [ ] **Imported experiment never deleted** in `check_experiment_api` — the clone
-      is deleted, but the experiment imported from XML (~line 403) is left loaded
-      in ZEN on every run.
+- [ ] **`check_experiment_api` leaks an imported experiment / conflates smoke
+      test with production.** The clone is deleted by name, but the experiment
+      created by `import_` (the round-trip step) is registered in ZEN's session
+      and never deleted/unloaded — it accumulates on every call. `delete` takes
+      `experiment_name`; the import may have none, so a narrow fix needs a
+      delete-by-id/unload (verify against the ZEN API). Bigger picture: this
+      function is BOTH the API smoke test (clone→save→export→import→delete) AND
+      the production acquisition path the PoC calls for every overview/nucleus —
+      so production needlessly runs the whole round-trip each image. Preferred
+      fix: split a lean load→run→collect path for the PoC from the full smoke
+      test, which also makes the leak moot. (Behaviour change to the PoC's
+      acquisition path — decide before doing.)
 
 - [x] **Two default CZI-name schemes** — ✅ DONE (2026-06-17).
       `check_experiment_api` now builds its base name via `_make_czi_basename`
@@ -223,10 +237,15 @@ newly logged and not yet applied.
       and git-ignored on purpose. Documented this intent in the README's Projects
       section (2026-06-17) so the table isn't mistaken for stale.
 
-- [ ] **PoC ignores `run_experiment`'s returned `exp_result_path`** and re-globs
-      the folder for the newest `*.czi` (`MS_SmartMic_PoC.py` ~line 237) — fragile
-      against leftover files; use the returned path.
+- [x] **PoC ignores `run_experiment`'s returned `exp_result_path`** — ✅ DONE
+      (2026-06-17). The overview pass now uses `ov_result["exp_result_path"]`
+      instead of globbing for the newest `*.czi`, and the detailed z-stack pass
+      uses `zstack_result["exp_result_path"]` instead of reconstructing the
+      filename — both authoritative and collision-counter-safe.
 
-- [ ] **PoC `itertools.groupby` assumes same-well positions are contiguous** after
-      sorting by `scene_index` (~line 163). True for current plates; document the
-      assumption or sort by well.
+- [x] **PoC `groupby` contiguity assumption** — ✅ DONE (2026-06-17). Replaced
+      `itertools.groupby` (which only groups CONSECUTIVE items) with an
+      order-preserving dict, so a well whose positions are non-contiguous in
+      scene order is no longer split into multiple groups. Wells are still
+      visited in plate order (by each well's first scene_index). Dropped the
+      now-unused `import itertools`.

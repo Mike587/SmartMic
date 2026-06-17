@@ -37,6 +37,12 @@ ZEISS_EXAMPLES = Path(
 # This project's own directory, so the MS_* modules can import each other.
 THIS_DIR = Path(__file__).resolve().parent
 
+# The ZEN-API connection config lives at the repo root next to this file.
+# Single source of truth: every MS_zenapi_* module imports CONFIG_PATH from here
+# instead of recomputing ``Path(__file__).parent / "config.ini"`` itself.  It is
+# absolute, so it does not depend on the current working directory.
+CONFIG_PATH = THIS_DIR / "config.ini"
+
 # IMPORTANT ordering:
 #   * THIS_DIR goes to the FRONT  -> this project's MS_* modules win.
 #   * ZEISS_EXAMPLES goes to the BACK -> used only as a fallback for

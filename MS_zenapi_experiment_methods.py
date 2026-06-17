@@ -95,10 +95,8 @@ waittime = 3
 # Set to True in __main__ to open and display the acquired CZI image.
 open_czi = False
 
-# Resolve config.ini relative to this script so the module works regardless
-# of the current working directory.
-script_dir = Path(__file__).parent
-config_path = script_dir / "config.ini"
+# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
+from zeiss_paths import CONFIG_PATH as config_path
 
 
 # ---------------------------------------------------------------------------

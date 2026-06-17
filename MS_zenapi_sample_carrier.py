@@ -27,7 +27,6 @@ get_sample_carrier_info  -- Read the full carrier description as a dict.
 """
 
 import asyncio
-from pathlib import Path
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
 
@@ -37,10 +36,8 @@ from zen_api.lm.hardware.v1 import (
     SampleCarrierServiceGetInfoRequest,
 )
 
-# Resolve config.ini relative to this script so the module works regardless
-# of the current working directory.
-script_dir = Path(__file__).parent
-config_path = script_dir / "config.ini"
+# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
+from zeiss_paths import CONFIG_PATH as config_path
 
 
 async def get_sample_carrier_info() -> dict:
