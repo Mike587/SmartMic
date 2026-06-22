@@ -120,7 +120,17 @@ from zeiss_paths import CONFIG_PATH as config_path
 # identical and lives in these helpers.
 
 async def _get_default_image_folder(exp_service, logger) -> Path:
-    """Query ZEN's read-only default image output folder."""
+    """Query ZEN's read-only default image output folder.
+
+    NOTE: this path (e.g. ``F:\\UserData\\mike\\temp``) is **owned by ZEN**, not
+    by this repo.  It is whatever is configured as the default image-save
+    location inside the running ZEN application, fetched live here.  ZEN always
+    writes acquired CZIs here first; the caller then moves each result into the
+    custom output folder (see ``_move_result_and_cleanup``).  The ZEN-API exposes
+    only ``GetImageOutputPath`` (no setter), so this folder CANNOT be changed from
+    code — change it in ZEN's options if needed.  Keeping it on the same drive as
+    the custom output folder makes the move a fast same-volume rename.
+    """
     save_path = await exp_service.get_image_output_path(
         ExperimentServiceGetImageOutputPathRequest()
     )

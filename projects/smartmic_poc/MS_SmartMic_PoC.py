@@ -47,6 +47,7 @@ Focus notes
 import json
 import random
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -54,30 +55,40 @@ from pathlib import Path
 # experiment set.  All paths use forward slashes; Windows handles both.
 # ---------------------------------------------------------------------------
 
-# Root output directory — all sub-folders live under this path
-ROOT_PATH           = Path("F:/UserData/mike/api/")
-OVERVIEW_IMAGE_PATH = ROOT_PATH / "overview"   # widefield overview CZI files
-ANALYSIS_PATH       = ROOT_PATH / "analysis"   # nuclei.json outputs from analysis
-DETAILED_FOLDER     = ROOT_PATH / "detailed"   # confocal single-plane + z-stack CZIs
-LOG_FOLDER          = ROOT_PATH / "log"        # timestamped run logs
+# Root output directory.  Each run creates its own timestamped sub-folder beneath
+# this path (see main()), so outputs from different runs never mix or overwrite.
+ROOT_PATH = Path("F:/UserData/api")
 
-# ZEN experiment names (without .czexp extension)
-OVERVIEW_EXPERIMENT_NAME  = "DAPI_GFP_001"           # widefield overview (20×, DV)
-DETAILED_EXPERIMENT_NAME  = "DAPI_LSM_z-stack_001"   # confocal z-stack (11 planes, 2 µm step)
-ONCZ_EXPERIMENT_NAME      = "DAPI_LSM_onez_001"      # single confocal plane — focus reference
-                                                      # acquired at SWAF2 Z before the z-stack
+# Leaf folder names created inside each per-run folder.
+OVERVIEW_IMAGE_DIRNAME = "overview-images"     # widefield overview CZI files
+ANALYSIS_DIRNAME       = "overview-analysis"   # nuclei.json outputs from analysis
+DETAILED_DIRNAME       = "detailed-images"     # confocal single-plane + z-stack CZIs
+LOG_DIRNAME            = "log"                  # timestamped run logs
+
+# ZEN experiment files — run BY PATH from the copies vendored with this project
+# (base_experiments/), not by name from ZEN's experiment library.  This makes the
+# pipeline self-contained: the experiments travel with the repo and do not need to
+# be pre-installed in ZEN.  PROJECT_DIR resolves relative to this script so the
+# paths hold regardless of the working directory the pipeline is launched from.
+PROJECT_DIR          = Path(__file__).resolve().parent
+BASE_EXPERIMENTS_DIR = PROJECT_DIR / "base_experiments"
+
+OVERVIEW_EXPERIMENT_PATH  = BASE_EXPERIMENTS_DIR / "DAPI_GFP_001.czexp"          # widefield overview (20×, DV)
+DETAILED_EXPERIMENT_PATH  = BASE_EXPERIMENTS_DIR / "DAPI_LSM_z-stack_001.czexp"  # confocal z-stack (11 planes, 2 µm step)
+ONCZ_EXPERIMENT_PATH      = BASE_EXPERIMENTS_DIR / "DAPI_LSM_onez_001.czexp"     # single confocal plane — focus reference
+                                                                                 # acquired at SWAF2 Z before the z-stack
 
 # Software autofocus experiments for the OVERVIEW (widefield/DV channel)
 # These are parfocal with DAPI_GFP_001.
-SWAF_EXPERIMENT_NAME      = "DV_001_swaf_001"   # coarse sweep — large Z range
-SWAF_EXPERIMENT_NAME_2    = "DV_001_swaf_002"   # fine sweep — small Z range around SWAF1 result
+SWAF_EXPERIMENT_PATH      = BASE_EXPERIMENTS_DIR / "DV_001_swaf_001.czexp"   # coarse sweep — large Z range
+SWAF_EXPERIMENT_PATH_2    = BASE_EXPERIMENTS_DIR / "DV_001_swaf_002.czexp"   # fine sweep — small Z range around SWAF1 result
 
 # Software autofocus experiments for NUCLEUS DETAILED imaging (confocal/LSM channel)
 # These are parfocal with DAPI_LSM_onez_001 and DAPI_LSM_z-stack_001.
 # On this system the DV→LSM parfocality offset is ~3 µm, which is why separate
 # SWAF experiments are needed for each modality.
-NUCLEUS_SWAF_EXPERIMENT_NAME   = "DAPI_LSM_onez_001_swaf_001"   # coarse
-NUCLEUS_SWAF_EXPERIMENT_NAME_2 = "DAPI_LSM_onez_001_swaf_002"   # fine
+NUCLEUS_SWAF_EXPERIMENT_PATH   = BASE_EXPERIMENTS_DIR / "DAPI_LSM_onez_001_swaf_001.czexp"   # coarse
+NUCLEUS_SWAF_EXPERIMENT_PATH_2 = BASE_EXPERIMENTS_DIR / "DAPI_LSM_onez_001_swaf_002.czexp"   # fine
 
 # Adaptive DF start Z: after the first successful FindSurface, all subsequent
 # FindSurface calls start this far below the last known surface position.
@@ -90,8 +101,9 @@ DF_APPROACH_MARGIN_M = 100e-6   # metres
 EXPECTED_SAMPLE_CARRIER = "Multichamber 384"
 
 # Well-plate position file (.czexp) — contains the XYZ coordinates and
-# IsUsedForAcquisition flags for each well / sub-position.
-POSITIONS_FILE = Path(r"C:/ProgramData/Carl Zeiss/ZEN/Users/mike/Documents/Experiment Setups/384WP_TestPositions_004.czexp")
+# IsUsedForAcquisition flags for each well / sub-position.  Read from the copy
+# vendored with this project (position_files/) so the pipeline is self-contained.
+POSITIONS_FILE = PROJECT_DIR / "position_files" / "384WP_TestPositions_004.czexp"
 
 # External nuclei-detection script (runs in a separate pixi environment so it
 # can have its own dependencies without conflicting with the ZEN API env).
@@ -122,13 +134,24 @@ except ImportError as e:
 # ---------------------------------------------------------------------------
 
 def main():
-    log, _ = helper.setup_run_logger(LOG_FOLDER)
+    # Per-run output folder: F:/UserData/api/run_YYYYmmdd_HHMMSS/...
+    # One timestamp groups this run's images, analysis and log together and keeps
+    # separate runs from overwriting each other.
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_path      = ROOT_PATH / f"run_{run_timestamp}"
+    overview_image_path = run_path / OVERVIEW_IMAGE_DIRNAME
+    analysis_path       = run_path / ANALYSIS_DIRNAME
+    detailed_folder     = run_path / DETAILED_DIRNAME
+    log_folder          = run_path / LOG_DIRNAME
+
+    log, _ = helper.setup_run_logger(log_folder)
     log.info("SmartMic PoC run started")
+    log.info(f"Run output folder : {run_path}")
     log.info(f"Positions file    : {POSITIONS_FILE}")
-    log.info(f"Overview exp      : {OVERVIEW_EXPERIMENT_NAME}")
-    log.info(f"Detailed exp      : {DETAILED_EXPERIMENT_NAME}")
-    log.info(f"Overview SWAF     : {SWAF_EXPERIMENT_NAME} / {SWAF_EXPERIMENT_NAME_2}")
-    log.info(f"Nucleus SWAF      : {NUCLEUS_SWAF_EXPERIMENT_NAME} / {NUCLEUS_SWAF_EXPERIMENT_NAME_2}")
+    log.info(f"Overview exp      : {OVERVIEW_EXPERIMENT_PATH.name}")
+    log.info(f"Detailed exp      : {DETAILED_EXPERIMENT_PATH.name}")
+    log.info(f"Overview SWAF     : {SWAF_EXPERIMENT_PATH.name} / {SWAF_EXPERIMENT_PATH_2.name}")
+    log.info(f"Nucleus SWAF      : {NUCLEUS_SWAF_EXPERIMENT_PATH.name} / {NUCLEUS_SWAF_EXPERIMENT_PATH_2.name}")
 
     # ------------------------------------------------------------------
     # Verify the correct sample carrier is loaded BEFORE doing anything.
@@ -216,7 +239,7 @@ def main():
                 log.warning(f"*** DF RETRY: FindSurface needed {df_attempts} attempts at {tag} ***")
 
             # ── 4. SWAF coarse + fine (widefield/DV channel) ──────────
-            swaf_z_overview, swaf_attempts = ms.run_swaf(SWAF_EXPERIMENT_NAME)
+            swaf_z_overview, swaf_attempts = ms.run_swaf_from_path(SWAF_EXPERIMENT_PATH)
             if swaf_z_overview is not None:
                 log.info(f"SWAF1 (overview) {tag}: focus_pos={swaf_z_overview:.3f} µm"
                          f"  (DF-SWAF1: {z_fs_overview_um - swaf_z_overview:+.3f} µm)")
@@ -226,7 +249,7 @@ def main():
                 log.warning(f"*** SWAF1 FAILED after {swaf_attempts} attempts (overview) {tag}"
                             f" — proceeding to SWAF2 from DF position ***")
 
-            swaf_z_overview2, swaf2_attempts = ms.run_swaf(SWAF_EXPERIMENT_NAME_2)
+            swaf_z_overview2, swaf2_attempts = ms.run_swaf_from_path(SWAF_EXPERIMENT_PATH_2)
             if swaf_z_overview2 is not None:
                 ref = swaf_z_overview if swaf_z_overview is not None else z_fs_overview_um
                 log.info(f"SWAF2 (overview) {tag}: focus_pos={swaf_z_overview2:.3f} µm"
@@ -242,8 +265,8 @@ def main():
             # the folder for the newest *.czi: globbing is racy (can pick up a
             # leftover file) and misses the collision-counter suffix the
             # acquisition may append. exp_result_path is authoritative.
-            ov_result = ms.run_experiment(OVERVIEW_EXPERIMENT_NAME, OVERVIEW_IMAGE_PATH,
-                                          f"{tag}_overview", False)
+            ov_result = ms.run_experiment_from_path(OVERVIEW_EXPERIMENT_PATH, overview_image_path,
+                                                    f"{tag}_overview")
             image_path = ov_result.get("exp_result_path")
             if image_path is None or not Path(image_path).exists():
                 log.error(f"No overview CZI produced for {tag} — skipping.")
@@ -267,9 +290,9 @@ def main():
             # ── 6. Nuclei detection ───────────────────────────────────
             # Runs the analysis script as a subprocess; outputs a nuclei.json
             # with one entry per detected nucleus, including absolute XY coords.
-            success     = run_analysis(image_path, ANALYSIS_PATH, tag, log,
+            success     = run_analysis(image_path, analysis_path, tag, log,
                                        ANALYSIS_SCRIPT, ANALYSIS_SCRIPT_DIR)
-            nuclei_json = ANALYSIS_PATH / f"{tag}_nuclei.json"
+            nuclei_json = analysis_path / f"{tag}_nuclei.json"
             if not success or not nuclei_json.exists():
                 log.warning(f"Analysis produced no nuclei.json for {tag} — skipping detailed imaging.")
                 continue
@@ -313,7 +336,7 @@ def main():
                     # These experiments use the DAPI confocal channel, so SWAF2 sets Z
                     # exactly where the confocal will image.  Using DV SWAF here would
                     # introduce a ~3 µm parfocality error for the LSM acquisitions.
-                    swaf_z_nuc, swaf_nuc_attempts = ms.run_swaf(NUCLEUS_SWAF_EXPERIMENT_NAME)
+                    swaf_z_nuc, swaf_nuc_attempts = ms.run_swaf_from_path(NUCLEUS_SWAF_EXPERIMENT_PATH)
                     if swaf_z_nuc is not None:
                         log.info(f"SWAF1 (nucleus {nuc_id:04d}) {tag}: focus_pos={swaf_z_nuc:.3f} µm"
                                  f"  (DF-SWAF1: {z_fs_nuc_um - swaf_z_nuc:+.3f} µm)")
@@ -328,7 +351,7 @@ def main():
                             f" (nucleus {nuc_id:04d}) {tag} — proceeding to SWAF2 from DF position ***"
                         )
 
-                    swaf_z_nuc2, swaf_nuc2_attempts = ms.run_swaf(NUCLEUS_SWAF_EXPERIMENT_NAME_2)
+                    swaf_z_nuc2, swaf_nuc2_attempts = ms.run_swaf_from_path(NUCLEUS_SWAF_EXPERIMENT_PATH_2)
                     if swaf_z_nuc2 is not None:
                         ref_nuc = swaf_z_nuc if swaf_z_nuc is not None else z_fs_nuc_um
                         log.info(f"SWAF2 (nucleus {nuc_id:04d}) {tag}: focus_pos={swaf_z_nuc2:.3f} µm"
@@ -349,11 +372,10 @@ def main():
                     # without waiting for the full stack.  Non-fatal if the
                     # experiment is missing — the z-stack still runs.
                     try:
-                        ms.run_experiment(
-                            ONCZ_EXPERIMENT_NAME,
-                            DETAILED_FOLDER,
+                        ms.run_experiment_from_path(
+                            ONCZ_EXPERIMENT_PATH,
+                            detailed_folder,
                             f"{tag}_nucleus_{nuc_id:04d}_oncz",
-                            False,
                         )
                     except Exception as oncz_err:
                         log.warning(f"oncz experiment skipped for nucleus {nuc_id:04d} at {tag}: {oncz_err}")
@@ -361,11 +383,10 @@ def main():
                     # 8f. Confocal z-stack
                     # The z-stack is centered on the current focus position (SWAF2).
                     # 11 planes × 2 µm = 20 µm total range, ±10 µm around SWAF2.
-                    zstack_result = ms.run_experiment(
-                        DETAILED_EXPERIMENT_NAME,
-                        DETAILED_FOLDER,
+                    zstack_result = ms.run_experiment_from_path(
+                        DETAILED_EXPERIMENT_PATH,
+                        detailed_folder,
                         f"{tag}_nucleus_{nuc_id:04d}",
-                        False,
                     )
 
                     # 8g. Log z-stack metadata and focus quality.
