@@ -44,6 +44,12 @@ Thumbs.db
 *.czexp
 *.czexp.backup
 *.png
+
+# ...but DO track the experiment + position .czexp copies the smartmic_poc
+# pipeline runs BY PATH.  These are vendored on purpose so the run is
+# self-contained from a clone (see MS_SmartMic_PoC.py).
+!projects/smartmic_poc/base_experiments/*.czexp
+!projects/smartmic_poc/position_files/*.czexp
 *.log
 logs/
 log/
