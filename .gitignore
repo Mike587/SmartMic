@@ -46,3 +46,11 @@ logs/
 log/
 output/
 temp_*.py
+
+# ...but the test fixtures ARE part of the repo — override the blanket *.czi /
+# *.czexp ignores above so they get committed (reproducible tests).
+!tests/fixtures/czexp/*.czexp
+!tests/fixtures/czi/*.czi
+# ...except the superseded large CZIs — use the *_small variants instead.
+tests/fixtures/czi/sharp.czi
+tests/fixtures/czi/blurry.czi

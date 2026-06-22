@@ -50,6 +50,7 @@ leftover ``.czi`` files in the default folder are cleaned up at the end.
 """
 
 import asyncio
+import shutil
 from typing import Dict, Union, Optional
 from pathlib import Path
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
@@ -169,7 +170,10 @@ def _move_result_and_cleanup(exp_result, default_image_folder, image_folder, log
     # different string form is still detected (and we never rename a file onto
     # itself).
     if exp_default_path.resolve() != exp_custom_path.resolve() and exp_default_path.exists():
-        exp_default_path.rename(exp_custom_path)
+        # shutil.move (not Path.rename): the custom folder may be on a different
+        # drive than ZEN's default output folder, and os.rename cannot move across
+        # drives on Windows (WinError 17). Same-drive moves behave like rename.
+        shutil.move(str(exp_default_path), str(exp_custom_path))
         logger.info(f"Moved experiment result from {exp_default_path} to {exp_custom_path}")
         result_path = exp_custom_path
     else:
@@ -444,7 +448,9 @@ async def check_experiment_api(
             # Move the snap to the custom folder if the paths differ.
             snap_custom_path = image_folder / (snap.output_name + ".czi")
             if snap_default_path != snap_custom_path and snap_default_path.exists():
-                snap_default_path.rename(snap_custom_path)
+                # shutil.move (not Path.rename) — see _move_result_and_cleanup:
+                # the custom folder may be on a different drive than ZEN's default.
+                shutil.move(str(snap_default_path), str(snap_custom_path))
                 logger.info(f"Moved snap from {snap_default_path} to {snap_custom_path}")
                 results["snap_path"] = snap_custom_path
             else:

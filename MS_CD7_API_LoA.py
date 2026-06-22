@@ -385,6 +385,26 @@ def run_swaf(swaf_experiment_name: str, timeout: int = 30) -> Tuple[Optional[flo
     return asyncio.run(MS_zenapi_swaf.run_software_autofocus(swaf_experiment_name, timeout=timeout))
 
 
+def run_swaf_from_path(czexp_path: Union[str, Path], timeout: int = 30) -> Tuple[Optional[float], int]:
+    """
+    Run software autofocus (SWAF) from a standalone ``.czexp`` file path.
+
+    The portable counterpart to :func:`run_swaf`: the SWAF experiment is loaded
+    by path rather than by a name that must already exist in ZEN's library, so
+    the call is self-contained (used by the test suite and any caller that ships
+    its own experiment files).
+
+    Args:
+        czexp_path: Path to the SWAF ``.czexp`` file to load and run.
+        timeout:    Search timeout in seconds (default 30).
+
+    Returns:
+        Tuple (focus_pos_um, attempts_used).
+        focus_pos_um is None if all attempts failed.
+    """
+    return asyncio.run(MS_zenapi_swaf.run_software_autofocus_from_path(czexp_path, timeout=timeout))
+
+
 def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.0, 
                                    poll_interval=OBJECTIVE_POLL_INTERVAL, 
                                    max_retries=MAX_IMMERSION_RETRIES):

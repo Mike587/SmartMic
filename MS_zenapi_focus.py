@@ -105,7 +105,19 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
         # Move Z-drive to the requested starting position before the DF search.
-        await focus_service.move_to(FocusServiceMoveToRequest(value=start_z_m))
+        # The exact start does not need to be reached: DF FindSurface can search
+        # from wherever the drive actually lands.  In particular the default
+        # start (-300 µm) can be below the drive's reachable minimum on some
+        # configurations, where ZEN reports "Requested position was not reached".
+        # Treat that as non-fatal — land as close as the drive allows and let the
+        # surface search proceed, rather than aborting the whole find.
+        try:
+            await focus_service.move_to(FocusServiceMoveToRequest(value=start_z_m))
+        except Exception as move_err:
+            logger.warning(
+                f"Initial move to start Z {start_z_m * 1e6:.1f} µm not fully "
+                f"reached ({move_err}); proceeding from the current Z."
+            )
         zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
         logger.info(f"Initial Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
 

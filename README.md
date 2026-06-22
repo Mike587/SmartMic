@@ -105,3 +105,16 @@ Use the existing `smartmic` pixi environment:
 or run the script directly:
 
     pixi run -e smartmic python projects/smartmic_poc/MS_SmartMic_PoC.py
+
+## Testing
+
+There are two tiers of tests: fast **offline** unit tests (no microscope) and
+**hardware** tests that run against the live ZEN-API gateway with the 384-well
+plate loaded. Hardware tests are skipped unless you pass `--run-hardware`, so a
+plain run never moves the scope:
+
+    pixi run -e smartmic test        # offline unit tests only
+    pixi run -e smartmic test-hw     # hardware tests (on the scope, opt-in)
+
+See [`tests/README.md`](tests/README.md) for the full step-by-step guide and
+[`tests/TEST_PLAN.md`](tests/TEST_PLAN.md) for the design.

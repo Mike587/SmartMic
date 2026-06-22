@@ -1,3 +1,16 @@
+
+# Notes by Mike
+
+Some notes before I forget:
+
+- Incubation (temperature and CO2 and Nitrogen content): Can we do this over the API?
+- Stage speed: Is there a good way to control stage speed? is this in the czexp files? How to globally control stage speed for a whole project?
+
+
+
+
+
+
 # SmartMic — Code Review TODO
 
 Proposed changes from a read-only review (2026-06-16). Grouped by severity.

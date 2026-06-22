@@ -112,6 +112,13 @@ smartmic = { features = ["smartmic"], no-default-feature = true }
 # Run the SmartMic proof-of-concept pipeline.
 poc = "python projects/smartmic_poc/MS_SmartMic_PoC.py"
 
+# Offline unit tests — no microscope, safe to run anywhere.
+test = "pytest tests/unit -q"
+# Hardware tests — talk to the live ZEN-API gateway (opt-in; needs the scope).
+test-hw = "pytest tests/hardware -q --run-hardware"
+# Everything + coverage.
+test-all = "pytest -q --run-hardware --cov"
+
 
 
 
