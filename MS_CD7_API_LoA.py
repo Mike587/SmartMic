@@ -2,8 +2,11 @@
 
 #################################################################
 # File        : MS_CD7_API_LoA.py
-# Author      : Mike Stebler
+# Author      : Michael Stebler
 # Institution : ETH Zurich | ScopeM
+#               ScopeM Imaging Facility (scopem.ethz.ch)
+#
+# Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
 #
 # Permission is granted to use, modify and distribute this code,
 # as long as this copyright notice remains part of the code.

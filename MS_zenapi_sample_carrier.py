@@ -10,6 +10,8 @@
 # information about the currently loaded sample carrier (well plate,
 # slide, dish, ...).
 #
+# Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
+#
 # Permission is granted to use, modify and distribute this code,
 # as long as this copyright notice remains part of the code.
 #################################################################
@@ -26,7 +28,6 @@ Public functions
 get_sample_carrier_info  -- Read the full carrier description as a dict.
 """
 
-import asyncio
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
 
@@ -81,7 +82,3 @@ async def get_sample_carrier_info() -> dict:
         "skirt": info.skirt,
         "refractive_index": info.refractive_index,
     }
-
-
-if __name__ == "__main__":
-    print(asyncio.run(get_sample_carrier_info()))

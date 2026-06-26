@@ -6,6 +6,135 @@ Some notes before I forget:
 - Incubation (temperature and CO2 and Nitrogen content): Can we do this over the API?
 - Stage speed: Is there a good way to control stage speed? is this in the czexp files? How to globally control stage speed for a whole project?
 
+## Plan: Stage speed (investigated 2026-06-26)
+
+**Answer to the questions:** Yes, the API supports it; no, it is not in the
+`.czexp` files; global control is done via a module-level constant in
+`MS_zenapi_stage_LM.py`.
+
+`MS_zenapi_stage_LM.py` already imports from `zen_api.lm.hardware.v2`, which
+exposes speed/acceleration control as separate calls (the `MoveTo` request
+itself has no velocity field — speed is set on the stage before the move):
+
+- `StageServiceSetSpeedRequest(speed_x, speed_y)` — both `Optional[float]`, % `[0, 100]`
+- `StageServiceSetAccelerationRequest(acceleration_x, acceleration_y)` — same units
+- `StageServiceGetSpeedRequest` / `StageServiceGetAccelerationRequest` (+ responses) for read-back
+
+Speed is **not** stored in `.czexp` — it is a hardware-layer setting, so it
+cannot be controlled per-experiment from the XML. The global control is a
+one-shot call at the start of a project run.
+
+**Default is full speed — the knob is for sensitive samples only.**
+Normal projects run at 100% speed and 100% acceleration (the fast, default
+behaviour). The control exists for the exception: some samples need it turned
+down. When turning it down, note that for live samples (cells, spheroids,
+suspended media) it is the *acceleration* (the jerk at the start/stop of a move)
+that sloshes the medium and disturbs the sample, not the top speed — so
+acceleration is the knob that matters most. Always set both together: a low top
+speed paired with a high acceleration still jolts the sample. `v2` exposes both:
+`StageServiceSetAccelerationRequest(acceleration_x, acceleration_y)` alongside
+`StageServiceSetSpeedRequest(speed_x, speed_y)`, both % `[0, 100]`.
+
+**Persistence (decided 2026-06-26): set once per project, leave it.**
+`SetSpeed` / `SetAcceleration` are separate calls (not fields on `MoveTo`) with
+matching `GetSpeed` / `GetAcceleration` read-backs — i.e. they are *device
+state*. Once set, the stage controller holds the values and every later `MoveTo`
+uses them, including across SmartMic's per-call open/close of the gRPC channel.
+So the intended usage is to set speed **and acceleration** once at the start of
+a project run and not restore them — the earlier get→set→move→restore idea is
+explicitly dropped, since restoring would defeat the goal.
+
+Caveat to verify empirically (not guaranteed by the API): whether the value
+survives a ZEN restart / hardware re-init, or whether ZEN reloads a profile
+default. If it does NOT persist across restarts, "once per project" becomes
+"once per run" — same code, just called at the top of every `main()` either way.
+
+Proposed implementation (~30 lines, no new dependencies):
+
+- [ ] Add two module-level default constants to `MS_zenapi_stage_LM.py`:
+      `STAGE_ACCELERATION_PERCENT: float = 100.0` and
+      `STAGE_TRAVEL_SPEED_PERCENT: float = 100.0` (full speed = normal-project
+      default). Single source of truth; the "global control for a whole project"
+      Mike asked for — two numbers to turn down for a sensitive sample.
+- [ ] Add a standalone
+      `async def set_stage_motion(speed_percent=None, acceleration_percent=None)`
+      that sets **both together** in one call:
+      `set_acceleration(StageServiceSetAccelerationRequest(acceleration_x=a, acceleration_y=a))`
+      and `set_speed(StageServiceSetSpeedRequest(speed_x=s, speed_y=s))`.
+      `None` falls back to the respective constant. **No restore.** Setting both
+      together avoids the trap of a low top speed paired with a high (default)
+      acceleration, which would still jolt the sample.
+- [ ] Do NOT touch speed/acceleration inside `move_stage_to_new_xy_position` —
+      moves just inherit whatever the controller currently holds.
+- [ ] Call `set_stage_motion()` once near the top of the PoC `main()` (after
+      channel/hardware is reachable, before the first acquisition), and log both
+      `GetSpeed` and `GetAcceleration` at run start so each run's log records the
+      values actually in effect (insurance against silent overwrites by ZEN / a
+      tiles scan).
+- [ ] Expose a thin `set_stage_motion_sync()` in `MS_CD7_API_LoA.py` to match
+      the existing sync-wrapper pattern.
+- [ ] Add an offline unit test (mock the stub) asserting both `set_acceleration`
+      and `set_speed` are called once with the expected percents and that moves
+      do not re-set them.
+- [ ] One-time empirical check: set speed + acceleration → restart ZEN →
+      `GetSpeed` / `GetAcceleration` to confirm whether the controller retains
+      them (decides once-per-project vs once-per-run).
+
+## Plan: Incubation — temperature / CO2 / N2 (investigated 2026-06-26)
+
+**DECISION (2026-06-26): do nothing for now.** Incubation is set manually on the
+incubator and that is acceptable. No control and no monitoring will be built at
+this time. The investigation below is kept for reference if this is revisited
+later — none of the items are scheduled.
+
+**Answer:** Not over the ZEN gRPC API. A search across all 31 service stubs in
+the `zen_api` package found no incubation, temperature, CO2, environment, or
+climate service. `SampleCarrierService` only exposes carrier geometry. So this
+cannot be done with the same gRPC layer the rest of SmartMic uses.
+
+**`.czmac` macros over the API are also not possible (checked 2026-06-26).**
+The gRPC API exposes no way to run a ZEN macro / OAD IronPython script. There is
+no `ExecuteMacro` / `RunScript` / `Eval` method anywhere in `zen_api`, and the
+ZEN-API README states it explicitly: *"ZEN API is not a replacement for
+ZEN-internal Scripting based on IronPython (OAD)."* gRPC is "control from the
+outside"; OAD/macros are "control from the inside" and the two don't bridge
+directly. Near-misses that do NOT help: `WorkflowService` only runs pre-defined
+ZEN job templates by name (no macro path / script body), and
+`ExternalProcedureService` is a reverse callback channel (and EM-side). So the
+"run an incubation macro over the API" shortcut is off the table.
+
+**Priority (decided 2026-06-26): monitoring, not control.** Closed-loop control
+from SmartMic is NOT required — it is fine to set temperature/CO2/N2 manually on
+the incubator itself. What would be genuinely useful is to **read and log** the
+current values during a run (and optionally warn/abort if they drift out of
+tolerance). So aim for read-only first; control is a non-goal for now.
+
+- [ ] **Identify the incubator make/model on this system** (likely Okolab,
+      Ibidi, or Pecon) — this decides whether monitoring is even reachable from
+      Python. Do this first.
+
+- [ ] **Primary: read-only monitoring via vendor SDK.** Most of these vendors
+      ship a Python/serial API (e.g. Okolab H401-T-CONTROLLER has a documented
+      Python SDK). Add a thin `MS_incubation.py` that just *reads* current
+      temperature / CO2 / N2, logs them at run start (and optionally
+      periodically), and raises if outside a configured tolerance. No control, no
+      coupling to ZEN. This is the wanted outcome if the SDK exposes reads.
+
+- [ ] **Fallback if no SDK / reads aren't reachable:** check whether the
+      incubator controller has a serial/USB or HTTP status endpoint we can poll
+      directly for read-only values, independent of ZEN.
+
+- [ ] **Not preferred — ZEN COM / OAD bridge (control or monitoring).** ZEN
+      Blue's OAD layer (`Zen.Devices.Incubator.*`) can reach the incubator if it
+      is registered as a ZEN device, driven from Python via `win32com`
+      (`ZeissOAD.Application`), or via a file-drop/watcher bridge where a
+      long-running OAD macro inside ZEN polls a folder. Both work but couple
+      SmartMic to ZEN being open in the foreground and add a moving part — only
+      revisit if there is no vendor-SDK / direct-controller read path at all.
+
+- [ ] **Stretch (non-goal for now): set-point control** via the vendor SDK, only
+      if monitoring is in place and there is a clear need.
+
 
 
 
@@ -263,3 +392,46 @@ newly logged and not yet applied.
       scene order is no longer split into multiple groups. Wells are still
       visited in plate order (by each well's first scene_index). Dropped the
       now-unused `import itertools`.
+
+---
+
+## New review (2026-06-23)
+
+Pass over the run-by-path migration (`29c99e8`) + the `*_from_path` /
+test-suite work (`144e459`).
+
+- [x] **PoC migrated from run-by-name to run-by-path.** ✅ DONE (`29c99e8`).
+      Closes the old HANDOVER follow-up: the PoC now loads SWAF and acquisition
+      experiments via `run_swaf_from_path` / `run_experiment_from_path` from the
+      vendored `base_experiments/` + `position_files/` copies, so it no longer
+      depends on the experiments being pre-installed in ZEN's library.
+
+- [x] **Per-run timestamped output folders.** ✅ DONE (`29c99e8`). Outputs go to
+      `F:/UserData/api/run_<timestamp>/...`. Timestamp is 1-second resolution;
+      same-second collision left as-is by design (documented in HANDOVER).
+
+- [x] **Validate experiment / position files up front.** ✅ DONE (2026-06-23).
+      `main()` checks all required `.czexp` + the positions file exist before
+      touching hardware and aborts with a listed error if any are missing, rather
+      than dying on a mid-run `FileNotFoundError` from an unguarded acquisition
+      call.
+
+- [ ] **Cleanup deletes everything in ZEN's default folder** — WON'T FIX
+      (documented in HANDOVER). The default folder is ZEN-owned and the ZEN-API
+      has no setter, so the pipeline cannot redirect it from code. Mitigation is
+      operational: point ZEN's default save location at a scratch-only folder.
+
+- [ ] **Stale docstring on `MS_CD7_API_LoA.run_experiment_from_path`** — says it
+      "imports its XML via ExperimentService.Import" but the implementation
+      *loads by path* (Import yields a non-runnable experiment). Fix the wording
+      to match `run_experiment_from_path` in `MS_zenapi_experiment_methods`.
+
+- [x] **`main()` demo blocks in `MS_zenapi_*` (Zeiss leftovers)** — ✅ DONE
+      (2026-06-23). Removed the `main()` / `__main__` demo blocks from all six
+      `MS_zenapi_*` modules (and the swaf `_show_swaf_info` demo helper + demo-only
+      globals), so the modules are now library-only. Pruned the imports that became
+      unused (`sys`, `asyncio` where only `asyncio.run` in the demo used it, the
+      clone/save/SWAF-param/Focus stubs in swaf, the matplotlib/pylibCZIrw display
+      block in experiment_methods). 92 offline unit tests still pass. The external
+      `zen_api` gRPC package stays a dependency (see `zeiss_paths.py`); manual
+      smoke-checking lives in the pytest suite + `verify_zen_api.py`.

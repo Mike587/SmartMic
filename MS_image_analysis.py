@@ -1,3 +1,20 @@
+# -*- coding: utf-8 -*-
+
+#################################################################
+# File        : MS_image_analysis.py
+# Author      : Michael Stebler
+# Institution : ETH Zurich | ScopeM
+#               ScopeM Imaging Facility (scopem.ethz.ch)
+#
+# Reusable launcher for running external image-analysis scripts as
+# subprocesses in their own pixi environments.
+#
+# Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
+#
+# Permission is granted to use, modify and distribute this code,
+# as long as this copyright notice remains part of the code.
+#################################################################
+
 """
 MS_image_analysis.py
 
