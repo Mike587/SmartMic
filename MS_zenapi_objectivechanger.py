@@ -38,9 +38,6 @@ set_objective_set_optovar        -- Move both objective and optovar to new posit
 get_current_objective_and_optovar -- Query the current positions of both devices
 """
 
-import asyncio
-import sys
-
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import (
     set_logging,
@@ -229,67 +226,3 @@ async def get_current_objective_and_optovar_names():
         (current_objective.name, current_objective.position),
         (current_optovar.name, current_optovar.position),
     )
-
-
-async def main(args):
-    """Command-line entry point.
-
-    Usage::
-
-        python MS_zenapi_objectivechanger.py get_current
-        python MS_zenapi_objectivechanger.py <objective_position> <optovar_position>
-
-    Args:
-        args: ``sys.argv`` (list of strings).
-
-    Returns:
-        None
-    """
-    logger = set_logging()
-
-    if len(args) > 1:
-        if args[1] == "get_current":
-            obj_pos, opt_pos = await get_current_objective_and_optovar()
-            print(f"Current objective: {obj_pos}, Current optovar: {opt_pos}")
-        elif args[1] == "list":
-            obj_list, opt_list = await list_objectives_and_optovars()
-            print("Objectives:")
-            for name, position in obj_list:
-                print(f"  position {position}: '{name}'")
-            print("Optovars:")
-            for name, position in opt_list:
-                print(f"  position {position}: '{name}'")
-        elif args[1] == "get_current_names":
-            (obj_name, obj_pos), (opt_name, opt_pos) = (
-                await get_current_objective_and_optovar_names()
-            )
-            print(f"Current objective: '{obj_name}' (position {obj_pos})")
-            print(f"Current optovar:   '{opt_name}' (position {opt_pos})")
-        elif len(args) == 3:
-            try:
-                obj_pos = int(args[1])
-                opt_pos = int(args[2])
-                await set_objective_set_optovar(obj_pos, opt_pos)
-            except ValueError:
-                print(
-                    "Usage: python MS_zenapi_objectivechanger.py "
-                    "<objective_position> <optovar_position>"
-                )
-                print("Or: python MS_zenapi_objectivechanger.py get_current")
-        else:
-            print(
-                "Usage: python MS_zenapi_objectivechanger.py "
-                "<objective_position> <optovar_position>"
-            )
-            print("Or: python MS_zenapi_objectivechanger.py get_current")
-    else:
-        print(
-            "Usage: python MS_zenapi_objectivechanger.py "
-            "<objective_position> <optovar_position>"
-        )
-        print("Or: python MS_zenapi_objectivechanger.py get_current")
-
-
-if __name__ == "__main__":
-    logger = set_logging()
-    asyncio.run(main(sys.argv))

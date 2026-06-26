@@ -103,9 +103,6 @@ from zen_api.acquisition.v1beta import (
 # TODO: remove once the ZEN gRPC server handles this internally.
 waittime = 3
 
-# Set to True in __main__ to open and display the acquired CZI image.
-open_czi = False
-
 # config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
 from zeiss_paths import CONFIG_PATH as config_path
 
@@ -723,37 +720,3 @@ async def run_experiment_by_name(
         results["snap_path"] = None
         results["experiment_id"] = loaded_exp.experiment_id
         return results
-
-
-if __name__ == "__main__":
-    logger = set_logging()
-
-    results = asyncio.run(
-        check_experiment_api(experiment_name="DAPI_GFP_001", configfile=config_path)
-    )
-    logger.info(results)
-
-    if open_czi:
-        # Imported here (not at module top) since they are only needed for the
-        # optional CZI display when running this module directly.
-        from pylibCZIrw import czi as pyczi
-        from matplotlib import pyplot as plt
-        import matplotlib.cm as cm
-
-        with pyczi.open_czi(str(results["exp_result_path"])) as czidoc:
-            t = 0
-            c = 0
-            s = 0
-            z = 0
-
-            img2d = czidoc.read(plane={"C": c, "T": t, "Z": z}, scene=s)
-            logger.info(f"Shape of 2D plane: {img2d.shape}")
-
-            total_bounding_box = czidoc.total_bounding_box
-            logger.info(f"Total BBox: {total_bounding_box}")
-
-        logger.info("Displaying CZI image data ...")
-        fig1, ax = plt.subplots(1, 1, figsize=(12, 8))
-        ax.imshow(img2d[..., 0], cmap=cm.inferno, vmin=100, vmax=5000)
-        ax.set_title(f"{results['exp_result_path']}: S={s} T={t} C={c} Z={z}")
-        plt.show()

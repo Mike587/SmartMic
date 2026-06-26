@@ -344,8 +344,3 @@ async def get_current_z_focus_position() -> float:
         logger.info(f"Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
 
         return zpos.value
-
-
-if __name__ == "__main__":
-    logger = set_logging()
-    asyncio.run(definite_focus_find_surface())

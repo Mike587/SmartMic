@@ -130,10 +130,3 @@ async def move_stage_to_new_xy_position(x: float, y: float):
         # Allow the stage to settle mechanically before the next operation.
         logger.info(f"Waiting for {STAGE_SETTLE_SECONDS} seconds...")
         await asyncio.sleep(STAGE_SETTLE_SECONDS)
-
-
-if __name__ == "__main__":
-    logger = set_logging()
-    # Read-only demo: report the current XY stage position (does NOT move).
-    xy = asyncio.run(get_current_xy_stage_coordinates())
-    print(f"Current stage XY [m]: {xy}")

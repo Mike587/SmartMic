@@ -154,6 +154,31 @@ def main():
     log.info(f"Nucleus SWAF      : {NUCLEUS_SWAF_EXPERIMENT_PATH.name} / {NUCLEUS_SWAF_EXPERIMENT_PATH_2.name}")
 
     # ------------------------------------------------------------------
+    # Verify every experiment / position file this run needs is present
+    # BEFORE touching hardware.  These are now loaded BY PATH from the
+    # vendored copies, so a missing/renamed file would otherwise surface as
+    # a FileNotFoundError mid-run — and the per-position acquisition calls
+    # below are not all individually guarded.  Fail fast with a clear list.
+    # ------------------------------------------------------------------
+    required_files = {
+        "Positions file"  : POSITIONS_FILE,
+        "Overview exp"    : OVERVIEW_EXPERIMENT_PATH,
+        "Detailed exp"    : DETAILED_EXPERIMENT_PATH,
+        "Oncz exp"        : ONCZ_EXPERIMENT_PATH,
+        "Overview SWAF 1" : SWAF_EXPERIMENT_PATH,
+        "Overview SWAF 2" : SWAF_EXPERIMENT_PATH_2,
+        "Nucleus SWAF 1"  : NUCLEUS_SWAF_EXPERIMENT_PATH,
+        "Nucleus SWAF 2"  : NUCLEUS_SWAF_EXPERIMENT_PATH_2,
+    }
+    missing = [(label, path) for label, path in required_files.items() if not path.exists()]
+    if missing:
+        for label, path in missing:
+            log.error(f"Required {label} not found: {path}")
+        log.error(f"{len(missing)} required file(s) missing — aborting.")
+        return 1
+    log.info("All required experiment / position files present.")
+
+    # ------------------------------------------------------------------
     # Verify the correct sample carrier is loaded BEFORE doing anything.
     # The whole pipeline assumes EXPECTED_SAMPLE_CARRIER; running it against
     # a different plate would drive the stage to wrong/unsafe positions.
