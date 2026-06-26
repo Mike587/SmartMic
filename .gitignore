@@ -16,6 +16,9 @@ copyright.md
 # Internal maintainer notes — kept locally, not shared.
 DEV_NOTES.md
 
+# Dev TODO / working notes — kept locally, not shared.
+TODO.md
+
 # Local-only projects — kept locally, never pushed.
 projects/HD_Nuclei_from_slide/
 projects/Marc_SM/
