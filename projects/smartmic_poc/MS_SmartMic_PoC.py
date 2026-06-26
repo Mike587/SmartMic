@@ -61,7 +61,7 @@ ROOT_PATH = Path("F:/UserData/api")
 
 # Leaf folder names created inside each per-run folder.
 OVERVIEW_IMAGE_DIRNAME = "overview-images"     # widefield overview CZI files
-ANALYSIS_DIRNAME       = "overview-analysis"   # nuclei.json outputs from analysis
+ANALYSIS_DIRNAME       = "overview-analysis"   # targets.json outputs from analysis
 DETAILED_DIRNAME       = "detailed-images"     # confocal single-plane + z-stack CZIs
 LOG_DIRNAME            = "log"                  # timestamped run logs
 
@@ -313,16 +313,18 @@ def main():
                          f"  (czi_FocusPos not found)  focus_score={score_str}")
 
             # ── 6. Nuclei detection ───────────────────────────────────
-            # Runs the analysis script as a subprocess; outputs a nuclei.json
-            # with one entry per detected nucleus, including absolute XY coords.
-            success     = run_analysis(image_path, analysis_path, tag, log,
-                                       ANALYSIS_SCRIPT, ANALYSIS_SCRIPT_DIR)
-            nuclei_json = analysis_path / f"{tag}_nuclei.json"
-            if not success or not nuclei_json.exists():
-                log.warning(f"Analysis produced no nuclei.json for {tag} — skipping detailed imaging.")
+            # Runs the analysis script as a subprocess; outputs a targets.json
+            # with one entry per detected target (nucleus here), including
+            # absolute XY coords.  `targets.json` is the general analysis
+            # contract; the entries happen to be nuclei for this pipeline.
+            success      = run_analysis(image_path, analysis_path, tag, log,
+                                        ANALYSIS_SCRIPT, ANALYSIS_SCRIPT_DIR)
+            targets_json = analysis_path / f"{tag}_targets.json"
+            if not success or not targets_json.exists():
+                log.warning(f"Analysis produced no targets.json for {tag} — skipping detailed imaging.")
                 continue
 
-            nuclei = json.loads(nuclei_json.read_text())
+            nuclei = json.loads(targets_json.read_text())
             if not nuclei:
                 log.info(f"No nuclei detected at {tag} — moving to next position.")
                 continue

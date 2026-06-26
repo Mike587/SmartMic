@@ -199,7 +199,7 @@ a **bundled standalone `.czexp` / XML** — never a name assumed to be in ZEN's 
 
 ### Tier 4 — `tests/hardware/test_smoke_e2e.py` — the "overall test"
 One well, the full PoC chain hardened into a single test, **with the external
-nuclei analysis stubbed** (a fixture script that emits a fixed `nuclei.json`) so the
+nuclei analysis stubbed** (a fixture script that emits a fixed `targets.json`) so the
 test is deterministic and doesn't depend on the image-analysis env:
 move stage → set optics → DF FindSurface → SWAF coarse+fine → acquire overview →
 (stubbed analysis) → move to one fake nucleus → DF/SWAF → acquire single plane →
