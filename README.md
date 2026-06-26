@@ -2,21 +2,17 @@
 
 Smart-microscope automation built on top of the Zeiss ZEN gRPC API (ZEN-API).
 
-This repository contains **only the custom (`MS_*`) automation code**. It depends
-on one Zeiss-provided package that ships with the ZEN-API examples and is **not**
-vendored here:
-
-- `zen_api`        — auto-generated gRPC stubs
-
-The handful of `zen_api_utils` helpers SmartMic previously relied on
-(`initialize_zenapi`, `set_logging`, the objective/optovar position lookups, and
-the SWAF demo helpers) have been **vendored into `MS_zenapi_helpers.py`**, so the
-un-packaged `zen_api_utils` example glue is no longer required.
+This repository contains the custom (`MS_*`) automation code. It depends on the
+Zeiss-provided **`zen_api`** package (auto-generated gRPC stubs), which ships with
+the ZEN-API examples and is **not** vendored here — see
+[How the Zeiss dependency is resolved](#how-the-zeiss-dependency-is-resolved).
+The small set of ZEN-API helpers SmartMic needs (channel init, logging,
+objective/optovar lookups) are vendored in `MS_zenapi_helpers.py`.
 
 ## Layout
 
-The repo root holds the **reusable API wrapper** (the "library"). Individual
-projects/examples that consume it live under `projects/`, one folder each.
+The repo root holds the **reusable API wrapper** (the "library"). Example
+pipelines that consume it live under `projects/`, one folder each.
 
 ### API wrapper (repo root)
 
@@ -31,7 +27,7 @@ projects/examples that consume it live under `projects/`, one folder each.
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run / status; run by name, path, or XML |
 | `MS_czexp_editor.py` | Read/modify ZEN `.czexp` files (position, z-stack, scan crop) |
 | `MS_Helper_function.py` | Logging, position loading, focus scoring |
-| `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init, logging, objective lookups) — replaces `zen_api_utils` |
+| `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init, logging, objective lookups) |
 | `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env) |
 | `zeiss_paths.py` | Path bootstrap — see below |
 
@@ -41,23 +37,24 @@ projects/examples that consume it live under `projects/`, one folder each.
 |--------|------|
 | `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point) |
 
-**By design, `smartmic_poc` is the only project tracked/shared in this repo.**
-All other project folders under `projects/` are **local-only** and **git-ignored**
-(kept on the local machine, never pushed) — they hold facility- or user-specific
-work that should not ship with the shared library. New local projects are added
-to `.gitignore` per folder (see the existing `projects/HD_Nuclei_from_slide/` and
-`projects/Marc_SM/` entries). Treat this table as listing only the *public* PoC,
-not the full on-disk contents of `projects/`.
-
 Each project script adds the repo root to `sys.path` (two levels up) and then
-imports `zeiss_paths`, so it can use the wrapper modules and the Zeiss
-`zen_api` packages regardless of the working directory it is launched from.
-`config.ini` is resolved relative to each `MS_zenapi_*` module's own directory
-(the repo root), so it stays at the root and is shared by all projects.
+imports `zeiss_paths`, so it can use the wrapper modules and the Zeiss `zen_api`
+package regardless of the working directory it is launched from. `config.ini` is
+resolved relative to the repo root, so it stays at the root and is shared by all
+projects.
 
-Exploratory, test, and scratch scripts live in `sandbox/`, which is **git-ignored**
-(kept locally, never pushed). Those scripts add the repo root to `sys.path`
-themselves so they can still import the core modules above.
+## Image analysis
+
+Smart microscopy pairs acquisition with image analysis. The analysis half is kept
+in **separate, self-contained repos**, each with its own pixi environment, so its
+dependencies never conflict with the ZEN-API environment. `MS_image_analysis.py`
+launches such a project as a subprocess: it passes a CZI, an output directory and
+a `--prefix`, and reads back a `<prefix>_targets.json` listing the detected
+targets (each with absolute stage coordinates).
+
+The reference analysis used by `smartmic_poc` is the nuclei-detection scaffold at
+**[Mike587/ia_PoC_002](https://github.com/Mike587/ia_PoC_002)**, which also
+documents the input/output contract for building new analyses.
 
 ## How the Zeiss dependency is resolved
 
