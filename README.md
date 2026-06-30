@@ -115,3 +115,13 @@ plain run never moves the scope:
 
 See [`tests/README.md`](tests/README.md) for the full step-by-step guide and
 [`tests/TEST_PLAN.md`](tests/TEST_PLAN.md) for the design.
+
+## License
+
+SmartMic is released under the [MIT License](LICENSE), © 2026 ETH Zurich
+(ScopeM).
+
+A few `MS_zenapi_*` modules are derived from the Zeiss ZEN-API example scripts
+and retain their original `Copyright(c) 2025 Carl Zeiss AG` header and
+permission notice, as required by Zeiss's grant. Those per-file notices stand
+alongside the repository's MIT license — keep them in place in any derivative.
