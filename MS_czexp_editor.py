@@ -65,6 +65,9 @@ LSM_DETECTOR_ID = "MTBLSMImagingDevice"
 FRAME_SIZE_MIN = 32
 FRAME_SIZE_MAX = 5120
 
+# FocusStrategy field values that mean "no strategy is doing anything".
+FOCUS_OFF_VALUES = {"", "None", "NONE", "none"}
+
 
 # ---------------------------------------------------------------------------
 # Load / save
@@ -175,6 +178,45 @@ def is_stitching_configured(root):
         if s.find("Algorithm") is not None or s.find("FunctionParameters") is not None:
             return True
     return False
+
+
+def get_focus_strategy(root):
+    """Return the active focus strategy as a dict, or None if there is none.
+
+    The strategy lives in <FocusSetup><FocusStrategy> as <Method>, <SearchAction>
+    and <SurfaceMode> (e.g. Method=FollowAction, SearchAction=DefiniteFocusFindSurface).
+    Returns {"method", "search_action", "surface_mode"} when a real strategy is
+    configured, else None.  See has_focus_strategy for the "what counts as a
+    strategy" rules.
+    """
+    setup = next(iter(root.iter("FocusSetup")), None)
+    if setup is None or (setup.get("IsActivated") or "true").lower() == "false":
+        return None
+    fs = setup.find("FocusStrategy")
+    if fs is None or (fs.get("IsActivated") or "true").lower() == "false":
+        return None
+    fields = {tag: (fs.findtext(tag) or "").strip()
+              for tag in ("Method", "SearchAction", "SurfaceMode")}
+    if all(v in FOCUS_OFF_VALUES for v in fields.values()):
+        return None
+    return {"method": fields["Method"],
+            "search_action": fields["SearchAction"],
+            "surface_mode": fields["SurfaceMode"]}
+
+
+def has_focus_strategy(root):
+    """True if an ACTIVE focus strategy is configured in the experiment.
+
+    ZEN can silently (re)add a focus strategy when an experiment is re-opened or
+    re-saved.  Some pipeline stages forbid this — e.g. HD_Nuclei_from_slide's
+    find_nuclei / image_nuclei set Z explicitly and MUST run with no strategy.
+    The strategy is effectively OFF when its <Method>, <SearchAction> and
+    <SurfaceMode> are all "None" (the ZEN "no strategy" state), even though
+    <FocusStrategy> keeps IsActivated="true".  Returns True when the setup is
+    activated and any of those three names a real action.  Check-only: use it to
+    assert/abort before running a generated .czexp.
+    """
+    return get_focus_strategy(root) is not None
 
 
 # ---------------------------------------------------------------------------
