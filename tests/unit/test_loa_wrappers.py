@@ -151,3 +151,83 @@ def test_set_optics_happy_path(monkeypatch):
     monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
     # Target already matches what get_current reports → confirms on first poll.
     assert ms.set_objective_set_optovar_sync(2, 2) is True
+
+
+# --------------------------------------------------------------------------
+# preflight (start-of-run checks + stage-motion setup)
+# --------------------------------------------------------------------------
+class _Log:
+    """Minimal logger stand-in capturing what preflight reports."""
+    def __init__(self):
+        self.infos = []
+        self.errors = []
+
+    def info(self, m):
+        self.infos.append(m)
+
+    def error(self, m):
+        self.errors.append(m)
+
+    def warning(self, m):
+        pass
+
+
+_FULL_MOTION = {"speed_x": 100, "speed_y": 100,
+                "acceleration_x": 100, "acceleration_y": 100}
+
+
+def test_preflight_happy_sets_stage_motion(monkeypatch):
+    calls = {"motion": 0}
+
+    def fake_motion(speed=None, accel=None):
+        calls["motion"] += 1
+        return _FULL_MOTION
+
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(ms, "set_stage_motion_sync", fake_motion)
+
+    log = _Log()
+    assert ms.preflight("PLATE", log) is True
+    assert calls["motion"] == 1
+    assert log.errors == []
+
+
+def test_preflight_wrong_carrier_aborts_before_stage_motion(monkeypatch):
+    calls = {"motion": 0}
+
+    def fake_motion(speed=None, accel=None):
+        calls["motion"] += 1
+        return _FULL_MOTION
+
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "OTHER")
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(ms, "set_stage_motion_sync", fake_motion)
+
+    log = _Log()
+    assert ms.preflight("PLATE", log) is False
+    # Stage motion must not be set when a check fails.
+    assert calls["motion"] == 0
+    assert log.errors
+
+
+def test_preflight_busy_aborts(monkeypatch):
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: True)
+    monkeypatch.setattr(ms, "set_stage_motion_sync",
+                        lambda speed=None, accel=None: _FULL_MOTION)
+
+    log = _Log()
+    assert ms.preflight("PLATE", log) is False
+    assert log.errors
+
+
+def test_preflight_gateway_down_aborts(monkeypatch):
+    def boom():
+        raise RuntimeError("no gateway")
+
+    monkeypatch.setattr(ms, "get_sample_carrier_name", boom)
+
+    log = _Log()
+    assert ms.preflight("PLATE", log) is False
+    assert log.errors

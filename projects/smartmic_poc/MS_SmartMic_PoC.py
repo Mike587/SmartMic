@@ -179,23 +179,14 @@ def main():
     log.info("All required experiment / position files present.")
 
     # ------------------------------------------------------------------
-    # Verify the correct sample carrier is loaded BEFORE doing anything.
-    # The whole pipeline assumes EXPECTED_SAMPLE_CARRIER; running it against
-    # a different plate would drive the stage to wrong/unsafe positions.
+    # Standard start-of-run preflight BEFORE doing anything: gateway
+    # responsive, microscope idle, correct carrier loaded, and stage
+    # speed/acceleration set once for the run (full speed by default). The
+    # whole pipeline assumes EXPECTED_SAMPLE_CARRIER; running it against a
+    # different plate would drive the stage to wrong/unsafe positions.
     # ------------------------------------------------------------------
-    try:
-        carrier_name = ms.get_sample_carrier_name()
-    except Exception as e:
-        log.error(f"Could not query the sample carrier from ZEN: {e} — aborting.")
+    if not ms.preflight(EXPECTED_SAMPLE_CARRIER, log):
         return 1
-
-    if carrier_name != EXPECTED_SAMPLE_CARRIER:
-        log.error(
-            f"Wrong sample carrier loaded: '{carrier_name}' "
-            f"(expected '{EXPECTED_SAMPLE_CARRIER}') — aborting."
-        )
-        return 1
-    log.info(f"Sample carrier OK : '{carrier_name}'")
 
     # ------------------------------------------------------------------
     # Load positions

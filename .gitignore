@@ -7,16 +7,13 @@ mike-notes/
 # Local generated code map — regenerate as needed, not shared.
 overview.md
 
-# Handover notes — kept locally, not shared.
-HANDOVER.md
-
 # Copyright / licensing working notes — kept locally, not shared.
 copyright.md
 
-# Internal maintainer notes — kept locally, not shared.
+# Dev notes (learnings + decisions) — kept locally, not shared.
 DEV_NOTES.md
 
-# Dev TODO / working notes — kept locally, not shared.
+# Dev TODO — kept locally, not shared.
 TODO.md
 
 # Local-only projects — kept locally, never pushed.

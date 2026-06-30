@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, Union
 
-
+import zeiss_paths  # noqa: F401  — import FIRST (side effect: extends sys.path for zen_api)
 import MS_zenapi_focus
 import MS_zenapi_experiment_methods
 import MS_zenapi_objectivechanger
@@ -241,6 +241,32 @@ def move_stage_to_new_xy_position(new_x: float, new_y: float) -> None:
     asyncio.run(MS_zenapi_stage_LM.move_stage_to_new_xy_position(new_x, new_y))
 
 
+def set_stage_motion_sync(speed_percent: Optional[float] = None,
+                          acceleration_percent: Optional[float] = None) -> Dict[str, float]:
+    """
+    Set the XY-stage travel speed and acceleration (percent of max, [0, 100]).
+
+    Speed/acceleration are device state, not per-move parameters: the controller
+    holds them across SmartMic's per-call channel open/close, so this is the
+    once-per-run "global stage-speed" knob (set it in preflight and leave it).
+    Both are set together; for a live sample it is the acceleration (jerk) that
+    disturbs the medium, so a low speed with a high acceleration would still jolt
+    it. None falls back to the module defaults in MS_zenapi_stage_LM
+    (STAGE_TRAVEL_SPEED_PERCENT / STAGE_ACCELERATION_PERCENT, both 100 = full).
+
+    Args:
+        speed_percent (float, optional): XY travel speed, percent of max.
+        acceleration_percent (float, optional): XY acceleration, percent of max.
+
+    Returns:
+        Dict[str, float]: read-back after setting, with keys speed_x, speed_y,
+        acceleration_x, acceleration_y (percent).
+    """
+    return asyncio.run(
+        MS_zenapi_stage_LM.set_stage_motion(speed_percent, acceleration_percent)
+    )
+
+
 def run_experiment(experiment_name: str, 
                    custom_folder: Optional[Path] = None, 
                    custom_filename: Optional[str] = None, 
@@ -306,10 +332,12 @@ def run_experiment_from_path(czexp_path: Union[str, Path],
     """
     Run an experiment from a .czexp file path (instead of by name).
 
-    Reads the .czexp file, imports its XML into ZEN via ExperimentService.Import,
-    and runs the imported experiment.  The file does NOT need to live in ZEN's
-    experiment folder — any path works, including a per-run modified experiment
-    generated on the fly.
+    LOADS the experiment via ExperimentService.Load (which accepts a full path,
+    not just a name in ZEN's experiment folder) and runs the loaded id — so any
+    path works, including a per-run modified experiment generated on the fly. It
+    does NOT import the XML and run the imported id: an imported experiment is not
+    runnable and ZEN throws at run for tile/region experiments (use
+    run_experiment_from_xml for the Import path).
 
     Args:
         czexp_path (str|Path):           Path to the .czexp file to run.
@@ -585,6 +613,81 @@ def is_microscope_busy() -> bool:
     if status is None:
         return False
     return bool(status["is_experiment_running"] or status["is_acquisition_running"])
+
+
+def preflight(expected_carrier: str, log,
+              stage_speed_percent: Optional[float] = None,
+              stage_acceleration_percent: Optional[float] = None) -> bool:
+    """
+    Standard start-of-run preflight — run this before ANY hardware action.
+
+    Checks, in order:
+      1. the ZEN-API gateway is responsive (a live carrier query that doubles as
+         a ping),
+      2. the microscope is idle (no experiment already running),
+      3. the correct sample carrier is loaded,
+      4. sets the XY-stage travel speed + acceleration once for the run (device
+         state the controller holds across calls) and logs the read-back.
+
+    Args:
+        expected_carrier (str): The sample-carrier name the run requires; the
+            run aborts if a different carrier is loaded.
+        log: A logger (anything with .info/.error). Used for all reporting so
+            the outcome lands in the per-run log file.
+        stage_speed_percent (float, optional): XY travel speed, percent of max.
+            None → STAGE_TRAVEL_SPEED_PERCENT (100 = full speed). Turn down for a
+            sensitive/live sample.
+        stage_acceleration_percent (float, optional): XY acceleration, percent of
+            max. None → STAGE_ACCELERATION_PERCENT (100 = full).
+
+    Returns:
+        bool: True if all checks pass and stage motion was set; False otherwise
+        (the reason is logged via ``log.error``). Callers should abort on False.
+    """
+    # 0. Record which zen_api gRPC stubs this run is using. ZEN exposes no
+    # version/about service over the API, so the package folder name (when the
+    # versioned layout is in use) + the resolved path is the best identity we can
+    # log. Log the path too: a loose copy can shadow a versioned package.
+    api_ver, api_path = zeiss_paths.zen_api_version()
+    log.info(f"zen_api stubs: {api_ver or 'unversioned (loose layout)'}  @ {api_path}")
+
+    # 1. Gateway ping (the carrier query is also the liveness check).
+    try:
+        carrier = get_sample_carrier_name()
+    except Exception as e:
+        log.error(f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
+        return False
+
+    # 2. Microscope idle.
+    try:
+        if is_microscope_busy():
+            log.error("Microscope is busy (an experiment is already running) — aborting.")
+            return False
+    except Exception as e:
+        log.error(f"Could not query microscope status ({e}) — aborting.")
+        return False
+
+    # 3. Correct carrier.
+    if carrier != expected_carrier:
+        log.error(f"Wrong sample carrier: '{carrier}' "
+                  f"(expected '{expected_carrier}') — aborting.")
+        return False
+
+    # 4. Stage speed + acceleration (set once for the run). Abort on failure so
+    # the run never proceeds with unknown stage motion — important for a
+    # sensitive/live sample where the values are deliberately turned down.
+    try:
+        motion = set_stage_motion_sync(stage_speed_percent, stage_acceleration_percent)
+    except Exception as e:
+        log.error(f"Could not set stage speed/acceleration ({e}) — aborting.")
+        return False
+
+    log.info(
+        f"Preflight OK: gateway responsive, microscope idle, carrier '{carrier}', "
+        f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
+        f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%."
+    )
+    return True
 
 
 

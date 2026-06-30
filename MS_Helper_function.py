@@ -315,3 +315,180 @@ def get_zstack_z_range(czi_path: Path) -> Optional[Dict]:
     except Exception as e:
         print(f"[ZSTACK_RANGE ERROR] {type(e).__name__}: {e}")
         return None
+
+
+def get_stage_position_from_czi(czi_path: Path) -> Optional[Dict]:
+    """
+    Read the stage position (metres) a CZI was acquired at, from its embedded
+    ZEN metadata.  Returns a dict (any field may be ``None``):
+
+    - ``planned_x_m`` / ``planned_y_m`` — the scene ``CenterPosition``: the position
+      the acquisition is set to.  For an experiment with an AUTHORED, used position
+      (use-positions mode), this is where the stage navigates to and images — i.e.
+      WHERE THE IMAGE WAS TAKEN.  This is the reliable field; use it.
+    - ``actual_x_m`` / ``actual_y_m`` — the ``MTBStageAxisX``/``Y`` encoder value in
+      the metadata.  CAUTION: this is typically the PARKED/home position, not the
+      scan position — a positioned acquisition moves to the target, images, then
+      returns the stage home, and the encoder here reflects that parked spot
+      (observed: encoder = the start position even when the scan navigated
+      elsewhere).  ZEN also marks it ``IsPrecise=false``.  Do not treat it as
+      "where imaged".
+    - ``z_m`` — the focus Z (``FocusPosition``; for a z-stack, the first plane).
+
+    Note: this only reflects a navigated position when the experiment has an
+    AUTHORED position (e.g. NfS_image_nuceli_002).  A region merely injected into a
+    non-positioned experiment is ignored by ZEN, and CenterPosition then need not
+    match where it imaged — verify by image content.  Logic promoted from the
+    image-analysis ``get_scene_center_positions`` (ia_PoC_002 / ia_Marc / ia_NfS).
+    Returns ``None`` if the file is unreadable.
+    """
+    try:
+        from pylibCZIrw import czi as pyczi
+        with pyczi.open_czi(str(czi_path)) as czidoc:
+            root = ET.fromstring(czidoc.raw_metadata)
+    except Exception as e:
+        print(f"[STAGE_POS ERROR] {type(e).__name__}: {e}")
+        return None
+
+    # Actual encoder XY (recorded at acquisition).
+    actual_x_m = actual_y_m = None
+    for pc in root.iter("ParameterCollection"):
+        cid = pc.get("Id", "")
+        pos_elem = pc.find("Position")
+        if pos_elem is None or pos_elem.text is None:
+            continue
+        try:
+            val_m = float(pos_elem.text) / 1e6   # µm → m
+        except ValueError:
+            continue
+        if cid == "MTBStageAxisX":
+            actual_x_m = val_m
+        elif cid == "MTBStageAxisY":
+            actual_y_m = val_m
+
+    # Planned target XY (scene CenterPosition, "X,Y" in µm).
+    planned_x_m = planned_y_m = None
+    scene = next(root.iter("Scene"), None)
+    if scene is not None:
+        cp = scene.findtext("CenterPosition")
+        if cp:
+            try:
+                planned_x_m, planned_y_m = (float(v) / 1e6 for v in cp.split(","))
+            except ValueError:
+                pass
+
+    z_um = get_focus_position_from_czi(czi_path)
+    return {
+        "actual_x_m":  actual_x_m,
+        "actual_y_m":  actual_y_m,
+        "planned_x_m": planned_x_m,
+        "planned_y_m": planned_y_m,
+        "z_m":         (z_um / 1e6) if z_um is not None else None,
+    }
+
+
+def get_xy_position_from_czi(czi_path: Path, prefer: str = "planned"
+                             ) -> Optional[Tuple[float, float]]:
+    """
+    Convenience getter: the stage XY (metres) a CZI was acquired at, as a tuple.
+
+    ``prefer="planned"`` (default) returns the scene ``CenterPosition`` — the
+    acquisition position (where an authored-position experiment navigates to and
+    images) — falling back to the encoder if absent.  ``prefer="actual"`` returns
+    the ``MTBStageAxis`` encoder first, but note that is usually the PARKED home
+    position, not the scan position (see :func:`get_stage_position_from_czi`).
+    Returns ``None`` if neither XY is present.
+    """
+    info = get_stage_position_from_czi(czi_path)
+    if info is None:
+        return None
+    actual = ((info["actual_x_m"], info["actual_y_m"])
+              if info["actual_x_m"] is not None and info["actual_y_m"] is not None
+              else None)
+    planned = ((info["planned_x_m"], info["planned_y_m"])
+               if info["planned_x_m"] is not None and info["planned_y_m"] is not None
+               else None)
+    primary, fallback = (actual, planned) if prefer == "actual" else (planned, actual)
+    return primary if primary is not None else fallback
+
+
+# p99.9-intensity / detector-full-scale below this fraction → the stack captured
+# (essentially) nothing. Calibrated on the slide (DEV_NOTES "50x DefiniteFocus
+# errors"): a dud / failed-DF stack reads ~0.01, focused tissue ~0.10–0.14.
+EMPTY_STACK_SIGNAL_FRAC = 0.04
+
+
+def signal_level_from_czi(czi_path: Path, channel: int = 0) -> Optional[float]:
+    """
+    Return how much signal a CZI captured, as the 99.9th-percentile intensity
+    divided by the detector full-scale (0 = black, ~1 = saturated).
+
+    The 99.9th percentile (not the max) is used so a single hot pixel can't make
+    an otherwise-empty stack look bright — a dud stack often still carries a stray
+    bright pixel. Normalising by full-scale (``np.iinfo(dtype).max`` for integer
+    images) makes the value exposure- and bit-depth-independent, so the same
+    threshold works across experiments.
+
+    Intended for confocal stacks (the empty / failed-DF guard); NOT for raw
+    Airyscan, which is dim by design before ZEN reconstruction (see DEV_NOTES).
+    Logic promoted from the analysis-side ``ia_NfS`` (measure_thickness /
+    find_nuclei_bboxes) so a pipeline can make the call without the analysis repo.
+
+    Args:
+        czi_path: Path to the .czi file.
+        channel:  Channel index to read (default 0 = DAPI).
+
+    Returns:
+        The signal level (float ≥ 0), or ``None`` if the file cannot be read.
+    """
+    try:
+        from pylibCZIrw import czi as pyczi
+        import numpy as np
+
+        with pyczi.open_czi(str(czi_path)) as czidoc:
+            z_range = czidoc.total_bounding_box.get("Z", (0, 1))
+            planes = []
+            dtype = None
+            for z in range(z_range[0], z_range[1]):
+                plane = czidoc.read(plane={"C": channel, "T": 0, "Z": z})[..., 0]
+                if dtype is None:
+                    dtype = plane.dtype
+                planes.append(plane)
+            if not planes:
+                return None
+            zyx = np.stack(planes).astype(np.float32)
+
+        full_scale = (float(np.iinfo(dtype).max)
+                      if np.issubdtype(dtype, np.integer)
+                      else float(zyx.max()) or 1.0)
+        return float(np.percentile(zyx, 99.9)) / full_scale
+
+    except Exception as e:
+        print(f"[SIGNAL_LEVEL ERROR] {type(e).__name__}: {e}")
+        return None
+
+
+def is_czi_effectively_empty(czi_path: Path,
+                             frac: float = EMPTY_STACK_SIGNAL_FRAC,
+                             channel: int = 0) -> Optional[bool]:
+    """
+    Tell whether a CZI captured essentially nothing (a dark / failed-DF stack).
+
+    Thin wrapper over :func:`signal_level_from_czi`: ``True`` when the signal
+    level is below ``frac`` of detector full-scale. Lets a pipeline distinguish
+    "this acquisition imaged something" from "DF failed / out of focus → dark
+    stack" and skip the site, rather than feed a black stack to segmentation
+    (Otsu on noise invents spurious detections).
+
+    Args:
+        czi_path: Path to the .czi file.
+        frac:     Signal-level threshold (default ``EMPTY_STACK_SIGNAL_FRAC``).
+        channel:  Channel index to read (default 0 = DAPI).
+
+    Returns:
+        ``True`` / ``False``, or ``None`` if the file cannot be read.
+    """
+    level = signal_level_from_czi(czi_path, channel=channel)
+    if level is None:
+        return None
+    return level < frac

@@ -85,3 +85,39 @@ if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
         f"{ZEISS_EXAMPLES.parent / 'python_package'}/zen_api-*/src. "
         f"Set SMARTMIC_ZEISS_EXAMPLES to the correct python_examples path.\n"
     )
+
+
+def zen_api_version():
+    """Best-effort identity of the resolved ``zen_api`` gRPC stubs, for logging.
+
+    The ZEN gRPC API exposes NO version/about service, and the ``zen_api`` package
+    has no ``__version__`` / pip metadata (see DEV_NOTES). The only version signal
+    is the package folder name in the NEW layout
+    (``…/python_package/zen_api-<version>/src/zen_api``); the OLD loose layout
+    (``python_examples/zen_api``) carries no version.
+
+    Returns ``(version, path)`` where ``version`` is the string parsed from a
+    ``zen_api-<version>`` ancestor folder or ``None`` if not present, and ``path``
+    is the resolved ``zen_api`` package directory (or ``None`` if unimportable).
+    Always log ``path`` too — on a machine with both layouts the loose copy can
+    shadow a versioned package, so the version alone can be misleading.
+    """
+    try:
+        import zen_api
+        pkg_dir = Path(zen_api.__file__).resolve().parent
+    except Exception:
+        return None, None
+    return _zen_api_version_from_dir(pkg_dir), str(pkg_dir)
+
+
+def _zen_api_version_from_dir(pkg_dir):
+    """Parse the version from a ``zen_api-<version>`` ancestor of a package dir.
+
+    Returns the version string (e.g. ``"2025.10.1"``) or ``None`` if no such
+    ancestor exists (the OLD loose layout). Pure/​path-only — no I/O — so it is
+    unit-testable against synthetic paths for both layouts.
+    """
+    for parent in Path(pkg_dir).parents:
+        if parent.name.startswith("zen_api-"):
+            return parent.name[len("zen_api-"):]
+    return None

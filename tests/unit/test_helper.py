@@ -132,3 +132,73 @@ def test_get_zstack_z_range(zstack_czi):
 def test_get_zstack_z_range_single_plane_is_none(sharp):
     pytest.importorskip("pylibCZIrw")
     assert helper.get_zstack_z_range(sharp) is None
+
+
+# --------------------------------------------------------------------------
+# Stage position from CZI (get_stage_position_from_czi / get_xy_position_from_czi)
+# --------------------------------------------------------------------------
+def test_get_stage_position_from_czi_shape(zstack_czi):
+    pytest.importorskip("pylibCZIrw")
+    info = helper.get_stage_position_from_czi(zstack_czi)
+    assert info is not None
+    assert set(info) == {"actual_x_m", "actual_y_m",
+                         "planned_x_m", "planned_y_m", "z_m"}
+    # All five fields are present in this fixture; values are plausible stage
+    # coordinates in metres (this scope's travel is well under 0.2 m).
+    for k, v in info.items():
+        assert isinstance(v, float)
+        assert abs(v) < 0.2
+
+
+def test_get_stage_position_from_czi_missing_returns_none(tmp_path):
+    assert helper.get_stage_position_from_czi(tmp_path / "nope.czi") is None
+
+
+def test_get_xy_position_prefers_planned_vs_actual(zstack_czi):
+    pytest.importorskip("pylibCZIrw")
+    info = helper.get_stage_position_from_czi(zstack_czi)
+    # planned (scene CenterPosition) is the reliable "where imaged" field and the
+    # default; actual (MTBStageAxis encoder) is the parked position. In this
+    # fixture the two differ, so each prefer-mode must return its own pair.
+    assert helper.get_xy_position_from_czi(zstack_czi) == (
+        info["planned_x_m"], info["planned_y_m"])
+    assert helper.get_xy_position_from_czi(zstack_czi, prefer="planned") == (
+        info["planned_x_m"], info["planned_y_m"])
+    assert helper.get_xy_position_from_czi(zstack_czi, prefer="actual") == (
+        info["actual_x_m"], info["actual_y_m"])
+
+
+def test_get_xy_position_from_czi_missing_returns_none(tmp_path):
+    assert helper.get_xy_position_from_czi(tmp_path / "nope.czi") is None
+
+
+# --------------------------------------------------------------------------
+# Signal level / empty-stack guard
+# --------------------------------------------------------------------------
+def test_signal_level_from_czi_real_image(sharp):
+    pytest.importorskip("pylibCZIrw")
+    level = helper.signal_level_from_czi(sharp)
+    # A real (non-empty) image: signal well above the empty threshold, ≤ 1.
+    assert level is not None
+    assert helper.EMPTY_STACK_SIGNAL_FRAC < level <= 1.0
+
+
+def test_signal_level_from_czi_missing_returns_none(tmp_path):
+    assert helper.signal_level_from_czi(tmp_path / "nope.czi") is None
+
+
+def test_is_czi_effectively_empty_false_for_real_image(sharp):
+    pytest.importorskip("pylibCZIrw")
+    # Default threshold: a real image is not empty.
+    assert helper.is_czi_effectively_empty(sharp) is False
+
+
+def test_is_czi_effectively_empty_true_above_signal(sharp):
+    pytest.importorskip("pylibCZIrw")
+    # Force the empty branch with a frac above this image's signal level
+    # (no all-black fixture available) — exercises the comparison.
+    assert helper.is_czi_effectively_empty(sharp, frac=1.0) is True
+
+
+def test_is_czi_effectively_empty_missing_returns_none(tmp_path):
+    assert helper.is_czi_effectively_empty(tmp_path / "nope.czi") is None
