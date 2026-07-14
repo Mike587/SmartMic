@@ -689,10 +689,14 @@ def preflight(expected_carrier: str, log,
     # and we cannot apply it, abort: proceeding at an unknown (likely full) speed
     # would silently violate the intended protection. But if no throttle was
     # requested (both None → full speed, no protection intended), a device that
-    # rejects the knob outright (seen on this gateway: FAILED_PRECONDITION "This
-    # parameter is not supported by the device.") must NOT block the run — we
-    # weren't limiting anything anyway. Warn and proceed at the stage's current
-    # motion settings.
+    # rejects the knob outright must NOT block the run — we weren't limiting
+    # anything anyway. Warn and proceed at the stage's current motion settings.
+    #
+    # set_stage_motion already tolerates a speed-only failure internally (this
+    # gateway rejects SetSpeed/GetSpeed outright, confirmed 2026-07-14, but
+    # SetAcceleration/GetAcceleration work fine — see MS_zenapi_stage_LM), so an
+    # exception here means ACCELERATION itself — the parameter that actually
+    # matters for protecting a live sample — could not be applied.
     throttle_requested = (stage_speed_percent is not None
                           or stage_acceleration_percent is not None)
     motion = None
@@ -700,15 +704,20 @@ def preflight(expected_carrier: str, log,
         motion = set_stage_motion_sync(stage_speed_percent, stage_acceleration_percent)
     except Exception as e:
         if throttle_requested:
-            log.error(f"Could not set requested stage speed/acceleration ({e}) — aborting.")
+            log.error(f"Could not set requested stage acceleration ({e}) — aborting.")
             return False
-        log.warning(f"Stage speed/acceleration not set ({e}); the device may not support "
+        log.warning(f"Stage acceleration not set ({e}); the device may not support "
                     f"this knob. No throttle was requested, so proceeding at the stage's "
                     f"current motion settings (full speed).")
 
-    motion_str = (f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
-                  f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%"
-                  if motion is not None else "stage motion left as-is (set not supported)")
+    if motion is None:
+        motion_str = "stage motion left as-is (set not supported)"
+    elif motion["speed_x"] is None:
+        motion_str = (f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})% "
+                       f"(speed throttle not supported by this device — acceleration only)")
+    else:
+        motion_str = (f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
+                      f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%")
     log.info(f"Preflight OK: gateway responsive, microscope idle, carrier '{carrier}', {motion_str}.")
     return True
 

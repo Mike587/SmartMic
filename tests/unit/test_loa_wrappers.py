@@ -231,3 +231,21 @@ def test_preflight_gateway_down_aborts(monkeypatch):
     log = _Log()
     assert ms.preflight("PLATE", log) is False
     assert log.errors
+
+
+def test_preflight_notes_speed_unsupported_but_still_passes(monkeypatch):
+    # Confirmed on the real gateway (2026-07-14): SetSpeed is rejected while
+    # SetAcceleration works, so set_stage_motion_sync returns speed_x/speed_y as
+    # None without raising. preflight must still pass (acceleration — the
+    # parameter that matters — was applied) and its log should say so.
+    partial_motion = {"speed_x": None, "speed_y": None,
+                       "acceleration_x": 40, "acceleration_y": 40}
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(ms, "set_stage_motion_sync",
+                        lambda speed=None, accel=None: partial_motion)
+
+    log = _Log()
+    assert ms.preflight("PLATE", log) is True
+    assert log.errors == []
+    assert any("speed throttle not supported" in m for m in log.infos)

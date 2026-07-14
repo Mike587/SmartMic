@@ -197,9 +197,17 @@ async def set_stage_motion(speed_percent: float = None,
     the shared ``preflight``) and leave it; every later move inherits it. No
     restore (restoring would defeat the purpose).
 
-    Both are set TOGETHER on purpose: for a live sample it is the acceleration
-    (the jerk at the start/stop of a move) that sloshes the medium, so a low top
-    speed paired with a high acceleration would still jolt the sample.
+    Both are requested TOGETHER on purpose: for a live sample it is the
+    acceleration (the jerk at the start/stop of a move) that sloshes the medium,
+    so a low top speed paired with a high acceleration would still jolt the
+    sample. **But they are applied INDEPENDENTLY**: confirmed on this gateway
+    (2026-07-14) that ``SetSpeed``/``GetSpeed`` are rejected outright
+    (``FAILED_PRECONDITION: "This parameter is not supported by the device."``)
+    while ``SetAcceleration``/``GetAcceleration`` work fine at any value. Since
+    acceleration is the parameter that actually matters for protecting a live
+    sample, a speed failure is logged and tolerated rather than raised — it must
+    NOT prevent acceleration from being applied. An acceleration failure, by
+    contrast, DOES raise: that is the one knob this function exists to guarantee.
 
     Args:
         speed_percent: Target XY travel speed, percent of max. ``None`` falls
@@ -210,6 +218,8 @@ async def set_stage_motion(speed_percent: float = None,
     Returns:
         The read-back after setting, as
         ``{"speed_x", "speed_y", "acceleration_x", "acceleration_y"}`` (percent).
+        ``speed_x``/``speed_y`` are ``None`` when the device rejected the speed
+        knob (see above) — that is NOT a failure of this function.
     """
     logger = set_logging()
     speed = STAGE_TRAVEL_SPEED_PERCENT if speed_percent is None else speed_percent
@@ -218,25 +228,36 @@ async def set_stage_motion(speed_percent: float = None,
     async with open_zen_channel(config_path) as (channel, metadata):
         stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-        # Set acceleration AND speed (both axes). Order is not significant —
-        # neither takes effect until the next move — but set both so the pair is
-        # always consistent.
+        # Acceleration is the parameter this function guarantees — let a failure
+        # here propagate to the caller.
         await stage_service.set_acceleration(
             StageServiceSetAccelerationRequest(acceleration_x=accel, acceleration_y=accel)
         )
-        await stage_service.set_speed(
-            StageServiceSetSpeedRequest(speed_x=speed, speed_y=speed)
-        )
+        ac = await stage_service.get_acceleration(StageServiceGetAccelerationRequest())
+
+        # Speed is a known, permanent limitation on this gateway/device, not a
+        # transient failure — tolerate it so it can never block acceleration
+        # (already applied above) from taking effect.
+        sp_x = sp_y = None
+        try:
+            await stage_service.set_speed(
+                StageServiceSetSpeedRequest(speed_x=speed, speed_y=speed)
+            )
+            sp = await stage_service.get_speed(StageServiceGetSpeedRequest())
+            sp_x, sp_y = sp.x, sp.y
+        except Exception as e:
+            logger.warning(
+                f"Stage speed not supported by this device/gateway ({e}); "
+                f"proceeding with acceleration only."
+            )
 
         # Read back what is actually in effect, so the run log records the real
         # values (insurance against a silent overwrite by ZEN / a tile scan).
-        sp = await stage_service.get_speed(StageServiceGetSpeedRequest())
-        ac = await stage_service.get_acceleration(StageServiceGetAccelerationRequest())
         logger.info(
-            f"Stage motion set: speed=({sp.x}, {sp.y})%  "
+            f"Stage motion set: speed=({sp_x}, {sp_y})%  "
             f"acceleration=({ac.x}, {ac.y})%"
         )
         return {
-            "speed_x": sp.x, "speed_y": sp.y,
+            "speed_x": sp_x, "speed_y": sp_y,
             "acceleration_x": ac.x, "acceleration_y": ac.y,
         }
