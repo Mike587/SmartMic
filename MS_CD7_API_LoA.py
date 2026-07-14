@@ -644,12 +644,21 @@ def preflight(expected_carrier: str, log,
         bool: True if all checks pass and stage motion was set; False otherwise
         (the reason is logged via ``log.error``). Callers should abort on False.
     """
-    # 0. Record which zen_api gRPC stubs this run is using. ZEN exposes no
-    # version/about service over the API, so the package folder name (when the
-    # versioned layout is in use) + the resolved path is the best identity we can
-    # log. Log the path too: a loose copy can shadow a versioned package.
+    # 0. Record version identity: none of this is available over the gRPC API
+    # itself (no version/about service), so each piece is recovered out-of-band
+    # (see zeiss_paths.zen_app_version / zen_api_gateway_version / zen_api_version /
+    # smartmic_version) and logged together so a support question ("what were you
+    # running?") has a complete answer: the ZEN application, the gateway service it
+    # talks to, the Python-side stubs generated against it, AND the exact SmartMic
+    # commit driving the run.
+    sm_ver = zeiss_paths.smartmic_version()
+    zen_ver = zeiss_paths.zen_app_version()
+    gw_ver = zeiss_paths.zen_api_gateway_version()
     api_ver, api_path = zeiss_paths.zen_api_version()
-    log.info(f"zen_api stubs: {api_ver or 'unversioned (loose layout)'}  @ {api_path}")
+    log.info(f"SmartMic: {sm_ver or 'unknown (not a git checkout?)'}  |  "
+             f"ZEN app: {zen_ver or 'unknown'}  |  "
+             f"ZenApiGateway: {gw_ver or 'unknown'}  |  "
+             f"zen_api stubs: {api_ver or 'unversioned (loose layout)'} @ {api_path}")
 
     # 1. Gateway ping (the carrier query is also the liveness check).
     try:

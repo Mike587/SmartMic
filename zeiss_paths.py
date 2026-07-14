@@ -21,6 +21,8 @@ SMARTMIC_ZEISS_EXAMPLES environment variable to override it).
 """
 
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,6 +44,20 @@ THIS_DIR = Path(__file__).resolve().parent
 # instead of recomputing ``Path(__file__).parent / "config.ini"`` itself.  It is
 # absolute, so it does not depend on the current working directory.
 CONFIG_PATH = THIS_DIR / "config.ini"
+
+# Where ZEN and the ZEN-API gateway write their own logs / binaries. Used only
+# to recover version info the gRPC API itself doesn't expose (see
+# zen_app_version / zen_api_gateway_version below). Override via env vars if a
+# machine's install differs from the standard layout.
+ZEN_LOGGING_DIR = Path(
+    os.environ.get("SMARTMIC_ZEN_LOGGING_DIR", r"C:/ProgramData/Carl Zeiss/Logging")
+)
+ZEN_API_GATEWAY_EXE = Path(
+    os.environ.get(
+        "SMARTMIC_ZEN_API_GATEWAY_EXE",
+        r"C:/Program Files/Carl Zeiss/ZenApiGateway/ZenApiGateway.exe",
+    )
+)
 
 # IMPORTANT ordering:
 #   * THIS_DIR goes to the FRONT  -> this project's MS_* modules win.
@@ -121,3 +137,116 @@ def _zen_api_version_from_dir(pkg_dir):
         if parent.name.startswith("zen_api-"):
             return parent.name[len("zen_api-"):]
     return None
+
+
+_SOFTWARE_VERSION_RE = re.compile(r'name="SoftwareVersion"\s+value="([^"]+)"')
+_ZEN_LOG_TAIL_BYTES = 65536
+
+
+def zen_app_version():
+    """Best-effort version of the running ZEN APPLICATION itself, for logging.
+
+    Confirmed unavailable over the gRPC API (see ``zen_api_version`` above): none
+    of the 27 service stubs expose a version/about/system-info call, so this
+    reads it out-of-band, from ZEN's own log. ``ZEN_LOGGING_DIR / "ZEN.log.xml"``
+    is NOT one well-formed XML document — it's a flat stream of one <event>...
+    </event> fragment per line, no wrapping root element — but ZEN stamps a
+    ``SoftwareVersion`` attribute on the <properties> of essentially every event
+    it logs. Only the file's TAIL is read (it can be several MB and grows for as
+    long as ZEN runs), and the LAST match in that tail is used, so a version that
+    changed mid-file (a ZEN restart/upgrade) reflects what's running now, not
+    what was running when the file was created.
+
+    Returns the version string (e.g. ``"3.13.109.08000"``), or ``None`` if the
+    log file is missing/unreadable or no ``SoftwareVersion`` is found in the tail.
+    """
+    try:
+        text = _tail(ZEN_LOGGING_DIR / "ZEN.log.xml", _ZEN_LOG_TAIL_BYTES)
+    except OSError:
+        return None
+    return _last_software_version(text)
+
+
+def _tail(path, n_bytes):
+    """Return the last ``n_bytes`` bytes of ``path``, decoded as UTF-8 (lossy).
+
+    Seeks from the end instead of reading the whole file, since the ZEN logs
+    this is used against can be multi-megabyte and only the most recent content
+    is ever needed.
+    """
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - n_bytes))
+        data = f.read()
+    return data.decode("utf-8", errors="ignore")
+
+
+def _last_software_version(text):
+    """Pure text parse: the last ``SoftwareVersion="..."`` attribute in ``text``.
+
+    Split out from ``zen_app_version`` so the parsing logic is unit-testable
+    against synthetic log text, without needing a real ZEN log file on disk.
+    """
+    matches = _SOFTWARE_VERSION_RE.findall(text)
+    return matches[-1] if matches else None
+
+
+def zen_api_gateway_version():
+    """Best-effort FileVersion of ``ZenApiGateway.exe``, for logging.
+
+    This is the actual gRPC service SmartMic connects to — its version tracks
+    the API *contract* (message shapes, RPC behavior) more directly than either
+    the ZEN application version (``zen_app_version``) or the ``zen_api`` Python
+    stub version (``zen_api_version``), since the gateway can be serviced
+    somewhat independently of the rest of ZEN. Not available over the API
+    itself (no version/about call); read via the Win32 file-version resource
+    instead (``win32api``, already present transitively in this env).
+
+    Returns the version string (e.g. ``"3.6.25262.3"``), or ``None`` if the exe
+    is missing, ``win32api`` isn't importable, or its version resource can't be
+    read.
+    """
+    try:
+        import win32api
+    except ImportError:
+        return None
+    try:
+        info = win32api.GetFileVersionInfo(str(ZEN_API_GATEWAY_EXE), "\\")
+        ms, ls = info["FileVersionMS"], info["FileVersionLS"]
+    except Exception:
+        return None
+    return f"{win32api.HIWORD(ms)}.{win32api.LOWORD(ms)}.{win32api.HIWORD(ls)}.{win32api.LOWORD(ls)}"
+
+
+def smartmic_version():
+    """Best-effort identity of the exact SmartMic code that is running, for logging.
+
+    There is no formal release process yet (no ``__version__``, no git tags —
+    ``pixi.toml``'s ``version = "0.1.0"`` is a static placeholder that has never
+    been bumped), so this reads it straight from git instead:
+    ``git describe --tags --always --dirty``, run against THIS_DIR (SmartMic's
+    own repo root) rather than the caller's cwd, so it reports SmartMic's commit
+    regardless of which project imports it or where that project's own repo is.
+
+    Falls back gracefully at every stage: no tags yet -> just the abbreviated
+    commit hash (e.g. ``"3bf63cf"``); uncommitted changes on top of it ->
+    ``-dirty`` appended (e.g. ``"3bf63cf-dirty"``); once ``PROJECT_CHECKLIST.md``'s
+    freezing workflow actually tags a release, this starts returning a real
+    version automatically (e.g. ``"v0.2.0-5-g3bf63cf-dirty"``) with no code change
+    needed here.
+
+    Returns the describe string, or ``None`` if git itself is unavailable or
+    THIS_DIR isn't inside a git repo (e.g. a project that vendored/copied the
+    SmartMic modules per the freezing workflow, rather than importing them live).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(THIS_DIR), "describe", "--tags", "--always", "--dirty"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
