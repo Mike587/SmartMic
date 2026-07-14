@@ -37,10 +37,12 @@ pipelines that consume it live under `projects/`, one folder each.
 |--------|------|
 | `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point) |
 
-Each project script adds the repo root to `sys.path` (two levels up) and then
-imports `zeiss_paths`, so it can use the wrapper modules and the Zeiss `zen_api`
-package regardless of the working directory it is launched from. `config.ini` is
-resolved relative to the repo root, so it stays at the root and is shared by all
+Each project script resolves the repo root via the `SMARTMIC_ROOT` environment
+variable (defaulting to the standard checkout location) and adds it to
+`sys.path`, then imports `zeiss_paths`, so it can use the wrapper modules and
+the Zeiss `zen_api` package regardless of the working directory it is launched
+from — or of where the project itself lives on disk. `config.ini` is resolved
+relative to the repo root, so it stays at the root and is shared by all
 projects.
 
 ## Image analysis

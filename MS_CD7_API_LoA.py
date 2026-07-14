@@ -673,20 +673,34 @@ def preflight(expected_carrier: str, log,
                   f"(expected '{expected_carrier}') — aborting.")
         return False
 
-    # 4. Stage speed + acceleration (set once for the run). Abort on failure so
-    # the run never proceeds with unknown stage motion — important for a
-    # sensitive/live sample where the values are deliberately turned down.
+    # 4. Stage speed + acceleration (set once for the run).
+    #
+    # Whether a failure here is fatal depends on INTENT. If the caller explicitly
+    # asked to throttle (speed/accel not None) — e.g. a sensitive/live sample —
+    # and we cannot apply it, abort: proceeding at an unknown (likely full) speed
+    # would silently violate the intended protection. But if no throttle was
+    # requested (both None → full speed, no protection intended), a device that
+    # rejects the knob outright (seen on this gateway: FAILED_PRECONDITION "This
+    # parameter is not supported by the device.") must NOT block the run — we
+    # weren't limiting anything anyway. Warn and proceed at the stage's current
+    # motion settings.
+    throttle_requested = (stage_speed_percent is not None
+                          or stage_acceleration_percent is not None)
+    motion = None
     try:
         motion = set_stage_motion_sync(stage_speed_percent, stage_acceleration_percent)
     except Exception as e:
-        log.error(f"Could not set stage speed/acceleration ({e}) — aborting.")
-        return False
+        if throttle_requested:
+            log.error(f"Could not set requested stage speed/acceleration ({e}) — aborting.")
+            return False
+        log.warning(f"Stage speed/acceleration not set ({e}); the device may not support "
+                    f"this knob. No throttle was requested, so proceeding at the stage's "
+                    f"current motion settings (full speed).")
 
-    log.info(
-        f"Preflight OK: gateway responsive, microscope idle, carrier '{carrier}', "
-        f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
-        f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%."
-    )
+    motion_str = (f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
+                  f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%"
+                  if motion is not None else "stage motion left as-is (set not supported)")
+    log.info(f"Preflight OK: gateway responsive, microscope idle, carrier '{carrier}', {motion_str}.")
     return True
 
 

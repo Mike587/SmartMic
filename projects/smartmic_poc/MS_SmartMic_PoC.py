@@ -45,6 +45,7 @@ Focus notes
 """
 
 import json
+import os
 import random
 import sys
 from datetime import datetime
@@ -112,12 +113,11 @@ ANALYSIS_SCRIPT     = ANALYSIS_SCRIPT_DIR / "analyze_czi.py"
 
 # ---------------------------------------------------------------------------
 
-# This script lives in projects/smartmic_poc/.  Add the repo root (two levels
-# up) to sys.path so the MS_* wrapper modules and zeiss_paths resolve, then
-# import zeiss_paths which extends sys.path further for the Zeiss-provided
-# zen_api / zen_api_utils packages (in the ZEN-API example folder).  This makes
-# imports work regardless of the working directory the script is launched from.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+# Locate SmartMic root: override with the SMARTMIC_ROOT env var if this
+# project is ever moved or vendored elsewhere; defaults to the standard
+# checkout location (same override pattern zeiss_paths.py uses for zen_api).
+_SMARTMIC_ROOT = os.environ.get("SMARTMIC_ROOT", r"C:\Users\zeiss\Mike\SmartMic")
+sys.path.insert(0, _SMARTMIC_ROOT)
 import zeiss_paths  # noqa: F401  — side effect: extends sys.path
 
 try:

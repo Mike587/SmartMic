@@ -16,9 +16,15 @@ DEV_NOTES.md
 # Dev TODO — kept locally, not shared.
 TODO.md
 
-# Local-only projects — kept locally, never pushed.
-projects/HD_Nuclei_from_slide/
-projects/Marc_SM/
+# Project stability checklist — draft, kept locally for now.
+PROJECT_CHECKLIST.md
+
+# Local-only projects — kept locally, never pushed. smartmic_poc is the only
+# project tracked/shared in this repo; every other folder under projects/ is
+# ignored by default, so a new local project needs no manual entry here. Each
+# local project should have its own git repo + project-local TODO.md.
+projects/*/
+!projects/smartmic_poc/
 
 # Pixi — installed environments are regenerated from pixi.toml + pixi.lock
 # (both of which ARE tracked). Never commit the multi-GB env tree.
