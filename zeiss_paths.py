@@ -76,11 +76,31 @@ _zeiss = str(ZEISS_EXAMPLES)
 if _zeiss not in sys.path:
     sys.path.append(_zeiss)
 
+def _zen_api_src_version_key(src_path):
+    """Numeric sort key for a ``.../zen_api-<version>/src`` path.
+
+    Sorting the raw path strings is lexical, so e.g. ``zen_api-2025.10.0``
+    would sort BEFORE ``zen_api-2025.9.0`` once a version component reaches two
+    digits ('1' < '9') — silently picking the older package as "newest". Parse
+    each dot-separated component as an int instead. Falls back to ``(-1,)``
+    (sorts before any real version) for a folder name that doesn't parse, so a
+    malformed entry never wins "newest" instead of crashing the comparison.
+    """
+    version = src_path.parent.name[len("zen_api-"):]
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return (-1,)
+
+
 # NEW ZEN-API layout (>= 2026.05): zen_api is a separate installable package at
 # ZEN-API/python_package/zen_api-<version>/src/.  Add the newest one's src so
 # `import zen_api` resolves without pip-installing it.  (The OLD layout had
 # zen_api loose in python_examples, already covered above.)
-_zen_api_srcs = sorted((ZEISS_EXAMPLES.parent / "python_package").glob("zen_api-*/src"))
+_zen_api_srcs = sorted(
+    (ZEISS_EXAMPLES.parent / "python_package").glob("zen_api-*/src"),
+    key=_zen_api_src_version_key,
+)
 # The repo can ship MULTIPLE package versions, and the newest may be ahead of
 # the gateway.  Pin one with SMARTMIC_ZEN_API_VERSION
 # (e.g. "2025.10.1"); otherwise fall back to the newest available.
@@ -89,7 +109,7 @@ if _pin:
     _pinned = [s for s in _zen_api_srcs if s.parent.name == f"zen_api-{_pin}"]
     _zen_api_srcs = _pinned or _zen_api_srcs
 if _zen_api_srcs:
-    _src = str(_zen_api_srcs[-1])  # version dirs sort lexically; newest is last
+    _src = str(_zen_api_srcs[-1])  # numeric version sort (see _zen_api_src_version_key); newest is last
     if _src not in sys.path:
         sys.path.append(_src)
 

@@ -71,15 +71,16 @@ def run_definite_focus_find_surface(max_retries: int = 3,
     if start_z_m is not None:
         kwargs["start_z_m"] = start_z_m
     try:
+        # definite_focus_find_surface only ever returns on success — it raises
+        # (with attempts_used attached) after exhausting max_retries — so there
+        # is no separate "clean" False outcome to branch on here.
         success, attempts = asyncio.run(
             MS_zenapi_focus.definite_focus_find_surface(**kwargs)
         )
-        if success:
-            return True, "Definite focus successful", attempts
-        else:
-            return False, "Definite focus failed after retries", attempts
+        return True, "Definite focus successful", attempts
     except Exception as e:
-        return False, f"Definite focus failed with exception: {e}", max_retries
+        attempts_used = getattr(e, "attempts_used", max_retries)
+        return False, f"Definite focus failed with exception: {e}", attempts_used
 
 
 def run_definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], int]:
@@ -106,77 +107,81 @@ def get_current_z_position() -> float:
     return current_z_position
 
 
+def _validate_range(value, lo, hi, label: str, type_check, type_name: str,
+                     unit: str = "") -> Tuple[bool, str]:
+    """Shared isinstance + min/max + (bool, message) check.
+
+    Backs validate_objective_number / validate_optovar_number /
+    validate_z_position / validate_xy_position below, which differed only in
+    bounds, the expected type, and label text.
+    """
+    if not isinstance(value, type_check):
+        return False, f"{label} must be {type_name}, got {type(value)}"
+    if value < lo or value > hi:
+        return False, f"{label} {value}{unit} outside safe range [{lo}, {hi}]{unit}"
+    return True, f"Valid {label.lower()}"
+
+
 def validate_objective_number(objective_nr: int) -> Tuple[bool, str]:
     """
     Validate objective number is within valid range.
-    
+
     Args:
         objective_nr (int): Objective position number
-        
+
     Returns:
         tuple: (is_valid: bool, message: str)
     """
-    if not isinstance(objective_nr, int):
-        return False, f"Objective number must be integer, got {type(objective_nr)}"
-    if objective_nr < OBJECTIVE_MIN or objective_nr > OBJECTIVE_MAX:
-        return False, f"Objective number must be between {OBJECTIVE_MIN}-{OBJECTIVE_MAX}, got {objective_nr}"
-    return True, "Valid objective number"
+    return _validate_range(objective_nr, OBJECTIVE_MIN, OBJECTIVE_MAX,
+                            "Objective number", int, "integer")
 
 def validate_optovar_number(optovar_nr: int) -> Tuple[bool, str]:
     """
     Validate optovar number is within valid range.
-    
+
     Args:
         optovar_nr (int): Optovar position number
-        
+
     Returns:
         tuple: (is_valid: bool, message: str)
     """
-    if not isinstance(optovar_nr, int):
-        return False, f"Optovar number must be integer, got {type(optovar_nr)}"
-    if optovar_nr < OPTOVAR_MIN or optovar_nr > OPTOVAR_MAX:
-        return False, f"Optovar number must be between {OPTOVAR_MIN}-{OPTOVAR_MAX}, got {optovar_nr}"
-    return True, "Valid optovar number"
+    return _validate_range(optovar_nr, OPTOVAR_MIN, OPTOVAR_MAX,
+                            "Optovar number", int, "integer")
 
 def validate_z_position(z_pos: float) -> Tuple[bool, str]:
     """
     Validate Z position is within safe limits (in meters).
-    
+
     Args:
         z_pos (float): Z position in meters
-        
+
     Returns:
         tuple: (is_valid: bool, message: str)
     """
-    if not isinstance(z_pos, (int, float)):
-        return False, f"Z position must be numeric, got {type(z_pos)}"
-    if z_pos < Z_POSITION_MIN or z_pos > Z_POSITION_MAX:
-        return False, f"Z position {z_pos}m outside safe range [{Z_POSITION_MIN}, {Z_POSITION_MAX}]m"
-    return True, "Valid Z position"
+    return _validate_range(z_pos, Z_POSITION_MIN, Z_POSITION_MAX,
+                            "Z position", (int, float), "numeric", unit="m")
 
 def validate_xy_position(x: float, y: float) -> Tuple[bool, str]:
     """
     Validate XY positions are within safe hardware limits (in meters).
-    
+
     Args:
         x (float): X coordinate in meters
         y (float): Y coordinate in meters
-    
+
     Returns:
         tuple: (is_valid: bool, message: str)
     """
-    # Validate X coordinate
-    if not isinstance(x, (int, float)):
-        return False, f"X coordinate must be numeric, got {type(x)}"
-    if x < X_STAGE_MIN or x > X_STAGE_MAX:
-        return False, f"X coordinate {x}m outside safe range [{X_STAGE_MIN}, {X_STAGE_MAX}]m"
-    
-    # Validate Y coordinate
-    if not isinstance(y, (int, float)):
-        return False, f"Y coordinate must be numeric, got {type(y)}"
-    if y < Y_STAGE_MIN or y > Y_STAGE_MAX:
-        return False, f"Y coordinate {y}m outside safe range [{Y_STAGE_MIN}, {Y_STAGE_MAX}]m"
-    
+    x_ok, x_msg = _validate_range(x, X_STAGE_MIN, X_STAGE_MAX,
+                                   "X coordinate", (int, float), "numeric", unit="m")
+    if not x_ok:
+        return x_ok, x_msg
+
+    y_ok, y_msg = _validate_range(y, Y_STAGE_MIN, Y_STAGE_MAX,
+                                   "Y coordinate", (int, float), "numeric", unit="m")
+    if not y_ok:
+        return y_ok, y_msg
+
     return True, "Valid XY coordinates within stage limits"
 
 def move_focus_to_new_z_position(new_z_pos: float) -> None:
@@ -477,11 +482,12 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
         # Get current position to detect immersion operations
         current_obj, current_opt = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
         
-        # Check if moving FROM 50x immersion objective
-        is_from_immersion = current_obj == 4
-        
-        # Check if moving TO 50x immersion objective
-        is_to_immersion = objective_nr == 4
+        # Check if moving FROM/TO the 50x immersion objective. Shares the
+        # single source of truth (MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION)
+        # with the immersion move-guard, instead of a second hardcoded literal
+        # that could silently drift out of sync with it.
+        is_from_immersion = current_obj == MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION
+        is_to_immersion = objective_nr == MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION
         
         # Adjust timeout for immersion operations
         if is_from_immersion or is_to_immersion:

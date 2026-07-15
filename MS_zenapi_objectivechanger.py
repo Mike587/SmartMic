@@ -64,6 +64,38 @@ from zen_api.lm.hardware.v2 import (
 from zeiss_paths import CONFIG_PATH as config_path
 
 
+def _require_objective(objectives, position, context):
+    """Return the objective at *position*, or raise a clear error if unknown.
+
+    get_objective_by_position returns None for a position not present in the
+    reported inventory; dereferencing that None would otherwise surface as a
+    generic AttributeError, which a caller's broad except/retry (see
+    MS_CD7_API_LoA.set_objective_set_optovar_sync) would then mask as just
+    another transient failure instead of the real config/hardware mismatch.
+    """
+    obj = get_objective_by_position(objectives, position)
+    if obj is None:
+        raise ValueError(
+            f"{context}: objective position {position} is not in the reported "
+            f"objectives inventory (known positions: {get_used_objective_positions(objectives)})"
+        )
+    return obj
+
+
+def _require_optovar(optovars, position, context):
+    """Return the optovar at *position*, or raise a clear error if unknown.
+
+    See _require_objective — same reasoning, for the optovar inventory.
+    """
+    opt = get_optovar_by_position(optovars, position)
+    if opt is None:
+        raise ValueError(
+            f"{context}: optovar position {position} is not in the reported "
+            f"optovars inventory (known positions: {get_used_optovar_positions(optovars)})"
+        )
+    return opt
+
+
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int):
     """Move the objective changer and optovar to the requested positions.
 
@@ -108,16 +140,15 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
 
         # Record where we started so the change is explicit in the log.
         pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
-        current_objective = get_objective_by_position(objectives, pos_obj.value)
+        current_objective = _require_objective(objectives, pos_obj.value, "Current objective")
         logger.info(
             f"Current Objective: {current_objective.name} Position: {current_objective.position}"
         )
 
-        # obj_new_position = 3  # example: hard-code for quick testing
         await objchanger_service.move_to(
             ObjectiveChangerServiceMoveToRequest(position_index=obj_new_position)
         )
-        current_objective = get_objective_by_position(objectives, obj_new_position)
+        current_objective = _require_objective(objectives, obj_new_position, "New objective")
         logger.info(
             f"New Objective: {current_objective.name} Position: {current_objective.position}"
         )
@@ -125,16 +156,15 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
         logger.info("------------------ Move Optovars -----------------------")
 
         pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
-        current_optovar = get_optovar_by_position(optovars, pos_optovar.value)
+        current_optovar = _require_optovar(optovars, pos_optovar.value, "Current optovar")
         logger.info(
             f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
         )
 
-        # opt_new_position = 1  # example: hard-code for quick testing
         await optovar_service.move_to(
             OptovarServiceMoveToRequest(position_index=opt_new_position)
         )
-        current_optovar = get_optovar_by_position(optovars, opt_new_position)
+        current_optovar = _require_optovar(optovars, opt_new_position, "New optovar")
         logger.info(
             f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
         )

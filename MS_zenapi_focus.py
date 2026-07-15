@@ -200,6 +200,11 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
             except Exception as e3:
                 logger.error(f"Could not get current position after find_surface failure: {e3}")
 
+            # Attach the real attempt count to the exception so a caller that
+            # only sees the exception (e.g. MS_CD7_API_LoA.run_definite_focus_find_surface)
+            # can still report accurate retry telemetry instead of guessing.
+            if last_exception is not None:
+                last_exception.attempts_used = attempts_used
             raise last_exception
 
         # Reference: move Z up by 500 µm then use recall_focus to return.

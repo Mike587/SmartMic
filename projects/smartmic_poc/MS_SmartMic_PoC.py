@@ -247,7 +247,10 @@ def main():
             # known surface, reducing sweep time from ~15 s to ~1 s.
             df_start = (last_surface_z_m - DF_APPROACH_MARGIN_M
                         if last_surface_z_m is not None else None)
-            _, _, df_attempts = ms.run_definite_focus_find_surface(start_z_m=df_start)
+            df_success, df_message, df_attempts = ms.run_definite_focus_find_surface(start_z_m=df_start)
+            if not df_success:
+                log.error(f"DefiniteFocus FindSurface failed at {tag}: {df_message} — skipping position.")
+                continue
             z_fs_overview_um = ms.get_current_z_position() * 1e6
             last_surface_z_m = z_fs_overview_um * 1e-6
             log.info(f"FindSurface (overview) {tag}: zdrive={z_fs_overview_um:.3f} µm")
@@ -340,7 +343,11 @@ def main():
                     # 8c. DefiniteFocus FindSurface (adaptive start Z)
                     df_start_nuc = (last_surface_z_m - DF_APPROACH_MARGIN_M
                                     if last_surface_z_m is not None else None)
-                    _, _, df_nuc_attempts = ms.run_definite_focus_find_surface(start_z_m=df_start_nuc)
+                    df_nuc_success, df_nuc_message, df_nuc_attempts = ms.run_definite_focus_find_surface(
+                        start_z_m=df_start_nuc
+                    )
+                    if not df_nuc_success:
+                        raise RuntimeError(f"DefiniteFocus FindSurface failed: {df_nuc_message}")
                     z_fs_nuc_um = ms.get_current_z_position() * 1e6
                     last_surface_z_m = z_fs_nuc_um * 1e-6
                     log.info(f"FindSurface (nucleus {nuc_id:04d}) {tag}: zdrive={z_fs_nuc_um:.3f} µm")

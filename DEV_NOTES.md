@@ -423,6 +423,88 @@ the loose copy may be intentionally the one matched to the gateway.
 
 ---
 
+## Code review fixes (2026-07-15)
+
+A full-codebase review (8 finder angles, each verified against the actual
+source) found 10 issues; 9 were added to `TODO.md` and 8 were fixed same-day
+(offline suite: 129 passed after). One deferred — see `TODO.md`.
+
+- **PoC silently proceeded after a failed DefiniteFocus.**
+  `MS_SmartMic_PoC.py` unpacked `run_definite_focus_find_surface`'s
+  `(success, message, attempts)` as `_, _, df_attempts` — only the retry count
+  was checked, never success. A failed DF still had its Z read back and stored
+  as `last_surface_z_m` (corrupting the next position's adaptive start), and
+  the pipeline proceeded into SWAF/acquisition out of focus. Fixed at both
+  call sites (overview + per-nucleus): check `success`, skip the position (or
+  raise into the existing per-nucleus `except`) on failure.
+
+- **The DF wrapper's `False` branch was dead code.**
+  `MS_zenapi_focus.definite_focus_find_surface` only ever returns
+  `(True, attempts)` or raises (after exhausting `max_retries`) — it never
+  returns `(False, attempts)`. `MS_CD7_API_LoA.run_definite_focus_find_surface`'s
+  `if success: ... else: return False, ...` therefore had an unreachable
+  branch, and its `except` hardcoded `attempts_used = max_retries` instead of
+  the real count. This contract mismatch (plus a unit test mocking the
+  impossible `(False, 3)` shape) is what let the PoC bug above go unnoticed.
+  Fixed: removed the dead branch; `definite_focus_find_surface` now attaches
+  the real `attempts_used` to the exception it raises, and the wrapper reads
+  it (falling back to `max_retries` only if absent); the test now mocks a
+  raised exception with `.attempts_used` set instead of a clean `False` return.
+
+- **Import-time `mkdir()` hardcoded the `F:` drive.**
+  `MS_zenapi_experiment_methods.py` had a module-level
+  `image_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER; image_folder.mkdir(...)`
+  that ran on every import (transitively via `MS_CD7_API_LoA`) — turned out to
+  be dead weight: no real function actually read that global (they all go
+  through `_resolve_image_folder`, which creates its own folder lazily), so on
+  any machine without `F:` mapped this would break import/test-collection for
+  no reason. Deleted the unused global + its mkdir + the stale disabled debug
+  snippet that referenced it.
+
+- **`zeiss_paths.py` picked the wrong `zen_api` package once a version had two
+  digits.** `sorted()` on `zen_api-<version>/src` path strings is lexical, so
+  `zen_api-2025.10.0` sorted *before* `zen_api-2025.9.0` ('1' < '9') and
+  `[-1]` ("newest is last") would silently pick the older one. Only latent
+  today (one package version on disk) but would bite at the ZEN 3.14 upgrade
+  once a second version is present. Fixed: sort by a parsed numeric version
+  tuple (`_zen_api_src_version_key`) instead of the raw string.
+
+- **A hardware-position lookup returning `None` crashed as a generic,
+  misleading exception.** `MS_zenapi_objectivechanger.set_objective_set_optovar`
+  dereferenced `get_objective_by_position`/`get_optovar_by_position`'s result
+  via `.name` with no `None` check; an unmatched/transitional position raised
+  a bare `AttributeError`, caught by `set_objective_set_optovar_sync`'s broad
+  `except`/retry and burned through the whole retry budget as a generic
+  "Exception during objective change" — masking what was really a
+  config/hardware-state problem. Fixed: added `_require_objective`/
+  `_require_optovar` helpers that raise a clear, descriptive `ValueError`
+  instead.
+
+- **Immersion objective position (`4`) was hardcoded twice.**
+  `MS_CD7_API_LoA.set_objective_set_optovar_sync` re-hardcoded the literal `4`
+  instead of importing `MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION`, the
+  documented single source of truth — a drift risk if the turret is ever
+  reconfigured. Fixed: now references the shared constant.
+
+- **(low) `fit_lsm_crop` could crash with `ZeroDivisionError`.**
+  `MS_czexp_editor.fit_lsm_crop` divided by `target_fov_um` with no
+  validation. Fixed: raises `ValueError` up front for a non-positive FOV.
+
+- **(low) A same-file move could crash a smoke test.**
+  `MS_zenapi_experiment_methods.py`'s snap-file move compared
+  `snap_default_path != snap_custom_path` without `.resolve()`, unlike the
+  equivalent comparison in `_move_result_and_cleanup` two functions over.
+  Fixed: added the matching `.resolve()`.
+
+- **(cleanup) Four copy-pasted range-validators in `MS_CD7_API_LoA.py`.**
+  `validate_objective_number`/`validate_optovar_number`/`validate_z_position`/
+  `validate_xy_position` repeated the same isinstance+range+message pattern.
+  Collapsed into one `_validate_range(value, lo, hi, label, type_check,
+  type_name, unit)` helper; public signatures/behavior unchanged (confirmed
+  against `tests/unit/test_validation.py`).
+
+---
+
 ## Reference
 
 ### Optics map (this CD7)

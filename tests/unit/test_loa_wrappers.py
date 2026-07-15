@@ -41,7 +41,13 @@ def test_df_find_surface_success(monkeypatch):
 
 
 def test_df_find_surface_failure(monkeypatch):
-    monkeypatch.setattr(MS_zenapi_focus, "definite_focus_find_surface", _async_return((False, 3)))
+    # The real definite_focus_find_surface never returns (False, attempts) — it
+    # raises after exhausting max_retries, with the real attempt count attached
+    # to the exception as `.attempts_used` (see MS_zenapi_focus.py). Mock that
+    # actual contract instead of an impossible clean-False return.
+    exc = RuntimeError("surface not found")
+    exc.attempts_used = 3
+    monkeypatch.setattr(MS_zenapi_focus, "definite_focus_find_surface", _async_raise(exc))
     ok, msg, attempts = ms.run_definite_focus_find_surface()
     assert ok is False
     assert attempts == 3

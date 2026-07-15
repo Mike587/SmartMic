@@ -384,7 +384,15 @@ def fit_lsm_crop(root, target_fov_um, frame_size_override=None):
 
     Sets Zoom, FrameSize and the dependent FOV / Frame / ImageFrame fields,
     re-centred.  Returns a dict of applied values.
+
+    Raises:
+        ValueError: If ``target_fov_um`` is not positive (e.g. a degenerate
+            size from upstream analysis) — the FOV is a divisor below, so a
+            zero/negative value would otherwise crash with ZeroDivisionError.
     """
+    if target_fov_um <= 0:
+        raise ValueError(f"target_fov_um must be positive, got {target_fov_um}")
+
     det = find_lsm_detector(root)
     base_frame_x, _ = _parse_pair(_require(det, "FrameSize").text)
     base_rect_x, _ = _parse_pair(_require(det, "ScaledImageRectangleSize").text)

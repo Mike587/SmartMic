@@ -67,19 +67,6 @@ exp_folder = Path(r"C:\ProgramData\Carl Zeiss\ZEN\Users\mike\Documents\Experimen
 # Name for the temporary cloned experiment created during testing.
 exp_cloned_name = "deleteme_0011"
 
-# Fallback output folder used when the script is executed directly.
-# When called as a library function, pass custom_image_folder instead.
-image_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
-image_folder.mkdir(parents=True, exist_ok=True)
-
-# Path-existence debug snippet (disabled; kept as a useful reference).
-'''
-test = Path(image_folder)
-print(test.exists())
-test = Path(exp_folder)
-print(test.exists())
-'''
-
 # Auto-generated gRPC stubs for the experiment service.
 from zen_api.acquisition.v1beta import (
     ExperimentServiceStub,
@@ -454,7 +441,7 @@ async def check_experiment_api(
 
             # Move the snap to the custom folder if the paths differ.
             snap_custom_path = image_folder / (snap.output_name + ".czi")
-            if snap_default_path != snap_custom_path and snap_default_path.exists():
+            if snap_default_path.resolve() != snap_custom_path.resolve() and snap_default_path.exists():
                 # shutil.move (not Path.rename) — see _move_result_and_cleanup:
                 # the custom folder may be on a different drive than ZEN's default.
                 shutil.move(str(snap_default_path), str(snap_custom_path))
