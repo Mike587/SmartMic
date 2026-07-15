@@ -112,7 +112,9 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
             {
                 "well":          str,   # e.g. "D3"
                 "position_name": str,   # e.g. "P1"
-                "scene_index":   int,
+                "scene_index":   int,   # index in file order across ALL regions,
+                                        # used or not — matches ZEN's own scene
+                                        # numbering; NOT re-numbered after filtering.
                 "x_m":           float, # metres
                 "y_m":           float, # metres
                 "z_m":           float, # metres

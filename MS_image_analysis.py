@@ -55,7 +55,7 @@ def run_analysis(image_path: Path,
 
     The script is invoked as::
 
-        pixi run python <analysis_script> <image_path> <output_folder> --prefix <tag>
+        pixi run python <analysis_script> <image_path> <output_folder> --prefix <tag> [extra_args...]
 
     so any analysis project exposing that CLI (image, output dir, ``--prefix``)
     can be plugged in here.
@@ -71,6 +71,8 @@ def run_analysis(image_path: Path,
         analysis_script_dir: Working directory for the subprocess (so pixi
                              resolves the analysis project's environment).
                              Defaults to ``analysis_script.parent``.
+        extra_args:          Additional CLI arguments appended after ``--prefix
+                             <tag>``, forwarded as-is (stringified).
 
     Returns:
         True if the analysis script exited with code 0, False otherwise.

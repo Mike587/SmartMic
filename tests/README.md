@@ -27,7 +27,7 @@ runs the offline tests and skips the hardware ones. This is the safety guarantee
 pixi run -e smartmic test
 ```
 
-That is the shortcut for `pytest tests/unit -q` (~2 s, ~90 tests). Variations:
+That is the shortcut for `pytest tests/unit -q` (~2 s, ~130 tests). Variations:
 
 ```powershell
 pixi run -e smartmic pytest tests/unit -v                    # one line per test

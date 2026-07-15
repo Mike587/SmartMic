@@ -187,15 +187,17 @@ def validate_xy_position(x: float, y: float) -> Tuple[bool, str]:
 def move_focus_to_new_z_position(new_z_pos: float) -> None:
     """
     Move z-drive to new position (in meters).
-    
-    WARNING: This function moves the objective. Use with extreme caution!
-    Always validate position before calling.
-    
+
+    WARNING: This moves the physical Z-drive/objective — the position is
+    validated internally (see Raises) but there is no further safety check
+    on what a "valid" Z actually means for the current sample/objective.
+
     Args:
         new_z_pos (float): New Z position in meters
-        
+
     Raises:
-        ValueError: If position is outside valid range
+        ValueError: If position is outside the safe range (validated
+            internally via validate_z_position — no need to call it yourself).
     """
     # Validate input
     is_valid, message = validate_z_position(new_z_pos)
@@ -222,18 +224,23 @@ def get_current_xy_stage_position() -> List[float]:
 def move_stage_to_new_xy_position(new_x: float, new_y: float) -> None:
     """
     Move stage to absolute coordinates (in meters).
-    
-    This will lower the objective to z = 0 before moving the stage.
-    The objective will stay at z = 0
-    
-    WARNING: Always validate coordinates before calling.
-    
+
+    This lowers the objective to Z = 0 before moving the stage (collision
+    safety) and leaves it there — it does NOT restore the prior Z. Callers
+    must re-establish focus at the new position before acquiring.
+
     Args:
         new_x (float): X coordinate in meters
         new_y (float): Y coordinate in meters
-    
+
     Raises:
-        ValueError: If coordinates are outside valid range
+        ValueError: If coordinates are outside the safe range (validated
+            internally via validate_xy_position — no need to call it yourself).
+        RuntimeError: If the 50x immersion objective is active. Lowering Z to
+            0 would break the immersion water bridge on this inverted CD7, so
+            the move is refused rather than attempted — drive the stage via a
+            positioned .czexp run by ZEN instead (see
+            MS_zenapi_stage_LM.move_stage_to_new_xy_position / DEV_NOTES.md).
     """
     # Validate inputs using hardware-specific limits
     is_valid, message = validate_xy_position(new_x, new_y)
@@ -470,15 +477,10 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
         raise ValueError(f"Invalid optovar number: {opt_msg}")
     
     async def _set_and_wait():
-        # MS: This changes the objective and the optovar
-        # Objective: Plan-Apochromat 20x/0.7 - Position: 1
-        # Objective: Plan-Apochromat 5x/0.35 - Position: 2
-        # Objective: Plan-Apochromat 20x/0.95 - Position: 3
-        # Objective: Plan-Apochromat 50x/1.2 - Position: 4
-        # Optovar: 2x Tubelens - Position: 1
-        # Optovar: 1x Tubelens - Position: 2
-        # Optovar: 0.5x Tubelens - Position: 3
-        
+        # See DEV_NOTES.md "Optics map (this CD7)" for the objective/optovar
+        # position -> lens/tubelens mapping (not repeated here to avoid a
+        # second copy that can drift if the turret is ever reconfigured).
+
         # Get current position to detect immersion operations
         current_obj, current_opt = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
         
@@ -525,7 +527,9 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
                 print(f"[WARN] Exception during objective change: {e}")
                 print(f"[INFO] Retry {retry_count + 1}/{max_retries}")
                 
-                # Special handling for "position not set" error when moving from immersion
+                # Special handling for the "has not been set" error ZEN raises
+                # transiently when moving from immersion (hardware needs time
+                # to complete the immersion-removal process).
                 if "has not been set" in str(e) and is_from_immersion:
                     print("[INFO] This is expected when moving from 50x immersion - hardware needs time")
                     print("[INFO] Waiting for immersion removal process...")

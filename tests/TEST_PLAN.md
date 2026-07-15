@@ -1,10 +1,12 @@
 # SmartMic — Test Plan (DRAFT for approval)
 
-Status: **Complete and fully validated.** Offline tier green — 92 passing
-(`pixi run -e smartmic test`). Hardware tiers 0–4 validated on the live scope
-(Multichamber 384, 20×/0.95) — 23 passing in one run (`pixi run -e smartmic test-hw`,
-~6.5 min). 115 tests total. Three library robustness bugs were found and fixed along
-the way (see §12). Remaining: optional follow-ups in §12 / Deferred.
+Status: **Complete and fully validated.** Offline tier green — 92 passing at the
+time of this plan (`pixi run -e smartmic test`), now 129 as preflight /
+stage-motion / immersion-guard coverage was added afterward (see §3). Hardware
+tiers 0–4 validated on the live scope (Multichamber 384, 20×/0.95) — 23 passing
+in one run (`pixi run -e smartmic test-hw`, ~6.5 min), unchanged since. Three
+library robustness bugs were found and fixed along the way (see §12). Remaining:
+optional follow-ups in §12 / Deferred.
 
 Author of plan: assistant, 2026-06-22. Reviewed by: _pending_.
 
@@ -61,6 +63,8 @@ These are the bulk of the value. Grouped by module.
 - `set_zstack_range`: set first/last/interval (m), assert via `get_zstack_interval_m`
   and the First/Last elements.
 - `fit_lsm_crop`: assert frame/zoom math at constant pixel size and at a fixed frame.
+  (The `target_fov_um <= 0` → `ValueError` guard added alongside the other
+  2026-07-15 fixes is not covered here — a gap.)
 - `set_tile_region_center` / `clear_single_tile_regions` (returns count) /
   `find_stitch_regions` / `find_tile_regions` on a stitch fixture.
 - `is_stitching_configured`: true for a valid stitch, false for the empty-`NULL`
@@ -91,15 +95,41 @@ These are the bulk of the value. Grouped by module.
 
 ### `tests/unit/test_loa_wrappers.py` — sync wrappers with the async layer **mocked**
 Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a scope:
-- `run_definite_focus_find_surface`: success path returns `(True, msg, attempts)`;
-  an exception in the async fn is caught → `(False, "…exception…", max_retries)`.
-- `set_objective_set_optovar_sync`: validates inputs first; polling loop confirms
-  after the mocked hardware "settles"; retry path; immersion timeout selection
-  (the `IMMERSION_*` constants) takes the longer timeout when moving from immersion.
+- `run_definite_focus_find_surface`: success path returns `(True, msg, attempts)`.
+  The async fn never returns a clean failure — it raises after exhausting
+  retries, with the real attempt count attached as `.attempts_used`. A caught
+  exception carrying that attribute reports the real count; one without it
+  (an unrelated/unexpected exception) falls back to `max_retries`.
+- `set_objective_set_optovar_sync`: validates inputs first (raises before any
+  async call); happy path confirms on the first poll against a mocked
+  `get_current_objective_and_optovar`. (The retry loop and the immersion
+  timeout selection inside `_set_and_wait` are not exercised by this file —
+  a coverage gap, not a passing test.)
 - `run_experiment`: `do_snap_and_live=False` routes to `run_experiment_by_name`,
   `True` routes to `check_experiment_api` (assert which mock was called).
 - `move_focus_to_new_z_position` / `move_stage_to_new_xy_position`: raise on invalid
   input *before* any async call (assert the async mock is never awaited).
+- `preflight`: happy path sets stage motion and logs no errors; wrong carrier /
+  busy scope / gateway-down each abort (`False`) before stage motion is touched;
+  a `set_stage_motion_sync` result with `speed_x/y = None` (gateway rejects
+  `SetSpeed`, see `test_stage_motion.py`) still passes, with an info log noting
+  the throttle wasn't supported. *(Added after this plan was written — see
+  `MS_CD7_API_LoA.preflight`.)*
+
+### `tests/unit/test_stage_guard.py` — immersion guard in `MS_zenapi_stage_LM`
+*(Added after this plan was written.)* `move_stage_to_new_xy_position` lowers Z
+to 0 for collision safety before every XY move, which would break the
+immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
+- Immersion objective active → raises before the Z=0 lower runs (`calls["z"] == 0`).
+- Dry objective active → no raise; the normal Z=0 lower runs once.
+
+### `tests/unit/test_stage_motion.py` — `set_stage_motion` in `MS_zenapi_stage_LM`
+*(Added after this plan was written.)* Mocked gRPC layer:
+- Explicit percents / `None` defaults: both `set_speed` and `set_acceleration`
+  issued once per axis with the expected values; the returned dict reflects them.
+- Confirmed-on-hardware (2026-07-14) asymmetry: a `SetSpeed`/`GetSpeed` rejection
+  is tolerated (`speed_x/y` come back `None`) since acceleration is the parameter
+  that actually protects a live sample; an acceleration failure DOES propagate.
 
 ### `tests/unit/test_zenapi_helpers.py` — `MS_zenapi_helpers.py`
 - `get_objective_by_position` / `get_optovar_by_position` / `get_used_*_positions`:

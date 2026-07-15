@@ -60,11 +60,12 @@ from grpclib import GRPCError
 from grpclib.const import Status
 import uuid
 
-# Module-level constants used when the script is run directly (not via API).
-# exp_folder = Path(r"f:\Documents\Carl Zeiss\ZENCore\Documents\Experiment Setups")
+# Local path where ZEN stores .czexp experiment definition files on disk —
+# used only by check_experiment_api's clone/save/delete round-trip, to verify
+# the temporary clone was actually removed.
 exp_folder = Path(r"C:\ProgramData\Carl Zeiss\ZEN\Users\mike\Documents\Experiment Setups")
 
-# Name for the temporary cloned experiment created during testing.
+# Name for the temporary cloned experiment created during check_experiment_api's smoke test.
 exp_cloned_name = "deleteme_0011"
 
 # Auto-generated gRPC stubs for the experiment service.
@@ -358,9 +359,6 @@ async def check_experiment_api(
             f"{len(available_experiments.experiments)}"
         )
 
-        # for exp in available_experiments.experiments:
-        #    logger.info(exp.name + ".czexp")
-
         logger.info("Loading Experiment ...")
         try:
             my_exp = await exp_service.load(
@@ -461,7 +459,6 @@ async def check_experiment_api(
 
             logger.info("Stopping Live ...")
             await exp_service.stop(ExperimentServiceStopRequest(experiment_id=my_exp.experiment_id))
-            # await asyncio.sleep(waittime)  # may be needed once ZEN gRPC handles stop latency
 
             logger.info("Starting Continuous ...")
             await exp_service.start_continuous(

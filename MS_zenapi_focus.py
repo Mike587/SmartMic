@@ -96,7 +96,10 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         is the number of attempts that were made.
 
     Raises:
-        Exception: Re-raises the last exception if all attempts fail.
+        Exception: Re-raises the last exception if all attempts fail, with
+            the real attempt count attached as ``.attempts_used`` (read by
+            ``MS_CD7_API_LoA.run_definite_focus_find_surface`` for accurate
+            retry telemetry — this function never returns ``(False, ...)``).
     """
     logger = set_logging()
 

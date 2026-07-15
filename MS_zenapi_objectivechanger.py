@@ -34,8 +34,10 @@ This module wraps two ZEN gRPC hardware services:
 
 Public functions
 ----------------
-set_objective_set_optovar        -- Move both objective and optovar to new positions
-get_current_objective_and_optovar -- Query the current positions of both devices
+set_objective_set_optovar         -- Move both objective and optovar to new positions
+get_current_objective_and_optovar -- Query the current position indices of both devices
+get_current_objective_and_optovar_names -- Same, resolved to human-readable names
+list_objectives_and_optovars      -- Read-only (name, position) inventory of both devices
 """
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
@@ -249,8 +251,8 @@ async def get_current_objective_and_optovar_names():
         )
         pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
 
-        current_objective = get_objective_by_position(objectives, pos_obj.value)
-        current_optovar = get_optovar_by_position(optovars, pos_optovar.value)
+        current_objective = _require_objective(objectives, pos_obj.value, "Current objective")
+        current_optovar = _require_optovar(optovars, pos_optovar.value, "Current optovar")
 
     return (
         (current_objective.name, current_objective.position),
