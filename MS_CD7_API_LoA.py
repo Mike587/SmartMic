@@ -191,6 +191,11 @@ def move_focus_to_new_z_position(new_z_pos: float) -> None:
     WARNING: This moves the physical Z-drive/objective — the position is
     validated internally (see Raises) but there is no further safety check
     on what a "valid" Z actually means for the current sample/objective.
+    Unlike move_stage_to_new_xy_position, this function has NO immersion
+    guard: calling it with new_z_pos at/near 0 while the 50x immersion
+    objective is active will retract the objective and break the immersion
+    water bridge (see DEV_NOTES.md). Callers must check the current
+    objective themselves before moving Z to 0 with immersion active.
 
     Args:
         new_z_pos (float): New Z position in meters

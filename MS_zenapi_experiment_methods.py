@@ -459,6 +459,12 @@ async def check_experiment_api(
 
             logger.info("Stopping Live ...")
             await exp_service.stop(ExperimentServiceStopRequest(experiment_id=my_exp.experiment_id))
+            # No sleep here yet, unlike the stop-Continuous call below (which carries
+            # a live "# TODO: remove this sleep once ZEN gRPC handles stop latency
+            # internally" wait). Whether the same ZEN gRPC stop-latency concern
+            # applies to this stop-then-start_continuous transition hasn't been
+            # tested on hardware — if start_continuous ever fails/races here, try
+            # the same asyncio.sleep(waittime) mitigation before digging further.
 
             logger.info("Starting Continuous ...")
             await exp_service.start_continuous(

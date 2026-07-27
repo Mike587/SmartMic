@@ -66,36 +66,34 @@ from zen_api.lm.hardware.v2 import (
 from zeiss_paths import CONFIG_PATH as config_path
 
 
-def _require_objective(objectives, position, context):
-    """Return the objective at *position*, or raise a clear error if unknown.
+def _require(lookup_fn, used_positions_fn, inventory, position, context, kind):
+    """Return ``lookup_fn(inventory, position)``, or raise a clear error if unknown.
 
-    get_objective_by_position returns None for a position not present in the
-    reported inventory; dereferencing that None would otherwise surface as a
-    generic AttributeError, which a caller's broad except/retry (see
+    lookup_fn returns None for a position not present in the reported
+    inventory; dereferencing that None would otherwise surface as a generic
+    AttributeError, which a caller's broad except/retry (see
     MS_CD7_API_LoA.set_objective_set_optovar_sync) would then mask as just
     another transient failure instead of the real config/hardware mismatch.
     """
-    obj = get_objective_by_position(objectives, position)
-    if obj is None:
+    item = lookup_fn(inventory, position)
+    if item is None:
         raise ValueError(
-            f"{context}: objective position {position} is not in the reported "
-            f"objectives inventory (known positions: {get_used_objective_positions(objectives)})"
+            f"{context}: {kind} position {position} is not in the reported "
+            f"{kind}s inventory (known positions: {used_positions_fn(inventory)})"
         )
-    return obj
+    return item
+
+
+def _require_objective(objectives, position, context):
+    """Return the objective at *position*, or raise a clear error if unknown."""
+    return _require(get_objective_by_position, get_used_objective_positions,
+                     objectives, position, context, "objective")
 
 
 def _require_optovar(optovars, position, context):
-    """Return the optovar at *position*, or raise a clear error if unknown.
-
-    See _require_objective — same reasoning, for the optovar inventory.
-    """
-    opt = get_optovar_by_position(optovars, position)
-    if opt is None:
-        raise ValueError(
-            f"{context}: optovar position {position} is not in the reported "
-            f"optovars inventory (known positions: {get_used_optovar_positions(optovars)})"
-        )
-    return opt
+    """Return the optovar at *position*, or raise a clear error if unknown."""
+    return _require(get_optovar_by_position, get_used_optovar_positions,
+                     optovars, position, context, "optovar")
 
 
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int):
