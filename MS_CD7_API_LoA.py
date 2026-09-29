@@ -597,6 +597,25 @@ def get_sample_carrier_name() -> str:
     return get_sample_carrier_info()["name"]
 
 
+def get_current_container() -> Optional[Tuple[int, int]]:
+    """
+    Get the sample-carrier container the stage is positioned in.
+
+    Returns:
+        (row_index, column_index), 0-based, or None if the stage is in no
+        container. Read-only.
+    """
+    return asyncio.run(MS_zenapi_sample_carrier.get_current_container())
+
+
+def move_to_container(row_index: int, column_index: int) -> None:
+    """
+    Move the stage to a sample-carrier container (e.g. slide 2 of a 3-slide
+    insert = row 0, column 1). The move is executed by ZEN.
+    """
+    asyncio.run(MS_zenapi_sample_carrier.move_to_container(row_index, column_index))
+
+
 def get_running_experiment_status() -> Optional[Dict[str, Any]]:
     """
     Get the status of the currently active experiment, if any.

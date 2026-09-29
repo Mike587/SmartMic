@@ -26,6 +26,12 @@ in ZEN — its name, geometry (rows × columns) and bottom optical properties.
 Public functions
 ----------------
 get_sample_carrier_info  -- Read the full carrier description as a dict.
+get_current_container    -- (row, column) of the container the stage is in, or
+                            None if it is in none (ZEN: NOT_FOUND).
+move_to_container        -- Move the stage to a container (ZEN-driven move).
+
+Containers are the sub-units of a carrier (e.g. the 3 slide positions of the
+"Insert - 3x Slide" carrier, 1 row x 3 columns; indices start at 0).
 """
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
@@ -35,6 +41,8 @@ from MS_zenapi_helpers import set_logging, open_zen_channel
 from zen_api.lm.hardware.v1 import (
     SampleCarrierServiceStub,
     SampleCarrierServiceGetInfoRequest,
+    SampleCarrierServiceGetCurrentContainerRequest,
+    SampleCarrierServiceMoveToContainerRequest,
 )
 
 # config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
@@ -82,3 +90,36 @@ async def get_sample_carrier_info() -> dict:
         "skirt": info.skirt,
         "refractive_index": info.refractive_index,
     }
+
+
+async def get_current_container():
+    """(row_index, column_index) of the container the stage is positioned in.
+
+    Returns None when ZEN reports the stage is in no container (gRPC NOT_FOUND:
+    "Stage is not positioned in any of the containers"). Read-only.
+    """
+    from grpclib.const import Status
+    from grpclib.exceptions import GRPCError
+
+    async with open_zen_channel(config_path) as (channel, metadata):
+        service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
+        try:
+            c = await service.get_current_container(SampleCarrierServiceGetCurrentContainerRequest())
+        except GRPCError as e:
+            if e.status == Status.NOT_FOUND:
+                return None
+            raise
+    return c.row_index, c.column_index
+
+
+async def move_to_container(row_index: int, column_index: int):
+    """Move the stage to a container of the sample carrier (indices from 0).
+
+    The move itself is executed by ZEN (``SampleCarrierService.MoveToContainer``).
+    """
+    logger = set_logging()
+    async with open_zen_channel(config_path) as (channel, metadata):
+        service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
+        await service.move_to_container(
+            SampleCarrierServiceMoveToContainerRequest(row_index=row_index, column_index=column_index))
+    logger.info(f"Moved to sample-carrier container (row {row_index}, column {column_index}).")
