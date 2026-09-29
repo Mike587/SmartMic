@@ -594,10 +594,28 @@ SmartMic-side consumer must agree on the result-JSON filename:
 | [Mike587/ia_PoC_002](https://github.com/Mike587/ia_PoC_002) (nuclei) | `<prefix>_targets.json` | `projects/smartmic_poc/MS_SmartMic_PoC.py` (public) |
 | `ia_Marc` (spheroids, local) | `<prefix>_spheroids.json`, `<prefix>_spheroid_3d.json` | `projects/Marc_SM/MS_Marc_SM.py` (local-only) |
 | `ia_NfS` (tissue/thickness/nuclei, local) | `<prefix>_tissue.json`, `<prefix>_thickness.json`, `<prefix>_nuclei.json` | `projects/HD_Nuclei_from_slide/MS_HD_Nuclei_from_slide.py` (local-only) |
+| `ia_Marc_002` (OV nuclei, recentre, mid-plane; local) | `<prefix>_ov_summary.json` + `<well>/<prefix>_<well>_ov_nuclei.json`, `<tag>_recentre.json`, `<tag>_midplane.json` | `projects/Marc_SM_002/MS_Marc_SM_002.py` (local-only) |
 
 Note: `targets.json` is the contract for analyses built from the ia_PoC_002 scaffold;
 Marc's pair predates it and keeps its own names. Not enforced globally — each
 producer/consumer pair just has to match.
+
+**Shared IA code → `Image_Analysis/ia_common` (planned, decided 2026-09-29).**
+The ia repos copy the same code between them:
+- `common.py`: identical in ia_Marc and ia_NfS;
+- scene centres from the actual stage positions: 4 copies;
+- per-plane Z from the CZI: 3 copies;
+- pixel → stage XY: 2 versions.
+
+These move to one separate repo, `ia_common`, next to the ia repos. Each ia
+repo uses it as an editable pixi path dependency; frozen projects pin a
+commit. Scope: CZI reading, coordinate conventions and the script/CLI
+contract of `run_analysis`. The detection algorithms stay per project. Its
+own `TODO.md` lives in that repo.
+
+**SmartMic does NOT depend on ia_common.** It keeps its own small CZI readers
+in `MS_Helper_function` (stage/Z positions). They overlap with ia_common on
+purpose, so that the library needs no image-analysis env.
 
 ### Dependency history: `zen_api_utils` vendored out
 
