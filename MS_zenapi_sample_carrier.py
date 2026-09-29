@@ -31,7 +31,11 @@ get_current_container    -- (row, column) of the container the stage is in, or
 move_to_container        -- Move the stage to a container (ZEN-driven move).
 
 Containers are the sub-units of a carrier (e.g. the 3 slide positions of the
-"Insert - 3x Slide" carrier, 1 row x 3 columns; indices start at 0).
+"Insert - 3x Slide" carrier, 1 row x 3 columns; indices start at 0). ZEN's UI
+calls them "Scan Positions". On the CD7 (2026-09-29) stage XY is relative to
+the selected container, MoveToContainer switches slides (Z untouched), and
+GetCurrentContainer always answers NOT_FOUND — see DEV_NOTES.md
+"Multi-slide carriers".
 """
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves

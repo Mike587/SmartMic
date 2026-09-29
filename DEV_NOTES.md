@@ -202,6 +202,55 @@ per experiment by image content.
 
 ---
 
+## Multi-slide carriers: containers = ZEN "Scan Positions" (3x slide insert, 2026-09-29)
+
+Learned on the CD7 with carrier `Insert - 3x Slide - Chamber Slide 8x -
+432332-9110-000` (1 row × 3 columns, one 8-well ibidi slide per position;
+project Marc_SM_002). ZEN's UI calls the three slide positions **Scan
+Positions**; the API calls them **containers** (`SampleCarrierService`,
+`lm.hardware.v1`, wrapped in `MS_zenapi_sample_carrier.py` / LoA
+`get_current_container`, `move_to_container`).
+
+- **Stage XY is relative to the selected container.** The stage's software
+  limits are X 26–26026 µm, Y −147–75852 µm: one slide, not the carrier. OV
+  experiments authored for slide 1, 2 and 3 have **identical** tile-region
+  coordinates (A1 at (7300, 19100) µm on every slide), and the `.czexp` stores
+  **no** container (`<Containers />`, `MultiCarrierSetup IsActivated="false"`,
+  `CarrierStagePosition Unknown`). Which slide is imaged is decided by the
+  container selected in ZEN when the experiment runs, not by the file.
+- **`MoveToContainer(row, col)` physically switches slides** (0-based;
+  slides 1/2/3 = (0,0)/(0,1)/(0,2)). It takes about 4 s, and ZEN's UI shows the
+  switch. Afterwards the stage XY reads **(13000, 38000) µm**, the slide centre
+  in container coordinates, on every container. Subsequent
+  `move_stage_to_new_xy_position` calls and `RunExperiment` tile regions run in
+  that container's frame. Verified by image content: the OVs of the three
+  containers share ≤ 1.1 % of nuclei, and each OV mosaic sat ≤ 0.3 µm from its
+  tile region.
+- **`GetCurrentContainer` does not work here:** it always answers NOT_FOUND
+  ("Stage is not positioned in any of the containers"), even right after
+  `MoveToContainer`. `get_current_container()` returns None for that. Don't
+  use it as a check. Verify the slide from the images instead: compare
+  nuclei with an earlier OV (Marc_SM_002 `check_not_same_slide` /
+  `register_ov`).
+- **`MoveToContainer` does not touch Z.** Z stayed where it was, e.g. at the
+  last DF surface. Lower Z first, the same way the library's XY move does.
+  With the 50x immersion objective this is the same no-Z=0 problem as any
+  other stage move.
+- **A re-seated slide moves AND rotates.** Slide 1, taken out and put back
+  overnight: (+166, +6) µm and **−0.175°**, which is ≈ 10 µm at the edge of
+  a 7 mm well. A shift-only match of OV nuclei found 22 %; a rigid
+  (rotation + shift) fit found 91 %, with a 2 µm median residual. Re-finding
+  cells after re-seating needs a rigid fit. Don't reuse old coordinates
+  directly: the error is larger than a nucleus.
+- **The glass surface is not level (DF surface Z):** ≈ +108 µm from well
+  row A to row B (12.1 mm in Y) on slides 2 and 3, and +16–30 µm from
+  column 1 to 2 (10.9 mm in X). Slide 1: 1350 µm at A1 → 1505 µm at C1. The
+  whole insert is tilted. DF copes (the "start 100 µm below the last
+  surface" approach found every surface in the test), but don't assume one
+  Z per slide.
+
+---
+
 ## Decisions (persistent)
 
 ### Project-tracking policy
