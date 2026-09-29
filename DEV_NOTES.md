@@ -607,11 +607,13 @@ The ia repos copy the same code between them:
 - per-plane Z from the CZI: 3 copies;
 - pixel → stage XY: 2 versions.
 
-These move to one separate repo, `ia_common`, next to the ia repos. Each ia
-repo uses it as an editable pixi path dependency; frozen projects pin a
-commit. Scope: CZI reading, coordinate conventions and the script/CLI
-contract of `run_analysis`. The detection algorithms stay per project. Its
-own `TODO.md` lives in that repo.
+`ia_common` is a separate repo next to the ia repos and serves as the
+**basis for the next ia project**. The existing ia repos are **not** adapted;
+they are only sources to copy from. New projects use it as an editable pixi
+path dependency; frozen projects pin a commit. Scope: CZI reading,
+coordinate conventions, display helpers and the script/CLI contract of
+`run_analysis`. The detection algorithms stay per project. The survey and
+plan are in its own `TODO.md`.
 
 **SmartMic does NOT depend on ia_common.** It keeps its own small CZI readers
 in `MS_Helper_function` (stage/Z positions). They overlap with ia_common on
