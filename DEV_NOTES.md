@@ -193,6 +193,23 @@ gives the **same** value (the pre-run position), which looks like "it never move
 but it did; it just came back. To check WHERE an experiment actually acquired, inspect
 the **CZI image content / scene metadata**, NOT the live stage position.
 
+**Where an image was acquired: the CZI pixel frame IS the stage frame**
+(verified 2026-09-30 on the CD7, details in ia_common README):
+`stage_xy = global_pixel_coordinate × pixel_size`, with no offset.
+- 5x OV tiles: within 0.2 µm of each tile's recorded stage position.
+- 40x camera, LSM and Airyscan images: the pixel-box centre equals the
+  commanded position within 0.1 µm.
+
+Exceptions and caveats:
+- **Processed Airyscan files** reset the pixel box to (0, 0) and crop a
+  12-px border. Use the recorded scene centre there (the crop is symmetric).
+- **Not yet checked:** asymmetric camera ROIs and LSM scan offset / rotation
+  (`LaserScanInfo/SampleOffsetX/Y`, `SampleRotation`).
+- **Image-content offset:** the channel attribute `MM.PixelShift` (40x
+  camera: (−12.5, +18.0) µm; 5x OV: (−50.1, +71.8) µm; LSM: 0) may be ZEN's
+  per-magnification image-shift calibration. It is unexplained so far; see
+  TODO "INVESTIGATE MM.PixelShift".
+
 **Authored vs injected position:** `_002` has an authored P1 (added in the ZEN UI, so
 the experiment is in use-positions mode) and navigates. An experiment with an empty
 `<SingleTileRegions/>` that we merely inject a region into (e.g. `_001` via
