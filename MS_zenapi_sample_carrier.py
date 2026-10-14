@@ -35,9 +35,10 @@ move_to_container        -- Lower Z, move the stage to a container (ZEN-driven
 Containers are the sub-units of a carrier (e.g. the 3 slide positions of the
 "Insert - 3x Slide" carrier, 1 row x 3 columns; indices start at 0). ZEN's UI
 calls them "Scan Positions". On the CD7 (2026-09-29) stage XY is relative to
-the selected container, MoveToContainer switches slides (Z untouched — so
-move_to_container lowers Z itself first), and GetCurrentContainer always
-answers NOT_FOUND — see DEV_NOTES.md "Multi-slide carriers".
+the selected container, MoveToContainer switches slides (ZEN retracts Z
+during the switch and then puts the previous Z back — so move_to_container
+lowers Z to 0 first), and GetCurrentContainer always answers NOT_FOUND — see
+DEV_NOTES.md "Multi-slide carriers".
 """
 
 import asyncio
@@ -125,14 +126,14 @@ async def get_current_container():
 async def move_to_container(row_index: int, column_index: int):
     """Move the stage to a container of the sample carrier (indices from 0).
 
-    Same safety pattern as ``MS_zenapi_stage_LM.move_stage_to_new_xy_position``:
-    a container change is a long stage move (~26 mm between slides of the 3x
-    slide insert), and ``MoveToContainer`` leaves Z where it is (e.g. at the
-    last DefiniteFocus surface). So Z is lowered to 0 first, and with the
-    immersion objective active the move is refused (Z=0 breaks the immersion
-    bridge). The move itself is executed by ZEN
-    (``SampleCarrierService.MoveToContainer``). Z is left at 0 — re-focus before
-    acquiring.
+    Same safety pattern as ``MS_zenapi_stage_LM.move_stage_to_new_xy_position``.
+    The move itself is executed by ZEN (``SampleCarrierService.MoveToContainer``):
+    it retracts Z (to ~−1000 µm), moves the stage, then puts back the Z it had
+    when called (seen on the CD7, 2026-10-14). That restored Z is the old
+    slide's height on the new slide, possibly past focus there. So Z is lowered
+    to 0 first and ends near 0 (4.59 µm seen) on the new slide — re-focus
+    before acquiring. With the immersion objective active the move is refused:
+    ZEN's retract alone breaks the immersion bridge.
 
     Raises:
         MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): If the
@@ -143,7 +144,9 @@ async def move_to_container(row_index: int, column_index: int):
     # Immersion guard — BEFORE the Z=0 lower (see move_stage_to_new_xy_position).
     await MS_zenapi_stage_LM.refuse_if_immersion_active("container move")
 
-    # Lower the objective before the long lateral move (collision safety).
+    # Lower the objective first: ZEN restores the CURRENT Z after the switch, so
+    # this is what makes Z end near 0 on the new slide instead of at the old
+    # slide's height.
     await MS_zenapi_focus.move_focus_to_new_z_position(0)
 
     async with open_zen_channel(config_path) as (channel, metadata):

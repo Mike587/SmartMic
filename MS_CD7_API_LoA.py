@@ -902,10 +902,12 @@ def move_to_container(row_index: int, column_index: int,
     Move the stage to a sample-carrier container (e.g. slide 2 of a 3-slide
     insert = row 0, column 1; indices 0-based). The move is executed by ZEN.
 
-    Behaves like move_stage_to_new_xy_position: lowers Z to 0 first (a slide
-    change is a ~26 mm move and MoveToContainer leaves Z where it is) and leaves
-    it there, and refuses with the immersion objective active. Re-focus before
-    acquiring.
+    Behaves like move_stage_to_new_xy_position: lowers Z to 0 first, so Z ends
+    near 0 (4.59 µm seen) on the new slide, and refuses with the immersion
+    objective active. (ZEN retracts Z during the switch, then restores the Z it
+    had when called — without the lowering that would be the old slide's
+    height on the new slide.) Re-focus before acquiring. Verified on the scope
+    2026-10-14 (DEV_NOTES "Multi-slide carriers").
 
     Do NOT verify the move with get_current_container: it always answers
     NOT_FOUND on the CD7 (DEV_NOTES "Multi-slide carriers"). Verify the slide

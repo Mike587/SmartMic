@@ -290,14 +290,31 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
   use it as a check. Verify the slide from the images instead: compare
   nuclei with an earlier OV (Marc_SM_002 `check_not_same_slide` /
   `register_ov`).
-- **`MoveToContainer` does not touch Z.** Z stayed where it was, e.g. at the
-  last DF surface. Lower Z first, the same way the library's XY move does.
-  With the 50x immersion objective this is the same no-Z=0 problem as any
-  other stage move. **Since 2026-10-14 the library's `move_to_container` does
-  this itself:** it refuses with the immersion objective active, otherwise
-  lowers Z to 0, switches, and settles. Given a `DefiniteFocusTracker`, it
-  resets it (the last surface belongs to the previous slide). Not yet
-  re-verified on the scope (TODO).
+- **`MoveToContainer` retracts Z, then puts the OLD Z back** (watched in the
+  ZEN UI, 2026-10-14). During the switch ZEN drives Z down to about
+  −1000 µm, moves the stage, then returns Z to the value it had when the
+  call was made: from 0.000 it came back at 4.59 µm, both directions, stable
+  afterwards. (So the "drive floors near −293 µm" above is the limit for our
+  own moves; ZEN's retract goes deeper.) The 2026-09-29 note "Z stayed at the
+  last DF surface" was this round trip. Consequences:
+  - The switch itself is collision-safe, but the restored Z is the old
+    slide's height on the new slide. Surfaces differ between slides by
+    > 100 µm, so with a short-working-distance objective that Z can be past
+    focus. Hence the library's `move_to_container` lowers Z to 0 first,
+    which leaves Z near 0 (4.59 µm) on the new slide: re-focus there.
+  - With the 50x immersion objective a slide switch breaks the water bridge
+    by itself, through ZEN's retract alone. `move_to_container` refuses it.
+
+  **Library `move_to_container` (since 2026-10-14):** refuses with the
+  immersion objective active, otherwise lowers Z to 0, switches, and settles.
+  Given a `DefiniteFocusTracker`, it resets it (the last surface belongs to
+  the previous slide). **Verified on the scope 2026-10-14**
+  (`sandbox/MS_hw_check_move_to_container.py`; carrier `Insert - 3x Slide -
+  432332-9110-000`, empty slides, 5x). Slide 1 → 2 and back, from Z 300 µm.
+  Each time Z was 0.000 µm before the switch was issued. The switch took
+  ~5 s including the 1 s settle. Afterwards XY was (12999.99, 38000.00) µm
+  and Z 4.59 µm. The operator confirmed the order in ZEN: Z down, then the
+  stage, then Z back up.
 - **A re-seated slide moves AND rotates.** Slide 1, taken out and put back
   overnight: (+166, +6) µm and **−0.175°**, which is ≈ 10 µm at the edge of
   a 7 mm well. A shift-only match of OV nuclei found 22 %; a rigid
