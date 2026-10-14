@@ -133,7 +133,8 @@ async def move_to_container(row_index: int, column_index: int):
     slide's height on the new slide, possibly past focus there. So Z is lowered
     to 0 first and ends near 0 (4.59 µm seen) on the new slide — re-focus
     before acquiring. With the immersion objective active the move is refused:
-    ZEN's retract alone breaks the immersion bridge.
+    the Z=0 lowering breaks the immersion bridge. (Whether ZEN re-applies
+    immersion after its own retract is not checked yet — DEV_NOTES / TODO.)
 
     Raises:
         MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): If the

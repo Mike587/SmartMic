@@ -302,8 +302,11 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
     > 100 µm, so with a short-working-distance objective that Z can be past
     focus. Hence the library's `move_to_container` lowers Z to 0 first,
     which leaves Z near 0 (4.59 µm) on the new slide: re-focus there.
-  - With the 50x immersion objective a slide switch breaks the water bridge
-    by itself, through ZEN's retract alone. `move_to_container` refuses it.
+  - With the 50x immersion objective the retract presumably breaks the water
+    bridge. **Unverified:** ZEN may re-apply immersion automatically after
+    the switch (CD7 auto-immersion), see TODO. Until that is checked,
+    `move_to_container` refuses with the immersion objective active. Our
+    own Z=0 lowering would break the bridge anyway.
 
   **Library `move_to_container` (since 2026-10-14):** refuses with the
   immersion objective active, otherwise lowers Z to 0, switches, and settles.
