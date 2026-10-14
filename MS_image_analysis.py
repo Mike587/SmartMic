@@ -31,10 +31,17 @@ subprocess in *its own* pixi environment and feeds it an image, decoupling the
 acquisition pipeline from any particular analysis implementation.
 """
 
+import json
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
+from typing import Optional
+
+# run_analysis_json: a result file older than the launch by more than this is a
+# stale file from an earlier run. The slack covers coarse file timestamps.
+_RESULT_MTIME_SLACK_S = 2.0
 
 
 def run_analysis(image_path: Path,
@@ -119,3 +126,49 @@ def run_analysis(image_path: Path,
 
     log.info(f"Analysis completed successfully for {tag}.")
     return True
+
+
+def run_analysis_json(image_path: Path,
+                      output_folder: Path,
+                      tag: str,
+                      log: logging.Logger,
+                      analysis_script: Path,
+                      suffix: str,
+                      analysis_script_dir: Path = None,
+                      extra_args=None) -> Optional[dict]:
+    """
+    Run an analysis (see run_analysis) and read back its result JSON.
+
+    The result is ``<output_folder>/<tag>_<suffix>.json`` — the convention of
+    the analysis repos (e.g. suffix ``"targets"`` for analyses built from the
+    ia_PoC_002 scaffold; DEV_NOTES "Image-analysis repos").
+
+    Args:
+        image_path, output_folder, tag, log, analysis_script,
+        analysis_script_dir, extra_args: as for run_analysis.
+        suffix: Result-file suffix, e.g. "targets".
+
+    Returns:
+        The parsed result, or None (with a warning logged) if the analysis
+        failed, wrote no result file, left only a stale one from an earlier run
+        (same tag), or wrote invalid JSON.
+    """
+    result_path = Path(output_folder) / f"{tag}_{suffix}.json"
+    script_name = Path(analysis_script).name
+    t_start = time.time()
+    if not run_analysis(image_path, output_folder, tag, log, analysis_script,
+                        analysis_script_dir, extra_args=extra_args):
+        log.warning(f"Analysis {script_name} failed for {tag} — no result.")
+        return None
+    if not result_path.is_file():
+        log.warning(f"Analysis {script_name} wrote no {result_path.name} — no result.")
+        return None
+    if result_path.stat().st_mtime < t_start - _RESULT_MTIME_SLACK_S:
+        log.warning(f"{result_path.name} was not rewritten by {script_name} (stale file "
+                    f"from an earlier run) — no result.")
+        return None
+    try:
+        return json.loads(result_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        log.warning(f"{result_path.name} is not valid JSON ({e}) — no result.")
+        return None

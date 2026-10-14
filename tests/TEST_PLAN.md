@@ -73,6 +73,9 @@ These are the bulk of the value. Grouped by module.
 - `set_run_mode_lock`, `set_lsm_scan_speed_max`, `set_lsm_sampling_mode_user`:
   assert the flags are flipped in the reloaded XML.
 - Helpers: `_fmt_float`, `_parse_pair`, `_require` (raises on missing tag).
+- `get_tile_region_centers` *(added 2026-10-14)*: µm→m on the stitch fixture;
+  unused regions skipped, missing flag = used, file order; duplicate used names
+  and a region without Name/CenterPosition raise.
 
 ### `tests/unit/test_helper.py` — `MS_Helper_function.py`
 - `load_positions_from_czexp`: parse the positions fixture; assert well names,
@@ -86,6 +89,9 @@ These are the bulk of the value. Grouped by module.
 - `get_focus_position_from_czi`: extracts the embedded `FocusPosition` (µm) from a
   fixture CZI; `None` when absent.
 - `get_zstack_z_range`: plane count, step, first/center/last from a z-stack CZI.
+- `append_jsonl` / `read_jsonl` *(added 2026-10-14)*: round-trip; missing file →
+  `[]`; a line cut off by a crash is skipped on read AND the next append starts
+  on a new line (not glued onto the fragment); blank lines ignored.
 
 ### `tests/unit/test_validation.py` — `MS_CD7_API_LoA` validators (pure)
 - `validate_objective_number` / `validate_optovar_number`: in-range, out-of-range,
@@ -123,6 +129,33 @@ immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
 - Immersion objective active → raises before the Z=0 lower runs (`calls["z"] == 0`).
 - Dry objective active → no raise; the normal Z=0 lower runs once.
 
+### Added 2026-10-14 — promoted from Marc_SM_002 (all mocked)
+- `tests/unit/test_container_move.py` — `MS_zenapi_sample_carrier.move_to_container`:
+  immersion active → refused before anything moves (no Z, no MoveToContainer);
+  dry → Z=0 lower runs BEFORE MoveToContainer. LoA `move_to_container`: invalid
+  indices raise before any call; a passed `DefiniteFocusTracker` is reset (also
+  when the move is refused), its failure count kept.
+- `tests/unit/test_tolerant_moves.py` — `tolerance_m` on the LoA Z / XY moves:
+  no tolerance → a ZEN error raises as before; error + read-back within
+  tolerance → accepted (XY then settles); off target → one retry; two failures
+  off target → raise; unreadable position → retry then raise; non-gRPC errors
+  and the immersion refusal are never retried; XY distance is Euclidean;
+  invalid tolerance raises before moving.
+- `tests/unit/test_focus_tracker.py` — `DefiniteFocusTracker`: full range first,
+  then adaptive start; seeded start; adaptive failure → full-range fallback;
+  failure → `None`, surface kept; success clears the count;
+  `DefiniteFocusFault` on the N-th failure in a row; `reset()` forgets the
+  surface only; immersion: no known surface → refuses, and no full-range fallback.
+- `tests/unit/test_optics_verified.py` — `set_optics_verified` with a fake clock:
+  confirmed + settled; waits for the read-back; a changer timeout is not fatal
+  if the read-back settles; never settles → `RuntimeError` after `timeout_s`;
+  flapping after the settle keeps waiting; invalid input raises.
+- `tests/unit/test_focus_move.py` — `MS_zenapi_focus.move_focus_to_new_z_position`
+  error paths: a failed non-zero move re-raises the original error (and no longer
+  logs the misleading "Could not get current position"); near-zero target:
+  already within 10 µm → ok, else the 10 µm fallback; fallback failure re-raises
+  the original error.
+
 ### `tests/unit/test_stage_motion.py` — `set_stage_motion` in `MS_zenapi_stage_LM`
 *(Added after this plan was written.)* Mocked gRPC layer:
 - Explicit percents / `None` defaults: both `set_speed` and `set_acceleration`
@@ -144,6 +177,9 @@ immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
 - Point it at a trivial dummy analysis script (a fixture) that writes a known
   output; assert the subprocess runs, `PIXI_*` env is stripped, and the success
   bool reflects the child's exit code (success + failure cases).
+- `run_analysis_json` *(added 2026-10-14)*: returns the parsed
+  `<tag>_<suffix>.json`; `None` if the analysis failed, wrote no result, left
+  only a stale result from an earlier run (old mtime), or wrote invalid JSON.
 
 > **Coverage note:** every public function in the repo is referenced above except
 > the genuinely hardware-only `MS_zenapi_*` gRPC calls and the CLI `main()` demos,

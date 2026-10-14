@@ -237,6 +237,32 @@ def get_zstack_interval_m(root):
     return float(_require(_require(zs, "Interval"), "Distance").find("Value").text)
 
 
+def get_tile_region_centers(root):
+    """{region name: (x_m, y_m)} of the multi-tile regions used for acquisition.
+
+    Reads each <TileRegion>'s <CenterPosition> (µm in the file) and returns
+    metres, in file order. Regions with IsUsedForAcquisition=false are skipped;
+    a missing flag counts as used (as in load_positions_from_czexp). E.g. an OV
+    experiment with one tile region per well → the well centres.
+
+    Raises:
+        ValueError: A used region without a Name or CenterPosition, or two used
+            regions with the same Name.
+    """
+    centers = {}
+    for tr in find_stitch_regions(root):
+        if (tr.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
+            continue
+        name = tr.get("Name")
+        if not name:
+            raise ValueError("<TileRegion> without a Name attribute")
+        if name in centers:
+            raise ValueError(f"two used <TileRegion>s are named {name!r}")
+        x_um, y_um = _parse_pair(_require(tr, "CenterPosition").text)
+        centers[name] = (x_um * 1e-6, y_um * 1e-6)
+    return centers
+
+
 def summarize(root):
     """Return a dict of the current values this module can edit (for logging)."""
     det = find_lsm_detector(root)

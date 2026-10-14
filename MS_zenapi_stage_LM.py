@@ -39,6 +39,7 @@ Public functions
 get_current_xy_stage_coordinates  -- Read the current XY position in metres
 move_stage_to_new_xy_position      -- Lower Z, move XY, then wait for settling
 set_stage_motion                   -- Set XY travel speed + acceleration (% [0,100])
+refuse_if_immersion_active         -- Immersion guard shared by the Z=0-lowering moves
 """
 
 import asyncio
@@ -87,6 +88,35 @@ STAGE_ACCELERATION_PERCENT: float = 100.0
 IMMERSION_OBJECTIVE_POSITION = 4
 
 
+class ImmersionObjectiveActive(RuntimeError):
+    """A direct move was refused because the immersion objective is active.
+
+    Its own type so callers that retry failed moves (e.g. the LoA's tolerant
+    moves) can tell a deliberate refusal from a hardware error and never retry it.
+    """
+
+
+async def refuse_if_immersion_active(action: str):
+    """Raise ImmersionObjectiveActive if the immersion objective is active.
+
+    Shared guard for every library move that first lowers Z to 0 (the XY move,
+    the container move): on this inverted CD7 that retracts the objective and
+    breaks the immersion water bridge. Run it BEFORE any Z move.
+
+    Args:
+        action: What is being refused, for the error message (e.g. "stage move").
+    """
+    obj_position, _ = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
+    if obj_position == IMMERSION_OBJECTIVE_POSITION:
+        raise ImmersionObjectiveActive(
+            f"Refusing direct {action}: the immersion objective (changer "
+            f"position {IMMERSION_OBJECTIVE_POSITION}) is active. The {action} "
+            f"lowers Z to 0, which breaks the immersion bridge on this inverted "
+            f"CD7. Drive the stage by writing the target XY(Z) into a .czexp and "
+            f"running it via ZEN instead."
+        )
+
+
 async def get_current_xy_stage_coordinates():
     """Return the current XY stage position in metres.
 
@@ -126,11 +156,11 @@ async def move_stage_to_new_xy_position(x: float, y: float):
         None
 
     Raises:
-        RuntimeError: If the immersion objective (changer position
-            ``IMMERSION_OBJECTIVE_POSITION``) is active. The Z=0 collision-safety
-            lower would break the immersion bridge on this inverted CD7, so a
-            direct move is refused — drive the stage via a positioned ``.czexp``
-            run by ZEN instead.
+        ImmersionObjectiveActive (a RuntimeError): If the immersion objective
+            (changer position ``IMMERSION_OBJECTIVE_POSITION``) is active. The
+            Z=0 collision-safety lower would break the immersion bridge on this
+            inverted CD7, so a direct move is refused — drive the stage via a
+            positioned ``.czexp`` run by ZEN instead.
 
     Notes:
         After the move the function waits ``STAGE_SETTLE_SECONDS`` to allow the
@@ -147,15 +177,7 @@ async def move_stage_to_new_xy_position(x: float, y: float):
     # direct move rather than kill immersion; the caller should write the target
     # XY(Z) into a .czexp and let ZEN drive the stage (its immersion logic
     # raises/lowers Z safely). See DEV_NOTES.
-    obj_position, _ = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
-    if obj_position == IMMERSION_OBJECTIVE_POSITION:
-        raise RuntimeError(
-            f"Refusing direct stage move: the immersion objective (changer "
-            f"position {IMMERSION_OBJECTIVE_POSITION}) is active. "
-            f"move_stage_to_new_xy_position lowers Z to 0, which breaks the "
-            f"immersion bridge on this inverted CD7. Drive the stage by writing "
-            f"the target XY(Z) into a .czexp and running it via ZEN instead."
-        )
+    await refuse_if_immersion_active("stage move")
 
     async with open_zen_channel(config_path) as (channel, metadata):
         simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)

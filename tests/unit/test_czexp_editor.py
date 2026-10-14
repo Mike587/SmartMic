@@ -321,3 +321,50 @@ def test_has_focus_strategy_deactivated_setup_or_strategy():
     off_strat = ET.fromstring(_focus_xml(method="FollowAction", strategy_act="false"))
     assert cz.has_focus_strategy(off_setup) is False
     assert cz.has_focus_strategy(off_strat) is False
+
+
+# --------------------------------------------------------------------------
+# get_tile_region_centers
+# --------------------------------------------------------------------------
+def test_get_tile_region_centers_real(stitch_root):
+    # stitch_region.czexp: one region "I13" at CenterPosition 56250,42250 µm.
+    assert cz.get_tile_region_centers(stitch_root) == {
+        "I13": (pytest.approx(0.05625), pytest.approx(0.04225))}
+
+
+def _regions_xml(*regions):
+    body = "".join(
+        f'<TileRegion{f" Name={name!r}" if name else ""}>'
+        + (f"<CenterPosition>{cp}</CenterPosition>" if cp else "")
+        + (f"<IsUsedForAcquisition>{used}</IsUsedForAcquisition>" if used else "")
+        + "</TileRegion>"
+        for name, cp, used in regions)
+    return ET.fromstring(f"<HardwareExperiment><TileRegions>{body}</TileRegions>"
+                         f"<SingleTileRegions><SingleTileRegion Name='P1'><X>1</X><Y>2</Y>"
+                         f"</SingleTileRegion></SingleTileRegions></HardwareExperiment>")
+
+
+def test_get_tile_region_centers_skips_unused_keeps_order():
+    root = _regions_xml(("B1", "7300,31200", None),        # no flag → used
+                        ("A2", "18200,19100", "false"),    # skipped
+                        ("A1", "7300,19100", "True"))
+    centers = cz.get_tile_region_centers(root)
+    assert list(centers) == ["B1", "A1"]                    # file order; no SingleTileRegion
+    assert centers["A1"] == (pytest.approx(7300e-6), pytest.approx(19100e-6))
+
+
+def test_get_tile_region_centers_duplicate_name_raises():
+    root = _regions_xml(("A1", "1,2", None), ("A1", "3,4", None))
+    with pytest.raises(ValueError, match="A1"):
+        cz.get_tile_region_centers(root)
+
+
+def test_get_tile_region_centers_duplicate_unused_is_fine():
+    root = _regions_xml(("A1", "1,2", None), ("A1", "3,4", "false"))
+    assert list(cz.get_tile_region_centers(root)) == ["A1"]
+
+
+@pytest.mark.parametrize("region", [(None, "1,2", None), ("A1", None, None)])
+def test_get_tile_region_centers_incomplete_region_raises(region):
+    with pytest.raises(ValueError):
+        cz.get_tile_region_centers(_regions_xml(region))

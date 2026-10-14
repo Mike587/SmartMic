@@ -202,3 +202,36 @@ def test_is_czi_effectively_empty_true_above_signal(sharp):
 
 def test_is_czi_effectively_empty_missing_returns_none(tmp_path):
     assert helper.is_czi_effectively_empty(tmp_path / "nope.czi") is None
+
+
+# --------------------------------------------------------------------------
+# append_jsonl / read_jsonl (resumable run records)
+# --------------------------------------------------------------------------
+def test_jsonl_roundtrip(tmp_path):
+    log = tmp_path / "sub" / "cells.jsonl"           # folder created on demand
+    helper.append_jsonl(log, {"cell": 1, "status": "ok", "z_m": 1.35e-3})
+    helper.append_jsonl(log, {"cell": 2, "status": "no_midplane", "note": "µ"})
+    assert helper.read_jsonl(log) == [
+        {"cell": 1, "status": "ok", "z_m": 1.35e-3},
+        {"cell": 2, "status": "no_midplane", "note": "µ"}]
+
+
+def test_read_jsonl_missing_file_is_empty(tmp_path):
+    assert helper.read_jsonl(tmp_path / "nope.jsonl") == []
+
+
+def test_jsonl_line_cut_off_by_a_crash(tmp_path):
+    log = tmp_path / "cells.jsonl"
+    helper.append_jsonl(log, {"cell": 1})
+    with open(log, "a", encoding="utf-8") as f:     # crash mid-write: no newline
+        f.write('{"cell": 2, "sta')
+    assert helper.read_jsonl(log) == [{"cell": 1}]
+    # The next record must not be glued onto the fragment.
+    helper.append_jsonl(log, {"cell": 2})
+    assert helper.read_jsonl(log) == [{"cell": 1}, {"cell": 2}]
+
+
+def test_read_jsonl_skips_blank_lines(tmp_path):
+    log = tmp_path / "cells.jsonl"
+    log.write_text('{"a": 1}\n\n{"b": 2}\n', encoding="utf-8")
+    assert helper.read_jsonl(log) == [{"a": 1}, {"b": 2}]

@@ -12,7 +12,9 @@
 # as long as this copyright notice remains part of the code.
 #################################################################
 
+import json
 import logging
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -92,6 +94,63 @@ def setup_run_logger(
 
     logger.info(f"Run log: {log_file}")
     return logger, log_file
+
+
+def append_jsonl(path: Path, record: dict) -> None:
+    """
+    Append one record as a JSON line — the per-record log of a resumable run
+    (e.g. one line per imaged cell, read back on resume with read_jsonl).
+
+    Each record is flushed and fsync'ed, so a crash or power cut loses at most
+    the line being written. If the file does not end in a newline (the last
+    write was cut off), a newline is written first, so the fragment stays on a
+    line of its own instead of swallowing this record too.
+
+    Args:
+        path:   The .jsonl file (created, with its folder, if absent).
+        record: A JSON-serializable dict (numpy scalars are not — convert first).
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record) + "\n"   # ASCII-only (ensure_ascii) → a cut can't split a UTF-8 char
+    with open(path, "a+b") as f:
+        f.seek(0, os.SEEK_END)
+        if f.tell() > 0:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                line = "\n" + line
+        f.write(line.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def read_jsonl(path: Path) -> List[dict]:
+    """
+    Read the records written by append_jsonl.
+
+    Lines that are not valid JSON — a record cut off by a crash — are skipped
+    with a warning; blank lines are ignored.
+
+    Args:
+        path: The .jsonl file.
+
+    Returns:
+        The records in file order; [] if the file does not exist.
+    """
+    path = Path(path)
+    if not path.exists():
+        return []
+    records = []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    for n, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            logging.getLogger("smartmic").warning(
+                f"{path.name}: line {n} is not valid JSON (cut off by a crash?) — skipped.")
+    return records
 
 
 

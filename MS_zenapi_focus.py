@@ -297,40 +297,40 @@ async def move_focus_to_new_z_position(z: float):
         except Exception as e:
             logger.error(f"Error moving focus to z={z}: {e}")
 
+            # Only the read-back is guarded here. (The re-raises below used to sit
+            # inside this try, so every failed move was also logged as "Could not
+            # get current position: <the move error>" — misleading in run logs.)
             try:
                 current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-                logger.info(f"Current Z-Position: {current_zpos.value * 1e6:.3f} [micron]")
-
-                if abs(z) < 1e-6:
-                    # Target is effectively zero — check if we are already close enough.
-                    tolerance = 10e-6  # 10 µm tolerance
-                    if abs(current_zpos.value) < tolerance:
-                        logger.info(
-                            f"Already close to z=0 ({current_zpos.value * 1e6:.3f} micron). "
-                            "Continuing..."
-                        )
-                        return
-                    else:
-                        # Hardware may not accept z=0 exactly; try 10 µm as a safe alternative.
-                        logger.info("Trying to move to z=10e-6 instead...")
-                        try:
-                            await focus_service.move_to(FocusServiceMoveToRequest(value=10e-6))
-                            new_zpos = await focus_service.get_position(
-                                FocusServiceGetPositionRequest()
-                            )
-                            logger.info(
-                                f"Z-Position after alternative move: "
-                                f"{new_zpos.value * 1e6:.3f} [micron]"
-                            )
-                            return
-                        except Exception as e3:
-                            logger.error(f"Alternative move also failed: {e3}")
-                            raise e
-                else:
-                    raise e
-
             except Exception as e2:
                 logger.error(f"Could not get current position: {e2}")
+                raise e
+            logger.info(f"Current Z-Position: {current_zpos.value * 1e6:.3f} [micron]")
+
+            if abs(z) >= 1e-6:
+                raise e
+
+            # Target is effectively zero — check if we are already close enough.
+            tolerance = 10e-6  # 10 µm tolerance
+            if abs(current_zpos.value) < tolerance:
+                logger.info(
+                    f"Already close to z=0 ({current_zpos.value * 1e6:.3f} micron). "
+                    "Continuing..."
+                )
+                return
+
+            # Hardware may not accept z=0 exactly; try 10 µm as a safe alternative.
+            logger.info("Trying to move to z=10e-6 instead...")
+            try:
+                await focus_service.move_to(FocusServiceMoveToRequest(value=10e-6))
+                new_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+                logger.info(
+                    f"Z-Position after alternative move: "
+                    f"{new_zpos.value * 1e6:.3f} [micron]"
+                )
+                return
+            except Exception as e3:
+                logger.error(f"Alternative move also failed: {e3}")
                 raise e
 
 

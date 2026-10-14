@@ -61,8 +61,49 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   Launching an experiment before a slow optics change has propagated (especially
   moving OFF the immersion objective) makes ZEN tile for the stale config → wrong
   per-tile FOV/overlap (a doubled, ghosted mosaic). Verify the read-back AND let it
-  settle before acquiring (HD_Nuclei's `ensure_optics`). See TODO for a possible
-  ZEN-native "defined config" fix being investigated.
+  settle before acquiring: `MS_CD7_API_LoA.set_optics_verified` (since
+  2026-10-14; promoted from HD_Nuclei's / Marc_SM_002's `ensure_optics`). The
+  cause (read-back leading the acquisition engine) is inferred and was only seen
+  when leaving the 50x immersion objective, so the settle wait is a cheap safe
+  default, not confirmed ZEN behaviour. See TODO for a possible ZEN-native
+  "defined config" fix being investigated.
+
+- **ZEN sometimes reports a successful move as failed (spurious "not reached").**
+  Learned in Marc_SM_002 (2026-09-28/30). The move raises a gRPC `INTERNAL`
+  error, but the drive is on target:
+  - **Z:** `Requested position was not reached.` on ~0.7 % of cells (3 of
+    ~425 on 2026-09-28), read-back 0.00–0.01 µm off the target. Not tied to
+    the move size (0.01, 0.33 and 1.69 µm moves). Always the final move to the
+    mid-plane right after a z-stack.
+  - **XY:** `Position could not be reached.` 11× in ~1600 moves
+    (2026-09-29/30). Every failure was a tiny 2–10 µm hop (~1.4 % of those
+    hops); none of the ~800 long moves failed.
+  - No matching MTB2011 hardware-log event, so it is a ZEN/gateway-level
+    report, not a drive fault.
+
+  Fix: an optional `tolerance_m` on `MS_CD7_API_LoA.move_focus_to_new_z_position`
+  / `move_stage_to_new_xy_position`. On a ZEN (`GRPCError`) error the position
+  is read back: within the tolerance → done; otherwise one retry. The
+  read-back never equals the target exactly, so the tolerance is the caller's
+  parameter (Marc_SM_002: 0.25 µm for Z). The default `None` keeps the old
+  behaviour (raise). The immersion refusal is never retried.
+  Side fix: `MS_zenapi_focus.move_focus_to_new_z_position` used to log every
+  failed move a second time as "Could not get current position: <the move
+  error>". That came from a re-raise inside its own try block, and it was
+  misleading in the run logs. It now logs that only when the read-back
+  itself fails.
+
+- **DefiniteFocus can drop out mid-run (hardware fault).** 2026-09-28 22:14,
+  Marc_SM_002: `MTBFocusStabilizerLiveCellScanner: ... not initialized
+  (0x0E)` on every attempt from then on. It was preceded by four 2000 ms
+  command timeouts in the 8 min before. The run kept going for 2 h, out of
+  focus. The MTB2011 logs show recurring DF / CAN-bus communication faults on
+  this CD7 since January 2026, so this is a Zeiss service case (report and
+  logs in the local `projects/Marc_SM_002/zeiss_service/`). Library answer:
+  `MS_CD7_API_LoA.DefiniteFocusTracker` raises `DefiniteFocusFault` after N
+  failed searches in a row (default 5). Its adaptive start (100 µm below the
+  last surface, ~4 s vs ~11 s for a full search) is the standard way to focus
+  a series of positions.
 
 - **A water drop is left behind after using the immersion objective.** Once the
   immersion (50x) objective has been at a position, a small drop of water remains
@@ -252,7 +293,11 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
 - **`MoveToContainer` does not touch Z.** Z stayed where it was, e.g. at the
   last DF surface. Lower Z first, the same way the library's XY move does.
   With the 50x immersion objective this is the same no-Z=0 problem as any
-  other stage move.
+  other stage move. **Since 2026-10-14 the library's `move_to_container` does
+  this itself:** it refuses with the immersion objective active, otherwise
+  lowers Z to 0, switches, and settles. Given a `DefiniteFocusTracker`, it
+  resets it (the last surface belongs to the previous slide). Not yet
+  re-verified on the scope (TODO).
 - **A re-seated slide moves AND rotates.** Slide 1, taken out and put back
   overnight: (+166, +6) µm and **−0.175°**, which is ≈ 10 µm at the edge of
   a 7 mm well. A shift-only match of OV nuclei found 22 %; a rigid
@@ -263,8 +308,9 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
   row A to row B (12.1 mm in Y) on slides 2 and 3, and +16–30 µm from
   column 1 to 2 (10.9 mm in X). Slide 1: 1350 µm at A1 → 1505 µm at C1. The
   whole insert is tilted. DF copes (the "start 100 µm below the last
-  surface" approach found every surface in the test), but don't assume one
-  Z per slide.
+  surface" approach found every surface in the test; `DefiniteFocusTracker`
+  adds a full-range fallback for a surface below the adaptive start), but
+  don't assume one Z per slide.
 
 ---
 
@@ -486,6 +532,54 @@ layout)". That's why we log the *path* too, not just the version. If you want th
 versioned package to win, remove/rename the loose `python_examples/zen_api` copy (or
 reorder `zeiss_paths` to prefer the `python_package` src) — not changed here, since
 the loose copy may be intentionally the one matched to the gateway.
+
+### Promoted from Marc_SM_002 (decided 2026-09-29, implemented 2026-10-14)
+
+The Marc_SM_002 run produced project code that every pipeline needs. It now
+lives in the library. Project copies are unchanged and switch over when
+convenient (Marc_SM_002 only after its STZ run is finished).
+
+| Library | Replaces (project) |
+|---|---|
+| LoA `move_to_container`: immersion refusal, Z=0 first, settle, optional tracker reset | Marc_SM_002 `goto_container` |
+| LoA `move_focus_to_new_z_position(..., tolerance_m)` and `move_stage_to_new_xy_position(..., tolerance_m)` | Marc_SM_002 `move_z` (no XY version existed) |
+| LoA `set_optics_verified` | HD_Nuclei / Marc_SM_002 `ensure_optics` |
+| LoA `DefiniteFocusTracker` + `DefiniteFocusFault` | Marc_SM_002 `FocusState`; the inline adaptive start in the PoC / HD_Nuclei |
+| `MS_czexp_editor.get_tile_region_centers` | Marc_SM_002 `ov_tile_regions`; Slide_Search's own parsing |
+| `MS_image_analysis.run_analysis_json` | Marc_SM_002 `analyse` and the same pattern in every project |
+| `MS_Helper_function.append_jsonl` / `read_jsonl` | Marc_SM_002's cells log + `read_cells_log` |
+
+Design choices worth knowing:
+- **Backward compatible.** New parameters default to the old behaviour, so
+  projects running against the live library are unaffected until they opt in.
+- **Tolerant moves handle only `GRPCError`** (what ZEN raises, e.g.
+  `(<Status.INTERNAL: 13>, 'Requested position was not reached.', None)`).
+  The immersion guard now raises its own `ImmersionObjectiveActive` (still a
+  `RuntimeError`), so it can never be mistaken for a hardware error and
+  retried. After an accepted XY error, the stage settle wait is still applied.
+- **The tracker never runs a full-range DF search with the immersion objective
+  active.** That search starts at −300 µm, which drops the bridge (and fails
+  at 50x anyway). With no known surface it raises (seed it with
+  `surface_z_m`); the fallback is skipped. `reset()` forgets only the
+  surface, not the failure count: a slide change does not fix a DF fault.
+  `move_to_container` resets the tracker *before* the move, since forgetting
+  is always safe. Use one tracker per objective, or `reset()` after an
+  objective change: surfaces differ between objectives.
+- **`run_analysis_json` ignores a stale result** (mtime older than the
+  launch). In Marc_SM_002 a failed attempt reuses the next cell's tag, so an
+  old file with the same name can exist.
+- **`append_jsonl` starts on a new line if the file doesn't end in one.**
+  Otherwise the first record after a crash gets glued onto the cut-off
+  fragment and is lost too. Each record is fsync'ed.
+
+**Decided NOT to promote:**
+- OV re-registration (rigid slide matching): a one-off rescue for re-seating
+  a slide mid-experiment, not normally needed.
+- `acquire`: too small, and the error handling is project-specific.
+- `RunningMedian`.
+- The per-project workflow and resume rules.
+- Image-analysis helpers: these go to `Image_Analysis/ia_common`, not here
+  (see "Image-analysis repos").
 
 ---
 

@@ -13,11 +13,13 @@
 #################################################################
 
 import asyncio
+import math
 import time
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any, Union
 
 import zeiss_paths  # noqa: F401  — import FIRST (side effect: extends sys.path for zen_api)
+from grpclib.exceptions import GRPCError
 import MS_zenapi_focus
 import MS_zenapi_experiment_methods
 import MS_zenapi_objectivechanger
@@ -25,6 +27,7 @@ import MS_zenapi_stage_LM
 import MS_zenapi_swaf
 import MS_zenapi_sample_carrier
 import MS_Helper_function
+from MS_zenapi_helpers import set_logging
 
 
 # Configuration constants
@@ -33,6 +36,19 @@ IMMERSION_RETRY_DELAY = 10.0  # seconds - delay when moving from immersion objec
 OBJECTIVE_CHANGE_RETRY_DELAY = 5.0  # seconds - delay between retries
 OBJECTIVE_POLL_INTERVAL = 0.5  # seconds - polling interval for objective change
 MAX_IMMERSION_RETRIES = 3  # maximum retries for immersion operations
+
+# set_optics_verified: wait after the read-back first shows the target optics.
+# A cheap safe default, not a measured ZEN propagation time (see that function).
+OPTICS_SETTLE_S = 5.0
+OPTICS_VERIFY_TIMEOUT_S = 60.0   # give up if the read-back never settles
+OPTICS_VERIFY_POLL_S = 2.0
+
+# Tolerant moves (tolerance_m): pause before the one retry of a failed move.
+MOVE_RETRY_DELAY_S = 1.0
+
+# DefiniteFocusTracker defaults.
+DF_APPROACH_MARGIN_M = 100e-6       # adaptive start: this far below the last surface
+DF_MAX_CONSECUTIVE_FAILURES = 5     # failed searches in a row = hardware fault
 
 # Hardware limits
 OBJECTIVE_MIN = 1
@@ -105,6 +121,180 @@ def get_current_z_position() -> float:
     """
     current_z_position = asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
     return current_z_position
+
+
+class DefiniteFocusFault(RuntimeError):
+    """DefiniteFocus failed at too many positions in a row: treat as a hardware fault."""
+
+
+class DefiniteFocusTracker:
+    """DefiniteFocus across many positions, on top of run_definite_focus_find_surface.
+
+    - Adaptive start: each search starts ``approach_margin_m`` below the last
+      surface found (~4 s on the CD7, vs ~11 s for a full search from the
+      −300 µm default). Use this as the standard way to focus a series of
+      positions.
+    - Fallback: if the adaptive search fails (surface lower than expected:
+      slide tilt, next well), retry once over the full range.
+    - Hardware-fault stop: after ``max_consecutive_failures`` failed searches
+      in a row, raise DefiniteFocusFault instead of carrying on out of focus
+      (2026-09-28: DF dropped out at 22:14 and the run went on for 2 h). One
+      search = one find_surface call; each can make up to 2 × max_retries
+      FindSurface attempts (adaptive + fallback).
+    - reset(): forget the last surface. Call it after a slide/container change
+      (move_to_container does it when given the tracker) and after an objective
+      change — surfaces differ between objectives (DEV_NOTES).
+
+    Immersion: a full-range search starts at −300 µm, which retracts the
+    objective and breaks the immersion bridge (and fails at 50x anyway —
+    DEV_NOTES). With the immersion objective active the tracker never runs one:
+    without a known surface it raises ImmersionObjectiveActive (pass
+    ``surface_z_m`` near the expected surface), and the fallback is skipped.
+
+    Args:
+        approach_margin_m: adaptive start distance below the last surface (m).
+        max_consecutive_failures: failed searches in a row before the stop.
+        max_retries: FindSurface attempts per search (run_definite_focus_find_surface).
+        surface_z_m: known surface to start from (e.g. from an earlier run), or None.
+    """
+
+    def __init__(self, approach_margin_m: float = DF_APPROACH_MARGIN_M,
+                 max_consecutive_failures: int = DF_MAX_CONSECUTIVE_FAILURES,
+                 max_retries: int = 3,
+                 surface_z_m: Optional[float] = None):
+        if approach_margin_m < 0:
+            raise ValueError(f"approach_margin_m must be >= 0, got {approach_margin_m}")
+        if max_consecutive_failures < 1:
+            raise ValueError(f"max_consecutive_failures must be >= 1, got {max_consecutive_failures}")
+        if max_retries < 1:
+            raise ValueError(f"max_retries must be >= 1, got {max_retries}")
+        self.approach_margin_m = approach_margin_m
+        self.max_consecutive_failures = max_consecutive_failures
+        self.max_retries = max_retries
+        self.last_surface_z_m = surface_z_m
+        self.consecutive_failures = 0
+        self.last_message = ""
+        self.last_attempts = 0
+
+    def reset(self) -> None:
+        """Forget the last surface (the failure count is kept: a slide change
+        does not fix a DefiniteFocus fault)."""
+        self.last_surface_z_m = None
+
+    def find_surface(self) -> Optional[float]:
+        """Search the surface at the current XY.
+
+        Returns:
+            The surface Z in metres (drive read-back), or None if the search
+            failed (the position should be skipped).
+
+        Raises:
+            DefiniteFocusFault: on the max_consecutive_failures-th failure in a row.
+            MS_zenapi_stage_LM.ImmersionObjectiveActive: if no surface is known
+                and the immersion objective is active (see the class docstring).
+        """
+        log = set_logging()
+        if self.last_surface_z_m is None:
+            start = None
+            if _immersion_objective_active():
+                raise MS_zenapi_stage_LM.ImmersionObjectiveActive(
+                    "DefiniteFocusTracker: no known surface, and a full-range search "
+                    "(start −300 µm) would break the immersion bridge — create the "
+                    "tracker with surface_z_m near the expected surface.")
+        else:
+            start = self.last_surface_z_m - self.approach_margin_m
+
+        ok, msg, attempts = run_definite_focus_find_surface(self.max_retries, start)
+        total_attempts = attempts
+        if not ok and start is not None:
+            if _immersion_objective_active():
+                log.warning(f"DF from {start * 1e6:.1f} µm failed ({msg}); no full-range "
+                            f"retry with the immersion objective active.")
+            else:
+                log.warning(f"DF from {start * 1e6:.1f} µm failed ({msg}) — retrying "
+                            f"over the full range.")
+                ok, msg, attempts = run_definite_focus_find_surface(self.max_retries)
+                total_attempts += attempts
+        self.last_message, self.last_attempts = msg, total_attempts
+
+        if not ok:
+            self.consecutive_failures += 1
+            log.warning(f"DF failed ({self.consecutive_failures} in a row): {msg}")
+            if self.consecutive_failures >= self.max_consecutive_failures:
+                raise DefiniteFocusFault(
+                    f"DefiniteFocus failed at {self.consecutive_failures} positions in a "
+                    f"row (last: {msg}) — treating it as a hardware fault.")
+            return None
+
+        self.consecutive_failures = 0
+        z = get_current_z_position()
+        self.last_surface_z_m = z
+        return z
+
+
+def _immersion_objective_active() -> bool:
+    obj, _ = get_current_objective_and_optovar()
+    return obj == MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION
+
+
+def _move_with_tolerance(move, distance_to_target, tolerance_m: Optional[float],
+                         what: str, settle_s: float = 0.0) -> None:
+    """Run move(); with a tolerance, tolerate ZEN's spurious "not reached".
+
+    ZEN sometimes reports a move as failed (gRPC INTERNAL "Requested position
+    was not reached." for Z, "Position could not be reached." for XY) although
+    the drive is on target — DEV_NOTES "Spurious 'not reached'". On such an
+    error, read the position back: within tolerance_m → done (warning logged,
+    then settle_s); otherwise retry the move once. A second failure that is
+    still off target raises.
+
+    Only ZEN-reported errors (GRPCError) are handled; anything else — notably
+    the immersion guard's refusal — propagates untouched, without a retry.
+
+    Args:
+        move: performs the move (raises on failure).
+        distance_to_target: returns the read-back distance to the target (m).
+        tolerance_m: accepted read-back distance (m); None → plain move().
+        what: description for the log.
+        settle_s: wait after accepting a move that raised (the move's own settle
+            wait is skipped when it raises).
+    """
+    if tolerance_m is None:
+        move()
+        return
+    log = set_logging()
+    for attempt in (1, 2):
+        try:
+            move()
+            return
+        except GRPCError as e:
+            try:
+                dist = distance_to_target()
+            except Exception as read_err:
+                log.warning(f"{what}: could not read the position back ({read_err}).")
+                dist = None
+            if dist is not None and dist <= tolerance_m:
+                log.warning(f"{what}: ZEN reported {e} but the read-back is "
+                            f"{dist * 1e6:.3f} µm from the target (tolerance "
+                            f"{tolerance_m * 1e6:.3f} µm) — accepted.")
+                time.sleep(settle_s)
+                return
+            if attempt == 2:
+                raise
+            off = "unknown" if dist is None else f"{dist * 1e6:.3f} µm"
+            log.warning(f"{what} failed ({e}); read-back off by {off} — retrying once.")
+            time.sleep(MOVE_RETRY_DELAY_S)
+
+
+def _validate_tolerance(tolerance_m: Optional[float]) -> None:
+    if tolerance_m is None:
+        return
+    # Non-finite is rejected too: an infinite tolerance would accept any failed
+    # move wherever the drive stopped.
+    if (isinstance(tolerance_m, bool) or not isinstance(tolerance_m, (int, float))
+            or not math.isfinite(tolerance_m) or tolerance_m < 0):
+        raise ValueError(f"tolerance_m must be a finite, non-negative number (metres) "
+                         f"or None, got {tolerance_m!r}")
 
 
 def _validate_range(value, lo, hi, label: str, type_check, type_name: str,
@@ -184,7 +374,8 @@ def validate_xy_position(x: float, y: float) -> Tuple[bool, str]:
 
     return True, "Valid XY coordinates within stage limits"
 
-def move_focus_to_new_z_position(new_z_pos: float) -> None:
+def move_focus_to_new_z_position(new_z_pos: float,
+                                 tolerance_m: Optional[float] = None) -> None:
     """
     Move z-drive to new position (in meters).
 
@@ -199,10 +390,18 @@ def move_focus_to_new_z_position(new_z_pos: float) -> None:
 
     Args:
         new_z_pos (float): New Z position in meters
+        tolerance_m (float, optional): Tolerate ZEN's spurious "Requested
+            position was not reached" (~0.7 % of focus moves on 2026-09-28,
+            drive on target). On a ZEN error, Z is read back: within
+            tolerance_m of the target → done; otherwise one retry. The
+            read-back never matches the target exactly, so pick a small
+            positive value (Marc_SM_002: 0.25e-6). None (default) → no
+            tolerance, a ZEN error raises as before.
 
     Raises:
         ValueError: If position is outside the safe range (validated
-            internally via validate_z_position — no need to call it yourself).
+            internally via validate_z_position — no need to call it yourself),
+            or tolerance_m is invalid.
     """
     # Validate input
     is_valid, message = validate_z_position(new_z_pos)
@@ -210,9 +409,13 @@ def move_focus_to_new_z_position(new_z_pos: float) -> None:
         error_msg = f"Invalid Z position: {message}"
         print(f"[ERROR] {error_msg}")
         raise ValueError(error_msg)
-    
+    _validate_tolerance(tolerance_m)
+
     print(f"[INFO] Moving focus to Z = {new_z_pos}m")
-    asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(new_z_pos))
+    _move_with_tolerance(
+        lambda: asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(new_z_pos)),
+        lambda: abs(asyncio.run(MS_zenapi_focus.get_current_z_focus_position()) - new_z_pos),
+        tolerance_m, f"Z move to {new_z_pos * 1e6:.3f} µm")
 
 
 def get_current_xy_stage_position() -> List[float]:
@@ -226,7 +429,8 @@ def get_current_xy_stage_position() -> List[float]:
     return xy
 
 
-def move_stage_to_new_xy_position(new_x: float, new_y: float) -> None:
+def move_stage_to_new_xy_position(new_x: float, new_y: float,
+                                  tolerance_m: Optional[float] = None) -> None:
     """
     Move stage to absolute coordinates (in meters).
 
@@ -237,13 +441,21 @@ def move_stage_to_new_xy_position(new_x: float, new_y: float) -> None:
     Args:
         new_x (float): X coordinate in meters
         new_y (float): Y coordinate in meters
+        tolerance_m (float, optional): Tolerate ZEN's spurious "Position could
+            not be reached" (11 of ~1600 moves on 2026-09-29/30, all tiny
+            2–10 µm hops). On a ZEN error, XY is read back: within tolerance_m
+            (Euclidean distance) of the target → done; otherwise one retry
+            (the whole move again, incl. the Z=0 lower). None (default) → no
+            tolerance, a ZEN error raises as before.
 
     Raises:
         ValueError: If coordinates are outside the safe range (validated
-            internally via validate_xy_position — no need to call it yourself).
-        RuntimeError: If the 50x immersion objective is active. Lowering Z to
-            0 would break the immersion water bridge on this inverted CD7, so
-            the move is refused rather than attempted — drive the stage via a
+            internally via validate_xy_position — no need to call it yourself),
+            or tolerance_m is invalid.
+        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): If the
+            50x immersion objective is active. Lowering Z to 0 would break the
+            immersion water bridge on this inverted CD7, so the move is refused
+            rather than attempted (never retried) — drive the stage via a
             positioned .czexp run by ZEN instead (see
             MS_zenapi_stage_LM.move_stage_to_new_xy_position / DEV_NOTES.md).
     """
@@ -253,9 +465,18 @@ def move_stage_to_new_xy_position(new_x: float, new_y: float) -> None:
         error_msg = f"Invalid XY coordinates: {message}"
         print(f"[ERROR] {error_msg}")
         raise ValueError(error_msg)
-    
+    _validate_tolerance(tolerance_m)
+
+    def distance_to_target():
+        x, y = asyncio.run(MS_zenapi_stage_LM.get_current_xy_stage_coordinates())
+        return math.hypot(x - new_x, y - new_y)
+
     print(f"[INFO] Moving stage to X = {new_x}m, Y = {new_y}m")
-    asyncio.run(MS_zenapi_stage_LM.move_stage_to_new_xy_position(new_x, new_y))
+    _move_with_tolerance(
+        lambda: asyncio.run(MS_zenapi_stage_LM.move_stage_to_new_xy_position(new_x, new_y)),
+        distance_to_target, tolerance_m,
+        f"XY move to ({new_x * 1e6:.2f}, {new_y * 1e6:.2f}) µm",
+        settle_s=MS_zenapi_stage_LM.STAGE_SETTLE_SECONDS)
 
 
 def set_stage_motion_sync(speed_percent: Optional[float] = None,
@@ -545,8 +766,70 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
         
         # All retries failed
         return False
-    
+
     return asyncio.run(_set_and_wait())
+
+
+def set_optics_verified(objective_nr: int, optovar_nr: int,
+                        settle_s: float = OPTICS_SETTLE_S,
+                        timeout_s: float = OPTICS_VERIFY_TIMEOUT_S,
+                        poll_s: float = OPTICS_VERIFY_POLL_S) -> None:
+    """
+    Change objective + optovar, then VERIFY the read-back and SETTLE.
+
+    Use before any acquisition after an optics change. ZEN builds the tile grid
+    from the CURRENT optics at run time; a scan launched right after the change
+    was once tiled for the stale config (HD_Nuclei_from_slide, run_20260629_122403,
+    leaving the 50x immersion objective: doubled/ghosted mosaic). Steps:
+      1. change the optics (set_objective_set_optovar_sync);
+      2. poll the read-back until it shows the target;
+      3. wait settle_s;
+      4. check again — abort if it never settles within timeout_s.
+
+    The cause (read-back leading ZEN's acquisition engine) is inferred and was
+    only seen when leaving the immersion objective, so the settle is a cheap safe
+    default, not confirmed ZEN behaviour. See TODO "pin an experiment to a
+    DEFINED objective/optovar config" for a possible ZEN-native fix.
+
+    Args:
+        objective_nr (int): Objective position (1-4).
+        optovar_nr (int): Optovar position (1-3).
+        settle_s (float): Wait after the read-back first shows the target.
+        timeout_s (float): Give up if the target is not read back and stable by then.
+        poll_s (float): Interval between read-backs while waiting.
+
+    Raises:
+        ValueError: If a position or a timing argument is invalid.
+        RuntimeError: If the optics never settle at the target.
+    """
+    for name, v in (("settle_s", settle_s), ("timeout_s", timeout_s), ("poll_s", poll_s)):
+        if v < 0:
+            raise ValueError(f"{name} must be >= 0, got {v}")
+    log = set_logging()
+    target = (objective_nr, optovar_nr)
+    # Validates the positions (ValueError). A False return (changer timeout) is
+    # not fatal by itself: the read-back below is the check.
+    if not set_objective_set_optovar_sync(objective_nr, optovar_nr):
+        log.warning(f"Optics change to {target} not confirmed by the changer — "
+                    f"verifying the read-back.")
+    deadline = time.monotonic() + timeout_s
+    while True:
+        cur = tuple(get_current_objective_and_optovar())
+        if cur == target:
+            time.sleep(settle_s)
+            cur = tuple(get_current_objective_and_optovar())
+            if cur == target:
+                log.info(f"Optics confirmed + settled: objective pos {objective_nr}, "
+                         f"optovar pos {optovar_nr}.")
+                return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Optics never settled at objective {objective_nr}/optovar "
+                               f"{optovar_nr} (read-back {cur}) — aborting to avoid a "
+                               f"mis-tiled scan.")
+        log.info(f"Waiting for optics to reach (obj {objective_nr}, opt {optovar_nr}); "
+                 f"currently {cur}...")
+        time.sleep(poll_s)
+
 
 def get_current_objective_and_optovar() -> Tuple[int, int]:
     """
@@ -604,15 +887,47 @@ def get_current_container() -> Optional[Tuple[int, int]]:
     Returns:
         (row_index, column_index), 0-based, or None if the stage is in no
         container. Read-only.
+
+    Note:
+        On the CD7 (3x slide insert) this ALWAYS returns None (ZEN: NOT_FOUND),
+        even right after move_to_container — don't use it as a check
+        (DEV_NOTES "Multi-slide carriers").
     """
     return asyncio.run(MS_zenapi_sample_carrier.get_current_container())
 
 
-def move_to_container(row_index: int, column_index: int) -> None:
+def move_to_container(row_index: int, column_index: int,
+                      focus_tracker: Optional[DefiniteFocusTracker] = None) -> None:
     """
     Move the stage to a sample-carrier container (e.g. slide 2 of a 3-slide
-    insert = row 0, column 1). The move is executed by ZEN.
+    insert = row 0, column 1; indices 0-based). The move is executed by ZEN.
+
+    Behaves like move_stage_to_new_xy_position: lowers Z to 0 first (a slide
+    change is a ~26 mm move and MoveToContainer leaves Z where it is) and leaves
+    it there, and refuses with the immersion objective active. Re-focus before
+    acquiring.
+
+    Do NOT verify the move with get_current_container: it always answers
+    NOT_FOUND on the CD7 (DEV_NOTES "Multi-slide carriers"). Verify the slide
+    from the images instead.
+
+    Args:
+        row_index (int), column_index (int): The container, 0-based.
+        focus_tracker (DefiniteFocusTracker, optional): Reset before the move —
+            the last surface belongs to the previous slide.
+
+    Raises:
+        ValueError: If an index is not a non-negative integer.
+        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): If the
+            immersion objective is active (nothing is moved).
     """
+    for name, v in (("row_index", row_index), ("column_index", column_index)):
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(f"{name} must be a non-negative integer, got {v!r}")
+    # Before the move: forgetting the surface is always safe, also if the move
+    # then fails half-way.
+    if focus_tracker is not None:
+        focus_tracker.reset()
     asyncio.run(MS_zenapi_sample_carrier.move_to_container(row_index, column_index))
 
 
