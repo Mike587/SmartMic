@@ -364,6 +364,23 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
     the switch (CD7 auto-immersion), see TODO. Until that is checked,
     `move_to_container` refuses with the immersion objective active. Our
     own Z=0 lowering would break the bridge anyway.
+  - **What the ZEN service logs say about auto-immersion (read 2026-10-27,
+    still no answer for the container switch).** The API has no immersion
+    service (only the read-only `immersion_type` of an objective), and
+    `MoveToContainer` is documented without any word on Z or water. ZEN's
+    auto-immersion lives in the hardware layer
+    (`ImmersionAdapterCastor`, `ImmersionRefiller`, `ImmersionAdapterBase` in
+    `C:\ProgramData\Carl Zeiss\Logging\ZENService.log.xml*`): it reacts to
+    objective-changer, stage and focus property changes and tracks
+    `StageTravelledDistanceFromLastImmersionPoint`. On this scope
+    `IsAutoImmersionRefillGlobalEnabled = True`. The refiller timer stops
+    with a dry objective ("Stopped periodic timer") and runs with the 50x
+    and water applied: `ImmersionTimeInterval = 7200000 ms` (2 h). So ZEN can
+    renew the water by itself, by time or by travelled distance, without any
+    API call. Whether a container switch triggers it is **not** shown: the
+    logs only go back to 2026-10-23, the 2026-10-14 check (5x) has rotated
+    out, no container switch is in them, and gRPC calls are not logged by
+    name. Needs the ZEN UI check (TODO).
 
   **Library `move_to_container` (since 2026-10-14):** refuses with the
   immersion objective active, otherwise lowers Z to 0, switches, and settles.
