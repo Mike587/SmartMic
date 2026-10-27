@@ -66,6 +66,40 @@ from zen_api.lm.acquisition.v1 import (
 from zeiss_paths import CONFIG_PATH as config_path
 
 
+# Retry policy of definite_focus_find_surface: after failed attempt n, wait
+# n x DF_RETRY_BACKOFF_S, then start the next search n x DF_RETRY_NUDGE_M above
+# start_z_m, so DF gets a slightly different starting point each time.
+DF_RETRY_BACKOFF_S = 2.0
+DF_RETRY_NUDGE_M = 50e-6
+
+
+async def _read_z_um(focus_service) -> float:
+    """Current Z-drive position in µm."""
+    pos = await focus_service.get_position(FocusServiceGetPositionRequest())
+    return pos.value * 1e6
+
+
+async def _store_current_focus(focus_service, definite_focus_service, logger):
+    """Best effort: store the current Z as the DF focus. Failures are only logged.
+
+    Used after a failed search so the pipeline can at least attempt a
+    recall_focus rather than being completely lost.
+    """
+    try:
+        z_um = await _read_z_um(focus_service)
+    except Exception as e:
+        logger.error(f"Could not get current position after find_surface failure: {e}")
+        return
+    logger.info(f"Current Z-Position after all failed attempts: {z_um:.3f} [micron]")
+
+    try:
+        await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
+    except Exception as e:
+        logger.error(f"Could not store focus position: {e}")
+        return
+    logger.info(f"Stored current focus position {z_um:.3f} [micron] despite find_surface failure")
+
+
 async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6):
     """Run Definite Focus FindSurface with linear-backoff retry logic.
 
@@ -79,35 +113,36 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
     value indicates that DF found its own starting position rather than the
     actual surface.
 
-    On each retry the Z-drive is nudged upward by an additional 50 µm
-    (50, 100, 150 … µm above *start_z_m*) to give DF a slightly different
-    starting point, which can break out of a local failure mode.
+    After a failed attempt it waits ``DF_RETRY_BACKOFF_S`` x n and moves the
+    Z-drive ``DF_RETRY_NUDGE_M`` x n above *start_z_m* (n = failed attempts so
+    far) before trying again.
 
     Args:
-        max_retries: Maximum number of attempts (default 3).  The first
-            attempt counts as attempt 1; retries are numbered 2 … max_retries.
+        max_retries: Maximum number of attempts (default 3), at least 1.
         start_z_m:   Absolute Z position in metres to move to before starting
             the surface search (default −300 µm).  Pass a value close to the
             expected surface Z (e.g. last_surface_z − 100 µm) to speed up DF.
 
     Returns:
-        Tuple ``(success, attempts_used)`` where *success* is ``True`` when
-        FindSurface succeeded and the focus was stored, and *attempts_used*
-        is the number of attempts that were made.
+        Tuple ``(True, attempts_used)``.  It never returns ``(False, ...)``:
+        failure raises.
 
     Raises:
-        Exception: Re-raises the last exception if all attempts fail, with
-            the real attempt count attached as ``.attempts_used`` (read by
+        ValueError: If *max_retries* < 1.
+        Exception: The last attempt's exception once all attempts have failed,
+            with the real attempt count attached as ``.attempts_used`` (read by
             ``MS_CD7_API_LoA.run_definite_focus_find_surface`` for accurate
-            retry telemetry — this function never returns ``(False, ...)``).
+            retry telemetry).  Before raising, the current Z is stored as the
+            focus position (best effort) so a ``recall_focus`` is still possible.
     """
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {max_retries}")
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
         definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
         focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-        # Move Z-drive to the requested starting position before the DF search.
         # The exact start does not need to be reached: DF FindSurface can search
         # from wherever the drive actually lands.  In particular the default
         # start (-300 µm) can be below the drive's reachable minimum on some
@@ -121,25 +156,18 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
                 f"Initial move to start Z {start_z_m * 1e6:.1f} µm not fully "
                 f"reached ({move_err}); proceeding from the current Z."
             )
-        zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-        logger.info(f"Initial Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
+        logger.info(f"Initial Z-Position (ZDrive): {await _read_z_um(focus_service):.3f} [micron]")
 
-        success = False
-        last_exception = None
-        attempts_used = 0
-
-        for attempt in range(max_retries):
-            attempts_used = attempt + 1
-
-            if attempt > 0:
-                logger.warning(f"*** DF FindSurface RETRY {attempt}/{max_retries - 1} ***")
+        for attempt in range(1, max_retries + 1):
+            if attempt > 1:
+                logger.warning(f"*** DF FindSurface RETRY {attempt - 1}/{max_retries - 1} ***")
 
             try:
-                # Run DF FindSurface; the returned zposition is in metres.
-                zpos_find_surface = await definite_focus_service.find_surface(
+                # The returned zposition is in metres.
+                found = await definite_focus_service.find_surface(
                     DefiniteFocusServiceFindSurfaceRequest()
                 )
-                fs_z_um = zpos_find_surface.zposition * 1e6
+                fs_z_um = found.zposition * 1e6
                 logger.info(f"Z-Position (FindSurface): {fs_z_um:.3f} [micron]")
 
                 # Sanity-check: DF returning a negative Z means it locked onto its
@@ -150,78 +178,39 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
                         "likely failed to locate surface (expected positive Z)."
                     )
 
-                zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-                logger.info(f"Z-Position (ZDrive) after FS: {zpos.value * 1e6:.3f} [micron]")
+                z_um = await _read_z_um(focus_service)
+                logger.info(f"Z-Position (ZDrive) after FS: {z_um:.3f} [micron]")
 
                 # Persist the focus position so recall_focus can use it later.
                 await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
-                logger.info(f"Focus Position {zpos.value * 1e6:.3f} [micron] stored.")
-
-                success = True
-                break
+                logger.info(f"Focus Position {z_um:.3f} [micron] stored.")
+                return True, attempt
 
             except Exception as e:
                 last_exception = e
                 logger.error(
-                    f"Definite Focus find_surface failed (attempt {attempt + 1}/{max_retries}): {e}"
+                    f"Definite Focus find_surface failed (attempt {attempt}/{max_retries}): {e}"
                 )
 
-                if attempt < max_retries - 1:
-                    # Linear backoff: wait 2 s, 4 s, 6 s … between retries.
-                    wait_time = 2.0 * (attempt + 1)
-                    logger.info(f"Waiting {wait_time:.1f} seconds before retry...")
-                    await asyncio.sleep(wait_time)
+            if attempt < max_retries:
+                wait_s = DF_RETRY_BACKOFF_S * attempt
+                logger.info(f"Waiting {wait_s:.1f} seconds before retry...")
+                await asyncio.sleep(wait_s)
 
-                    # Nudge Z upward (50, 100, 150 µm …) before the next attempt
-                    # to give DF a fresh starting point.
-                    try:
-                        offset = (attempt + 1) * 50e-6  # metres
-                        retry_z = start_z_m + offset
-                        await focus_service.move_to(FocusServiceMoveToRequest(value=retry_z))
-                        logger.info(f"Moved to Z: {retry_z * 1e6:.1f} microns before retry")
-                    except Exception as move_e:
-                        logger.error(f"Could not move Z before retry: {move_e}")
-
-        if not success:
-            logger.error(f"Definite Focus find_surface failed after {max_retries} attempts")
-            # Best-effort: store whatever the current Z is so that the pipeline
-            # can at least attempt a recall_focus rather than being completely lost.
-            try:
-                current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-                logger.info(
-                    f"Current Z-Position after all failed attempts: "
-                    f"{current_zpos.value * 1e6:.3f} [micron]"
-                )
+                retry_z_m = start_z_m + DF_RETRY_NUDGE_M * attempt
                 try:
-                    await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
-                    logger.info(
-                        f"Stored current focus position {current_zpos.value * 1e6:.3f} [micron] "
-                        "despite find_surface failure"
-                    )
-                except Exception as e2:
-                    logger.error(f"Could not store focus position: {e2}")
-            except Exception as e3:
-                logger.error(f"Could not get current position after find_surface failure: {e3}")
+                    await focus_service.move_to(FocusServiceMoveToRequest(value=retry_z_m))
+                    logger.info(f"Moved to Z: {retry_z_m * 1e6:.1f} microns before retry")
+                except Exception as move_e:
+                    logger.error(f"Could not move Z before retry: {move_e}")
 
-            # Attach the real attempt count to the exception so a caller that
-            # only sees the exception (e.g. MS_CD7_API_LoA.run_definite_focus_find_surface)
-            # can still report accurate retry telemetry instead of guessing.
-            if last_exception is not None:
-                last_exception.attempts_used = attempts_used
-            raise last_exception
+        logger.error(f"Definite Focus find_surface failed after {max_retries} attempts")
+        await _store_current_focus(focus_service, definite_focus_service, logger)
 
-        # Reference: move Z up by 500 µm then use recall_focus to return.
-        # Kept here as a usage example; not executed during normal operation.
-        '''
-        await focus_service.move_to(FocusServiceMoveToRequest(value=zpos.value + 500 * 1e-6))
-        new_posZ = await focus_service.get_position(FocusServiceGetPositionRequest())
-        logger.info(f"New Z-Drive: {new_posZ.value * 1e6:.3f} [micron]")
-
-        zpos_recall = await definite_focus_service.recall_focus(DefiniteFocusServiceRecallFocusRequest())
-        logger.info(f"Z-Position (RecallFocus): {zpos_recall.zposition * 1e6:.3f} [micron]")
-        '''
-
-        return success, attempts_used
+        # Attach the real attempt count so a caller that only sees the exception
+        # can still report accurate retry telemetry instead of guessing.
+        last_exception.attempts_used = max_retries
+        raise last_exception
 
 
 async def definite_focus_recall(max_retries: int = 3):
