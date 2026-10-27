@@ -107,8 +107,9 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
 
 - **DefiniteFocus fails when the immersion water bridge breaks (50x).**
   2026-10-27, Atreya's ZEN run (`F:\UserData\Atreya\2026-10-27\New-03.czi`, 96-well,
-  meander between columns 1 and 7). DF was fine (quality 99) until ZEN's
-  auto-immersion renewed the water and the stage then moved 52 mm. From then
+  meander between columns 1 and 7). DF reported quality 99 until ZEN's
+  auto-immersion renewed the water and the stage then moved 52 mm (but from
+  C7 on it had already locked onto the wrong surface, see the next entry). From then
   on DF failed at most positions, every column-7 position included. ZEN
   kept the last good Z, so those wells were imaged out of focus. The
   exact messages (ZENService log):
@@ -118,10 +119,48 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   ReflexNotFound), plus `Definite Focus action canceled - focus limit
   reached.` (FocusLimit) and `The stabilization process doesn't converge to
   a final value.` (Oscillation, 0xB4). Unlike the 0x0E fault above, this is
-  not a hardware fault: it means "no water". Re-immersion is a global ZEN
+  not a hardware fault; it points to the water bridge (likely, not
+  confirmed). Re-immersion is a global ZEN
   option (Tools > Options > Celldiscoverer > Auto Immersion – Reimmersion
   Settings; default 120 min / 200 mm, 10 min minimum). The interval in the
   `.czexp` is ignored on the CD7. Analysis: `Marc_SM_002/SM_Output/New-03_focus_analysis/`.
+
+- **With immersion, DF can lock onto the WRONG surface and still report
+  quality 99.** Same run (New-03.czi, 50x/1.2 W, ibidi 96-well, 170 µm glass
+  bottom). At C7 FindSurface found the **bottom of the plate** (water–glass,
+  objective side) instead of the bottom of the well (glass–medium, where the
+  cells are). Both interfaces have about the same index step, so both give a
+  clean reflex: quality stayed 99 on all 20 C7/D7 positions, every one
+  **150 µm too low** (range −148 to −153 µm against a plane fitted to the good
+  wells A–C, residual sd 2.4 µm). 150 µm matches 170 µm glass refocused in
+  water (170 × 1.33/1.52 ≈ 149 µm; with air it would be ≈ 112 µm), so the
+  water was there. The confocal images from C7 on are completely dark (dark
+  level at every Z, every channel) — at 150 µm off the pinhole rejects
+  everything, so "dark stack" does NOT mean a laser fault. The software
+  autofocus could not fix it (search range ±20 µm); its score fell from
+  300–700 to ~50 at that position and nobody looked.
+  Why at C7: FindSurface starts at the **previous position's Z**. The plate
+  was tilted +107 µm over the 54 mm between columns 1 and 7, so after the
+  C1→C7 jump the start (1197) was 43 µm above the plate bottom but 109 µm
+  below the well bottom — it took the nearer one. A1→A7 had a similar setup
+  (52 vs 98 µm) and happened to pick right. Once wrong, every following
+  position started from the wrong Z and stayed wrong.
+  Lessons:
+  - **DF "Success, quality 99" does not prove the right surface.** Check the
+    result against the expected Z (plate plane / neighbouring positions /
+    last good Z + tilt); a jump of about one glass thickness (~150 µm at 50x
+    W) is the signature.
+  - Avoid large Z jumps between consecutive positions: seat the plate flat,
+    order wells as a short snake (neighbours, not col 1 ↔ col 7 every row),
+    or seed DF near the expected surface.
+  - ZEN's **focus surface / support points** may mitigate this inside a ZEN
+    experiment (not tested).
+  - Idea, not implemented: after DF, take a short **widefield snap and score
+    its sharpness/signal**; reject or redo the DF if it is flat. The existing
+    dark-stack check (`MS_Helper_function.is_czi_effectively_empty`) would
+    also have caught it, but only after the full stack.
+  The later failures from D1 on (DF lost after the 04:42 refill, then locked
+  ~+135…+160 µm too HIGH, images still dark) are **not explained** yet.
 
 - **A water drop is left behind after using the immersion objective.** Once the
   immersion (50x) objective has been at a position, a small drop of water remains
