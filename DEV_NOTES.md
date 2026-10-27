@@ -105,6 +105,24 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   last surface, ~4 s vs ~11 s for a full search) is the standard way to focus
   a series of positions.
 
+- **DefiniteFocus fails when the immersion water bridge breaks (50x).**
+  2026-10-27, Atreya's ZEN run (`F:\UserData\Atreya\2026-10-27\New-03.czi`, 96-well,
+  meander between columns 1 and 7). DF was fine (quality 99) until ZEN's
+  auto-immersion renewed the water and the stage then moved 52 mm. From then
+  on DF failed at most positions, every column-7 position included. ZEN
+  kept the last good Z, so those wells were imaged out of focus. The
+  exact messages (ZENService log):
+  `Definite Focus was not able to detect a stabilization signal.
+  Stabilization not possible. Check cleanliness of the sample carrier bottom
+  and the objective front lens.` (ErrFocusStabilizerMaximum, 0x65, code
+  ReflexNotFound), plus `Definite Focus action canceled - focus limit
+  reached.` (FocusLimit) and `The stabilization process doesn't converge to
+  a final value.` (Oscillation, 0xB4). Unlike the 0x0E fault above, this is
+  not a hardware fault: it means "no water". Re-immersion is a global ZEN
+  option (Tools > Options > Celldiscoverer > Auto Immersion – Reimmersion
+  Settings; default 120 min / 200 mm, 10 min minimum). The interval in the
+  `.czexp` is ignored on the CD7. Analysis: `Marc_SM_002/SM_Output/New-03_focus_analysis/`.
+
 - **A water drop is left behind after using the immersion objective.** Once the
   immersion (50x) objective has been at a position, a small drop of water remains
   there on the sample. Switching back to a non-immersion (dry) objective is fine,
