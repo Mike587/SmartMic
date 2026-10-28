@@ -170,24 +170,28 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   usable expected-Z check. Write-up: `Mike_Projects/20261028_Ati_CD7_Issues/`.
 
 - **An auto-immersion refill can break the water bridge (seen directly).**
-  New-04.czi (2026-10-27, refills about every 10 min): the refill at 12:30:15
-  ran *during* a Z-stack of a good D7 position (ZEN does not wait for the
-  scan). The signal cut off ~70 % down the frame of plane 5, then a 19 s
-  pause, then every later plane exactly 0. The next 6 positions were imaged
-  at the **correct** Z (DF failed with `focus limit reached`, ZEN kept the
-  last good Z) and were still completely dark in all channels — so no light
-  got through the objective: the refill (5 s suction, 2.5 s feed) removed the
-  water and left no working bridge. 12 earlier refills in that run were
-  harmless, so it is intermittent (feed not delivering? there is no
-  fluid-level sensor on this CD7: `MTBFluidLevelFreshImmersion` fails to be
-  created). This is the likely trigger of the New-03 failures from D1 on.
+  2026-10-27, New-04/06/07/08 (same plate, 50x/1.2 W). ZEN's periodic refill
+  is timer-driven and **pauses the experiment in the middle of a Z-plane**
+  (the scan job is suspended and resumed). At 4 of 4 refills at **D7** the
+  frame was cut mid-scan and every later plane and position came back
+  completely dark at the **correct** Z (DF failing) — no light through the
+  objective, the refill (5 s suction, 2.5 s feed, 2 s wait) left no working
+  bridge. 14 refills at other wells were harmless; a manual *Remove + Create*
+  water fixed it each time, a ZEN restart did not. Position-dependence is a
+  correlation without a control (runs were restarted at D7); cause of the
+  water loss unknown. ZEN never errors out — it keeps acquiring black images.
+  No fluid-level sensor on this CD7 (`MTBFluidLevelFreshImmersion` fails to
+  be created). Full analysis: `Mike_Projects/20261028_Ati_CD7_Issues/
+  04_D7_refill_breaks_immersion.md` (issue 3). The D7 refill at 04:42 is the
+  likely trigger of the New-03 failures from D1 on (issue 2).
   Afterwards New-03's DF, where it succeeded, locked a constant
   **+138.6 µm (sd 1.3)** above the real surface (measured against New-04) —
   the mirror of the −163 µm underside lock; both are ±151 µm (one optical
   glass thickness) if the plate sat ~12 µm lower overnight (inferred, not
   measured). A ghost reflex is the leading guess for the + lock; unconfirmed.
   Lessons: a refill mid-stack can silently ruin the rest of a run; a dark
-  stack at a plausible Z after a refill means "check the water", not focus.
+  stack at a plausible Z after a refill means "check the water", not focus;
+  stop a run on an all-zero plane or repeated DF failures.
 
 - **A water drop is left behind after using the immersion objective.** Once the
   immersion (50x) objective has been at a position, a small drop of water remains
