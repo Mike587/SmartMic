@@ -160,7 +160,34 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
     dark-stack check (`MS_Helper_function.is_czi_effectively_empty`) would
     also have caught it, but only after the full stack.
   The later failures from D1 on (DF lost after the 04:42 refill, then locked
-  ~+135…+160 µm too HIGH, images still dark) are **not explained** yet.
+  ~+135…+160 µm too HIGH, images still dark) are only partly explained, see
+  the next entry.
+  **Confirmed by re-imaging** (New-04.czi, same plate not removed, 2026-10-27
+  morning): at the same XY, New-04 found the well bottom with quality 99 and
+  good images; New-03's C7/D7 DF Z was **163.0 µm lower** (13 positions,
+  ±0.3 µm). The plane extrapolated from A–C matched New-04's real surface to
+  −2…+22 µm (plate not quite flat), so a plane from a few good wells is a
+  usable expected-Z check. Write-up: `Mike_Projects/20261028_Ati_CD7_Issues/`.
+
+- **An auto-immersion refill can break the water bridge (seen directly).**
+  New-04.czi (2026-10-27, refills about every 10 min): the refill at 12:30:15
+  ran *during* a Z-stack of a good D7 position (ZEN does not wait for the
+  scan). The signal cut off ~70 % down the frame of plane 5, then a 19 s
+  pause, then every later plane exactly 0. The next 6 positions were imaged
+  at the **correct** Z (DF failed with `focus limit reached`, ZEN kept the
+  last good Z) and were still completely dark in all channels — so no light
+  got through the objective: the refill (5 s suction, 2.5 s feed) removed the
+  water and left no working bridge. 12 earlier refills in that run were
+  harmless, so it is intermittent (feed not delivering? there is no
+  fluid-level sensor on this CD7: `MTBFluidLevelFreshImmersion` fails to be
+  created). This is the likely trigger of the New-03 failures from D1 on.
+  Afterwards New-03's DF, where it succeeded, locked a constant
+  **+138.6 µm (sd 1.3)** above the real surface (measured against New-04) —
+  the mirror of the −163 µm underside lock; both are ±151 µm (one optical
+  glass thickness) if the plate sat ~12 µm lower overnight (inferred, not
+  measured). A ghost reflex is the leading guess for the + lock; unconfirmed.
+  Lessons: a refill mid-stack can silently ruin the rest of a run; a dark
+  stack at a plausible Z after a refill means "check the water", not focus.
 
 - **A water drop is left behind after using the immersion objective.** Once the
   immersion (50x) objective has been at a position, a small drop of water remains
