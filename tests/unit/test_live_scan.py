@@ -208,6 +208,8 @@ def loa(monkeypatch):
     monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
     monkeypatch.setattr(ls, "eject_tray", fake_eject)
     monkeypatch.setattr(ls, "load_tray_and_prescan", fake_load)
+    # The wait for the DF carrier thickness after a load is tested in test_df_carrier.py.
+    monkeypatch.setattr(ms, "wait_for_df_bottom", lambda *a, **k: {})
     return ev, state
 
 

@@ -115,6 +115,18 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
     - The search first approaches the underside reflex, then moves about 80 µm **down** instead of up.
     - Switching back to Glass restored 1159.5 µm (DAPI sharp at DF +0.5 µm).
     - **The material must match the plate.** A real polystyrene plate has not been tested.
+  - **Library checks (2026-11-09):**
+    - `preflight` runs `check_carrier_for_df`. It stops the run if:
+      - the thickness is 0;
+      - the material is not `expected_material`;
+      - the thickness is not in `thickness_range_um`;
+      - the value that DF last received (`zeiss_paths.zen_df_bottom`, from the ZEN log) is different from the API value.
+
+      It gives a warning if "measure bottom thickness" is off at tray load.
+    - `DefiniteFocusTracker` records the carrier bottom (`carrier_bottom`, API, approximately 10 ms) on the first search. It compares it before each search. A change or a thickness of 0 raises `CarrierChanged`, a subclass of `DefiniteFocusFault`, so the run stops. `reset()` accepts a new carrier.
+    - `load_tray_and_prescan` waits (`wait_for_df_bottom`, maximum 60 s) until DF has a non-zero thickness that agrees with the API, two reads in a row.
+    - The ZEN log is not read before each DF call: ZEN writes the event only when the value changes, and the logs rotate approximately every 10 min.
+    - No check can find a thickness that is stable but incorrect (e.g. an incorrect template). Only the measurement at load or a correct template can prevent that.
   - The 50x W was not tested with a wrong thickness. It has no air–glass interface; there DF parks directly on a water–glass reflex (see the underside entry above).
 
 - **5x↔50x surfaces differ a lot here.** The 5x tissue-scan surface read ~1189–1194

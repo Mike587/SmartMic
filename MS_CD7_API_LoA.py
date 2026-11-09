@@ -144,6 +144,118 @@ class DefiniteFocusFault(RuntimeError):
     """DefiniteFocus failed at too many positions in a row: treat as a hardware fault."""
 
 
+class CarrierChanged(DefiniteFocusFault):
+    """The carrier bottom that DF uses changed during the run, or is 0 (a load runs).
+
+    A subclass of DefiniteFocusFault, so a pipeline that stops on a DF fault
+    also stops here: a changed thickness or material moves the DF focus by
+    tens of µm on the dry objectives, and DF still reports quality 99
+    (DEV_NOTES "Dry objectives: DF finds the plate UNDERSIDE").
+    """
+
+
+# Two thickness values that differ by less than this are the same (µm). ZEN
+# reports e.g. 176.17894736842106 over the API and 176179 nm in the DF log.
+CARRIER_THICKNESS_TOL_UM = 0.5
+
+
+def carrier_bottom() -> Dict[str, Any]:
+    """The bottom of the active sample carrier, over the API (approximately 10 ms).
+
+    Returns:
+        Dict with name, material, thickness_um and refractive_index. When the
+        thickness was measured at load, the value is the measured one.
+    """
+    info = get_sample_carrier_info()
+    return {"name": info["name"], "material": info["material"],
+            "thickness_um": float(info["thickness"]),
+            "refractive_index": info["refractive_index"]}
+
+
+def _carrier_difference(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[str]:
+    """Text that describes how two carrier_bottom() dicts differ, or None."""
+    diffs = []
+    if str(a["material"]).lower() != str(b["material"]).lower():
+        diffs.append(f"material {a['material']} → {b['material']}")
+    if abs(a["thickness_um"] - b["thickness_um"]) > CARRIER_THICKNESS_TOL_UM:
+        diffs.append(f"thickness {a['thickness_um']:.1f} → {b['thickness_um']:.1f} µm")
+    if a.get("name") != b.get("name"):
+        diffs.append(f"carrier '{a.get('name')}' → '{b.get('name')}'")
+    return ", ".join(diffs) or None
+
+
+def check_carrier_for_df(log, expected_material: Optional[str] = None,
+                         thickness_range_um: Optional[Tuple[float, float]] = None
+                         ) -> Optional[Dict[str, Any]]:
+    """Check the carrier bottom that DF uses. Use it at run start (preflight).
+
+    Checks:
+      1. The thickness over the API is more than 0 (0: a tray load runs).
+      2. The material is ``expected_material`` (if given).
+      3. The thickness is in ``thickness_range_um`` (if given).
+      4. The value DF last received (ZEN log) is not 0 and agrees with the API.
+         If the event is not in the logs (rotated), this is logged only.
+    Logs a warning, not an error, if "measure bottom thickness" is off in the
+    live-scan configuration: then the thickness is the template value.
+
+    Args:
+        log: A logger (anything with .info/.warning/.error).
+        expected_material: E.g. "Glass" or "Polystyrene" (case is ignored).
+        thickness_range_um: (min, max) in µm, e.g. (150, 190) for #1.5 glass.
+
+    Returns:
+        The carrier_bottom() dict if all checks pass, else None (the reason is
+        logged with log.error).
+    """
+    try:
+        api = carrier_bottom()
+    except Exception as e:
+        log.error(f"DF carrier check: could not read the sample carrier ({e}).")
+        return None
+    text = (f"DF carrier: '{api['name']}', {api['material']}, "
+            f"{api['thickness_um']:.1f} µm, n = {api['refractive_index']}")
+    if api["thickness_um"] <= 0:
+        log.error(f"{text} — thickness 0: a tray load runs or the carrier has no "
+                  f"thickness. Do not use DF.")
+        return None
+    if expected_material and str(api["material"]).lower() != expected_material.lower():
+        log.error(f"{text} — material is not {expected_material}. On a dry objective DF "
+                  f"then focuses far from the surface (DEV_NOTES).")
+        return None
+    if thickness_range_um is not None:
+        lo, hi = thickness_range_um
+        if not lo <= api["thickness_um"] <= hi:
+            log.error(f"{text} — thickness is not in {lo:g}…{hi:g} µm. Measure it at load "
+                      f"or correct the carrier template.")
+            return None
+    try:
+        df = zeiss_paths.zen_df_bottom()
+    except Exception as e:
+        df = None
+        log.info(f"DF carrier: could not read the ZEN log ({e}).")
+    if df is None:
+        log.info(f"{text}. The DF value is not in the ZEN logs (rotated): API value only.")
+    else:
+        df_view = {"name": api["name"], "material": df["material"],
+                   "thickness_um": df["thickness_um"]}
+        if df["thickness_um"] <= 0:
+            log.error(f"{text} — but DF has thickness 0 (ZEN log {df['timestamp']}): a tray "
+                      f"load runs. Do not use DF.")
+            return None
+        diff = _carrier_difference(api, df_view)
+        if diff:
+            log.error(f"{text} — DF has a different value (ZEN log {df['timestamp']}: {diff}).")
+            return None
+        log.info(f"{text}; DF has the same value (ZEN log {df['timestamp']}).")
+    try:
+        if not get_live_scan_configuration().get("measure_bottom_thickness", True):
+            log.warning("DF carrier: 'measure bottom thickness' is off at tray load. The "
+                        "thickness is the template value: make sure that it is correct.")
+    except Exception as e:
+        log.info(f"DF carrier: could not read the live-scan configuration ({e}).")
+    return api
+
+
 class DefiniteFocusTracker:
     """DefiniteFocus across many positions, on top of run_definite_focus_find_surface.
 
@@ -168,17 +280,28 @@ class DefiniteFocusTracker:
     without a known surface it raises ImmersionObjectiveActive (pass
     ``surface_z_m`` near the expected surface), and the fallback is skipped.
 
+    Carrier check (``carrier_check``, default True): before each search the
+    tracker reads the carrier bottom over the API (carrier_bottom,
+    approximately 10 ms). The first call records it. If the material or the
+    thickness changes later, or the thickness is 0 (a tray load runs), it
+    raises CarrierChanged (a DefiniteFocusFault): the run must stop. reset()
+    forgets the record, so a new plate after a load is accepted. The full
+    check (ZEN log, expected material and range) is check_carrier_for_df in
+    preflight.
+
     Args:
         approach_margin_m: adaptive start distance below the last surface (m).
         max_consecutive_failures: failed searches in a row before the stop.
         max_retries: FindSurface attempts per search (run_definite_focus_find_surface).
         surface_z_m: known surface to start from (e.g. from an earlier run), or None.
+        carrier_check: compare the carrier bottom before each search (default True).
     """
 
     def __init__(self, approach_margin_m: float = DF_APPROACH_MARGIN_M,
                  max_consecutive_failures: int = DF_MAX_CONSECUTIVE_FAILURES,
                  max_retries: int = 3,
-                 surface_z_m: Optional[float] = None):
+                 surface_z_m: Optional[float] = None,
+                 carrier_check: bool = True):
         if approach_margin_m < 0:
             raise ValueError(f"approach_margin_m must be >= 0, got {approach_margin_m}")
         if max_consecutive_failures < 1:
@@ -192,11 +315,32 @@ class DefiniteFocusTracker:
         self.consecutive_failures = 0
         self.last_message = ""
         self.last_attempts = 0
+        self.carrier_check = carrier_check
+        self.carrier: Optional[Dict[str, Any]] = None
 
     def reset(self) -> None:
-        """Forget the last surface (the failure count is kept: a slide change
-        does not fix a DefiniteFocus fault)."""
+        """Forget the last surface and the recorded carrier (the failure count
+        is kept: a slide change does not fix a DefiniteFocus fault)."""
         self.last_surface_z_m = None
+        self.carrier = None
+
+    def _check_carrier(self) -> None:
+        """Record the carrier bottom on the first call; raise CarrierChanged later."""
+        log = set_logging()
+        now = carrier_bottom()
+        if now["thickness_um"] <= 0:
+            raise CarrierChanged(f"Carrier bottom thickness is 0 ('{now['name']}'): a tray "
+                                 f"load runs or the carrier has no thickness. DF stopped.")
+        if self.carrier is None:
+            self.carrier = now
+            log.info(f"DF tracker: carrier '{now['name']}', {now['material']}, "
+                     f"{now['thickness_um']:.1f} µm recorded.")
+            return
+        diff = _carrier_difference(self.carrier, now)
+        if diff:
+            raise CarrierChanged(f"The carrier bottom changed during the run ({diff}). "
+                                 f"DF focus would move. Stop, check the carrier, then reset "
+                                 f"the tracker.")
 
     def find_surface(self) -> Optional[float]:
         """Search the surface at the current XY.
@@ -207,10 +351,14 @@ class DefiniteFocusTracker:
 
         Raises:
             DefiniteFocusFault: on the max_consecutive_failures-th failure in a row.
+            CarrierChanged: (a DefiniteFocusFault) the carrier bottom changed or is
+                0 (see the class docstring). Nothing is moved.
             MS_zenapi_stage_LM.ImmersionObjectiveActive: if no surface is known
                 and the immersion objective is active (see the class docstring).
         """
         log = set_logging()
+        if self.carrier_check:
+            self._check_carrier()
         if self.last_surface_z_m is None:
             start = None
             if _immersion_objective_active():
@@ -970,6 +1118,51 @@ def eject_tray(switch_to_dry_objective: bool = True,
     return asyncio.run(MS_zenapi_live_scan.eject_tray())
 
 
+# After a tray load: wait until DF has a non-zero, stable bottom thickness.
+LOAD_SETTLE_TIMEOUT_S = 60.0
+LOAD_SETTLE_POLL_S = 1.0
+
+
+def wait_for_df_bottom(timeout_s: float = LOAD_SETTLE_TIMEOUT_S,
+                       poll_s: float = LOAD_SETTLE_POLL_S) -> Dict[str, Any]:
+    """Wait until the carrier bottom for DF is set: thickness more than 0, stable.
+
+    During a tray load ZEN sends thickness 0 to DF for some seconds, then the
+    template or the measured value (DEV_NOTES "Dry objectives: DF finds the
+    plate UNDERSIDE"). A DF search in that window parks DF on the plate
+    underside. The condition is met when two reads in a row agree:
+    the API thickness is more than 0, and the last DF value in the ZEN log (if
+    it is in the logs) is more than 0 and agrees with the API.
+
+    Returns:
+        The carrier_bottom() dict.
+
+    Raises:
+        RuntimeError: if the condition is not met in timeout_s.
+    """
+    log = set_logging()
+    deadline = time.monotonic() + timeout_s
+    previous = None
+    while True:
+        now = carrier_bottom()
+        ok = now["thickness_um"] > 0
+        if ok:
+            df = zeiss_paths.zen_df_bottom()
+            if df is not None:
+                ok = df["thickness_um"] > 0 and _carrier_difference(
+                    now, {"name": now["name"], "material": df["material"],
+                          "thickness_um": df["thickness_um"]}) is None
+        if ok and previous is not None and _carrier_difference(previous, now) is None:
+            log.info(f"DF carrier set: '{now['name']}', {now['material']}, "
+                     f"{now['thickness_um']:.1f} µm.")
+            return now
+        previous = now if ok else None
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"DF carrier bottom not set {timeout_s:g} s after the load "
+                               f"(last API value: {now}). Do not use DF.")
+        time.sleep(poll_s)
+
+
 def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) -> List[str]:
     """
     Move the tray in and run the prescan (LiveScanService.LoadTrayAndPrescan).
@@ -978,7 +1171,8 @@ def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) 
     (get_live_scan_configuration). ZEN changes the objective to the 5x
     (position 2) during the load and does not change it back. Set the objective
     again before you acquire. Do not start DF while a load runs. The objective
-    and Z after the load are logged.
+    and Z after the load are logged. After the load the function waits until
+    DF has a non-zero, stable carrier thickness (wait_for_df_bottom).
 
     Args:
         focus_tracker (DefiniteFocusTracker, optional): Reset before the load —
@@ -988,7 +1182,8 @@ def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) 
         List[str]: The notifications ZEN returns.
 
     Raises:
-        RuntimeError: If an experiment runs (nothing is moved).
+        RuntimeError: If an experiment runs (nothing is moved), or DF has no
+            carrier thickness 60 s after the load (wait_for_df_bottom).
     """
     log = set_logging()
     if is_microscope_busy():
@@ -996,6 +1191,7 @@ def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) 
     if focus_tracker is not None:
         focus_tracker.reset()
     notifications = asyncio.run(MS_zenapi_live_scan.load_tray_and_prescan())
+    wait_for_df_bottom()
     try:
         objective, optovar = get_current_objective_and_optovar()
         z_um = get_current_z_position() * 1e6
@@ -1078,7 +1274,9 @@ def is_microscope_busy() -> bool:
 
 def preflight(expected_carrier: str, log,
               stage_speed_percent: Optional[float] = None,
-              stage_acceleration_percent: Optional[float] = None) -> bool:
+              stage_acceleration_percent: Optional[float] = None,
+              expected_material: Optional[str] = None,
+              thickness_range_um: Optional[Tuple[float, float]] = None) -> bool:
     """
     Standard start-of-run preflight — run this before ANY hardware action.
 
@@ -1087,6 +1285,8 @@ def preflight(expected_carrier: str, log,
          a ping),
       2. the microscope is idle (no experiment already running),
       3. the correct sample carrier is loaded,
+      3b. the carrier bottom that DF uses (check_carrier_for_df): thickness not
+         0, the material and thickness range if given, DF value = API value,
       4. sets the XY-stage travel speed + acceleration once for the run (device
          state the controller holds across calls) and logs the read-back.
 
@@ -1103,6 +1303,10 @@ def preflight(expected_carrier: str, log,
             sensitive/live sample.
         stage_acceleration_percent (float, optional): XY acceleration, percent of
             max. None → STAGE_ACCELERATION_PERCENT (100 = full).
+        expected_material (str, optional): Carrier bottom material the run
+            requires, e.g. "Glass". None: not checked.
+        thickness_range_um ((float, float), optional): Allowed carrier bottom
+            thickness in µm, e.g. (150, 190). None: not checked.
 
     Returns:
         bool: True if all checks pass and stage motion was set; False otherwise
@@ -1164,6 +1368,12 @@ def preflight(expected_carrier: str, log,
     if carrier != expected_carrier:
         log.error(f"Wrong sample carrier: '{carrier}' "
                   f"(expected '{expected_carrier}') — aborting.")
+        return False
+
+    # 3b. The carrier bottom that DF uses (thickness, material). A wrong value
+    # moves the DF focus on the dry objectives with no error from DF.
+    if check_carrier_for_df(log, expected_material, thickness_range_um) is None:
+        log.error("DF carrier check failed — aborting.")
         return False
 
     # 4. Stage speed + acceleration (set once for the run).

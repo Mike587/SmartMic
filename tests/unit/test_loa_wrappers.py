@@ -201,6 +201,11 @@ _LIVE_SCAN_CFG = {
 def _no_live_scan_rpc(monkeypatch):
     # preflight reads the live-scan config over gRPC; keep every test offline.
     monkeypatch.setattr(ms, "get_live_scan_configuration", lambda: dict(_LIVE_SCAN_CFG))
+    # preflight checks the DF carrier bottom (API + ZEN log); a valid carrier here.
+    monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: {
+        "name": "PLATE", "rows": 2, "columns": 3, "material": "Glass", "thickness": 170.0,
+        "skirt": 1044.0, "refractive_index": 1.52})
+    monkeypatch.setattr(ms.zeiss_paths, "zen_df_bottom", lambda: None)
 
 
 def test_preflight_happy_sets_stage_motion(monkeypatch):

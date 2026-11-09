@@ -464,6 +464,48 @@ def zen_service_immersion_options():
     return found if found else (None, None)
 
 
+# ---------------------------------------------------------------------------
+# The carrier bottom (material, thickness) that DefiniteFocus uses.
+#
+# ZEN sends it to DF as `MtbBottomPropertiesChangedEvent(): material = Glass,
+# thickness = 168000` (nm) in ZENService.log.xml, only when the value changes.
+# On the dry objectives DF adds an offset computed from it (about 0.6 µm Z for
+# each µm of thickness), and the material changes the offset calculation
+# (DEV_NOTES "Dry objectives: DF finds the plate UNDERSIDE"). During a tray
+# load ZEN sends thickness 0 for some seconds.
+# ---------------------------------------------------------------------------
+
+_DF_BOTTOM_RE = re.compile(
+    r'timestamp="([^"]+)"[^>]*><message>[^<]*MtbBottomPropertiesChangedEvent\(\): '
+    r'material = ([^,<]+), thickness = (-?\d+)'
+)
+
+
+def _last_df_bottom(text):
+    """Pure parse: the last DF bottom event in ZENService log text, or None.
+
+    Returns ``{"timestamp": str, "material": str, "thickness_um": float}``.
+    """
+    matches = _DF_BOTTOM_RE.findall(text)
+    if not matches:
+        return None
+    timestamp, material, nm = matches[-1]
+    return {"timestamp": timestamp, "material": material.strip(),
+            "thickness_um": int(nm) / 1000.0}
+
+
+def zen_df_bottom():
+    """Best-effort: the carrier bottom (material, thickness) DF last received.
+
+    Read from the newest ZENService log that contains the event. Returns the
+    dict of ``_last_df_bottom``, or None if the event has rotated out or lies
+    beyond the scan bound. Reads up to ~10 MB per log file: use it at run
+    start and after a tray load, not before every DF call.
+    """
+    return _search_zen_logs("ZENService.log.xml", b"MtbBottomPropertiesChangedEvent",
+                            _last_df_bottom)
+
+
 def zen_auto_immersion_settings():
     """Best-effort snapshot of the CD7 auto-immersion settings, for logging.
 
