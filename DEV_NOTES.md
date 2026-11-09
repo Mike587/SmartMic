@@ -747,6 +747,23 @@ the sensitive/live-sample case, where silently running at full speed would be
 unsafe); when no throttle was requested (defaults → full speed, no protection
 intended) it logs a WARNING and proceeds at the stage's current motion.
 
+### Writing style: ASD-STE100 Simplified Technical English (decided 2026-11-09)
+
+Write new text in this file in ASD-STE100 Simplified Technical English (STE). Use the same style in `TODO.md`, in the project notes and in reports. The target is 90 % or more. Technical names, code names, file names, units and quoted log lines do not count.
+
+Rules to follow:
+- Write one topic in each sentence.
+- Use a maximum of 20 words in an instruction and 25 words in a description.
+- Use a maximum of six sentences in a paragraph.
+- Use the active voice. Use the simple tenses: present, past and future.
+- Give instructions as commands, for example "Do not move Z to 0 on the 50x objective."
+- Use approved words. For example, write "use" (not "utilize"), "make sure" (not "ensure"), "approximately" (not "~" or "about"), and "must" or "can" (not "should").
+- Do not use contractions such as "don't" or "it's".
+- Write technical names, code names and log lines in `code` font.
+
+Do not rewrite old entries only to change their style. When you change an old entry, change its style too.
+Reason: these notes record hardware facts for different readers, some of whom do not have English as their first language. Short and clear sentences decrease errors. The summary PDF of `projects/DF_Exploration` uses the same style.
+
 **CORRECTED 2026-07-14: it's SPEED only, not both.** Re-tested each RPC
 individually against the live gateway: `GetSpeed`/`SetSpeed` reject outright
 (`FAILED_PRECONDITION`, same message as above), but `GetAcceleration`/
