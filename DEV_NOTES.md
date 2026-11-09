@@ -688,8 +688,12 @@ aborts a run.
   checked: whether `SetConfiguration` with another template changes the ZEN
   carrier.
 - `SampleCarrierService` thickness was `176.178947…`, not the 250 µm in the
-  name. Expected: it came from a test Mike was running at the time. So a
-  carrier's reported thickness need not match its template name.
+  name. Expected: the plate was glass, measured at load as 168 µm, and the
+  material had been switched to Polystyrene for the DF material test. ZEN then
+  rescales to keep the optical thickness: 168 × 1.594/1.52 = 176.18 µm (see
+  "Dry objectives: DF finds the plate UNDERSIDE" above). So the reported
+  thickness is the measured one, as rescaled for the current material, not
+  the template's. A second read later the same day showed Glass / 1.52 again.
 - **Not tried yet:** `LoadTrayAndPrescan`, `EjectTray`, `SetConfiguration`.
   Before the first eject: use a dry objective (does ZEN retract Z before moving
   the tray?) and give the load a long timeout (prescan + thickness measurement).
