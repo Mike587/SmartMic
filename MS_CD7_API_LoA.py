@@ -1011,6 +1011,16 @@ def preflight(expected_carrier: str, log,
              f"ZenApiGateway: {gw_ver or 'unknown'}  |  "
              f"zen_api stubs: {api_ver or 'unversioned (loose layout)'} @ {api_path}")
 
+    # 0b. Record the CD7 auto-immersion refill settings (log only, never a
+    # reason to abort). Not available over the API either; read from the ZEN
+    # user's Options.config and the ZENService log (zeiss_paths, DEV_NOTES
+    # "The re-immersion settings are NOT reachable through the ZEN-API").
+    try:
+        log.info(zeiss_paths.format_auto_immersion_settings(
+            zeiss_paths.zen_auto_immersion_settings()))
+    except Exception as e:
+        log.info(f"Auto-immersion refill settings: could not read ({e})")
+
     # 1. Gateway ping (the carrier query is also the liveness check).
     try:
         carrier = get_sample_carrier_name()

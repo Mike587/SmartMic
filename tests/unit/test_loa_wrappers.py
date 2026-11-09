@@ -255,3 +255,21 @@ def test_preflight_notes_speed_unsupported_but_still_passes(monkeypatch):
     assert ms.preflight("PLATE", log) is True
     assert log.errors == []
     assert any("speed throttle not supported" in m for m in log.infos)
+
+
+def test_preflight_passes_when_immersion_settings_unreadable(monkeypatch):
+    # The auto-immersion settings line is log-only: a failing reader must
+    # never abort a run.
+    def boom():
+        raise RuntimeError("log locked")
+
+    monkeypatch.setattr(ms.zeiss_paths, "zen_auto_immersion_settings", boom)
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(ms, "set_stage_motion_sync",
+                        lambda speed=None, accel=None: _FULL_MOTION)
+
+    log = _Log()
+    assert ms.preflight("PLATE", log) is True
+    assert log.errors == []
+    assert any("Auto-immersion refill settings: could not read" in m for m in log.infos)

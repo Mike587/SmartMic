@@ -231,6 +231,49 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   stack at a plausible Z after a refill means "check the water", not focus;
   stop a run on an all-zero plane or repeated DF failures.
 
+- **The re-immersion settings are NOT reachable through the ZEN-API (checked
+  2026-11-09, ZEN 3.13.109, gateway 3.6.25262).** Neither the 2025.10.1 stubs
+  and docs nor the live gateway have an immersion or options service. gRPC
+  reflection (`grpc.reflection.v1alpha`; v1 is not served) lists 16 `zen_api`
+  services, none of which can read or set them. How ZEN handles them instead:
+  - They are per ZEN user in
+    `C:\ProgramData\Carl Zeiss\ZEN\Users\<user>\DefaultWorkspace\Options.config`
+    (XML, `<OptionEntry Name=".." Value=".." />`). The keys ZEN uses:
+    `AutoImmersionRefillInterval` (min), `AutoImmersionRefillTravelDistance`
+    (mm), `IsAutoImmersionRefillGlobalEnabled`,
+    `IsAutoImmersionRefillForExperimentEnabled`,
+    `IsAutoImmersionRefillTravelDistanceEnabled`, `IsAutoImmersionEnabled`,
+    and the pump times (`AutoImmersionRemovalPumpDuration` 5000 ms,
+    `AutoImmersionFeedPumpDuration` 2500, `AutoImmersionWaitingDuration`
+    2000). `AutoImmersionRefillTime` (45) and
+    `IsAutoImmersionRefillTimeEnabled` also show up in some files but ZEN does
+    not send them on, so they look like leftovers. There is no flag to turn
+    off only the time-based refill.
+  - At startup, ZEN.exe sends them to ZENService in an internal
+    `SetServiceOptions` request (ZENService log, e.g. 2026-11-09 10:04:06).
+    That is ZEN's own channel, not the gateway, and it is not documented. The
+    refiller then logs `ImmersionTimeInterval = 7200000 ms` (= 120 min).
+  - The logged-in ZEN user can be read from `ZEN.log.xml`
+    (`SaveToFile(): Successfully written options config file
+    '...\Users\<user>\...'`). ZEN also writes this file during the session
+    (2026-11-09: 10:05 and 10:56), so a hand edit while ZEN is running gets
+    overwritten.
+  - Users differ: most have 120 min / 200 mm (the defaults). **Atreya has
+    10 min / 40 mm** (file dated 2026-10-30, after the New-03/04 incidents).
+  Answers to the TODO: **reading** works without the API. Parse the
+  logged-in user's `Options.config` (or, more reliably, the last
+  `SetServiceOptions` payload in the ZENService log, which is what the service
+  actually uses, but logs rotate after ~5 days). Both are read by
+  `zeiss_paths.zen_auto_immersion_settings()` (newest log files first, at
+  most 40, ~0.2 s), and `preflight()` logs one line with both and a
+  `MISMATCH` flag when they differ. It only logs and never aborts a run.
+  **Changing** only works in
+  the ZEN UI or by editing the file while ZEN is closed (untested,
+  unsupported). Not tested: whether ZEN sends `SetServiceOptions` again when
+  the option is changed in the UI during a session. Caution for long 50x
+  runs: a shorter interval means more refills, and a refill can break the
+  bridge (entry above).
+
 - **A water drop is left behind after using the immersion objective.** Once the
   immersion (50x) objective has been at a position, a small drop of water remains
   there on the sample. Switching back to a non-immersion (dry) objective is fine,
