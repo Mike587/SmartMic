@@ -671,10 +671,12 @@ by `check_sample_carrier`. Surveyed on every `.czexp`/`.czi` on this machine
 `zen_api.lm.live_scan.v1.LiveScanService` has `LoadTrayAndPrescan`,
 `EjectTray` (both take **no arguments**), `GetConfiguration` and
 `SetConfiguration`. What the prescan does on load is set only through the
-configuration. `MS_zenapi_live_scan.py` wraps **only** `GetConfiguration`.
-`preflight()` logs it on one line (template, material/RI, prescan steps on and
-off) and flags a template / ZEN carrier mismatch. The line is log only and never
-aborts a run.
+configuration. `MS_zenapi_live_scan.py` wraps `GetConfiguration`,
+`EjectTray` and `LoadTrayAndPrescan`. It does not wrap `SetConfiguration`
+yet. `preflight()` logs the configuration on one line: template,
+material/RI, and the prescan steps that are on and off. The line also shows a
+template / ZEN carrier mismatch. The line is for the log only. It never stops
+a run.
 
 - **`GetConfiguration` works on this gateway** (2026-11-09, 6-well plate in
   ZEN). Returned: `sample_holder_template='Multiwell 6 - 250um.czsht'`,
@@ -694,13 +696,107 @@ aborts a run.
   "Dry objectives: DF finds the plate UNDERSIDE" above). So the reported
   thickness is the measured one, as rescaled for the current material, not
   the template's. A second read later the same day showed Glass / 1.52 again.
-- **Not tried yet:** `LoadTrayAndPrescan`, `EjectTray`, `SetConfiguration`.
-  Before the first eject: use a dry objective (does ZEN retract Z before moving
-  the tray?) and give the load a long timeout (prescan + thickness measurement).
+
+### What ZEN does on eject and on load (from the ZEN logs, 2026-11-09)
+
+Source: 4 ejects and loads from the ZEN UI on 2026-11-09, in `ZEN.log.xml` and
+`ZENService.log.xml.10`. The UI button logs
+`LiveScanManager.EjectTray()`, the same name as the API RPC. Thus the API
+RPC probably runs the same sequence. This is not confirmed yet.
+
+**Eject** (15:07:54, approximately 11 s):
+1. ZEN stops DF (`Stop Definite Focus`).
+2. ZEN records the last scan position (`lastScannerPositionCoordinates`, X, Y and Z).
+3. ZEN retracts Z. Z went from 1153.6 µm to −1099.3 µm in approximately 1.1 s
+   (`MtbLiveCellScanner` focus position `TubelensChange`).
+4. Then the stage moves to the load position (`StagePosition = Load`).
+
+Thus the eject does not need a Z move of our own. ZEN retracts Z before the stage moves.
+
+**Load and prescan** (15:08:24, approximately 21 s, all prescan steps off):
+1. ZEN starts the job `Load Sample Carrier` (`ExecuteTrayScan`). The log shows the
+   prescan flags: `doRecognition`, `doReadBarcodes`, `doOverview`,
+   `detectThickness`, `detectMaterial`.
+2. **ZEN changes the objective from position 1 (20x/0.7) to position 2 (5x/0.35).**
+   For the change, Z goes to −8317 µm. Then Z goes to −1099 µm.
+3. ZEN sets the DF thickness to 0 and moves the stage to `ScanWellPlate`.
+4. ZEN runs `FindSurfaceForAllScanPositions` (FindFocus).
+5. At the end, Z is at 7.0 µm and the DF thickness is 168 µm again.
+   **The objective stays at position 2 (5x).** ZEN does not change it back.
+
+Consequences:
+- After a load, set the objective again before you acquire.
+- Do not start DF while a load runs (see "Dry objectives: DF finds the plate UNDERSIDE").
+- With thickness measurement, barcodes or detection on, the load takes longer.
+  Use a long timeout.
+
+### Eject with the 50x immersion objective (decided 2026-11-09)
+
+The eject also works with the 50x (Mike, 2026-11-09). The safe procedure is:
+change to the 5x (air) first, then eject. `MS_CD7_API_LoA.eject_tray()` does
+this by default when the 50x is active. Use `switch_to_dry_objective=False` to
+eject directly on the 50x.
+
+### First eject and load over the API (2026-11-09, 16:05)
+
+Start state: idle, 20x/0.7 (objective 1) with 2x tubelens, Z 1169.2 µm,
+glass 6-well plate. Calls: `MS_CD7_API_LoA.eject_tray()`, then
+`load_tray_and_prescan()`. Prescan: only `measure_bottom_thickness` on.
+
+**Both RPCs block until ZEN is ready.** The wrappers do not need to wait.
+- `EjectTray` returned after 11.0 s. The tray reached `Load` at 16:06:09.57.
+  The RPC returned 0.08 s later. The sequence was the same as from the UI:
+  stop DF, record the last position, Z to −1099.3 µm, stage to `Load`.
+- `LoadTrayAndPrescan` returned after 46.4 s. That was 0.2 s after the last
+  FindFocus of the prescan.
+
+**The load uses the live-scan configuration.** The log shows
+`detectThickness = True`, the same as `measure_bottom_thickness`. All other
+flags were off, also in the configuration.
+
+**Load sequence with thickness measurement:**
+1. `FindSurfaceForAllScanPositions`. ZEN stops and resets DF. Then the stage
+   goes to `ScanWellPlate` (approximately 11 s).
+2. The stage goes to a detection point. This time it was the XY from before the
+   eject (14760, 20380). The UI load at 15:08 ended at a different XY. Thus
+   ZEN does not always use the last XY.
+3. FindFocus with thickness 0 found Z 1082.9 µm (the underside).
+4. `CoverGlassDetectionExperiment` ran for approximately 13 s. It wrote
+   `F:\UserData\mike\CoverGlassDetectionExperiment.czi`.
+5. A second FindFocus with the measured thickness. Z was 1172.4 µm at the end.
+   That is 89.6 µm above the underside, for 168 µm of glass.
+
+**The RPC returns the measurement as a notification:**
+`Cover Glass Thickness Detection: Cover glass detection succeeded: Thickness: 168 µm
+Skirt: 1045 µm Objective correction rings adjusted.` After the load,
+`SampleCarrierService` showed thickness 168.0, skirt 1045.0, Glass, RI 1.52.
+
+**After the load the objective was 2 (5x).** The optovar stayed at 1 (2x).
+The stage was at the XY from before the eject.
+
+Not tested yet: an API eject on the 50x (with and without the change to the 5x).
+`SetConfiguration` is not wrapped yet (see `TODO.md`).
 
 ---
 
 ## Decisions (persistent)
+
+### Writing style: ASD-STE100 Simplified Technical English (decided 2026-11-09)
+
+Write new text in this file in ASD-STE100 Simplified Technical English (STE). Use the same style in `TODO.md`, in the project notes and in reports. The target is 90 % or more. Technical names, code names, file names, units and quoted log lines do not count.
+
+Rules to follow:
+- Write one topic in each sentence.
+- Use a maximum of 20 words in an instruction and 25 words in a description.
+- Use a maximum of six sentences in a paragraph.
+- Use the active voice. Use the simple tenses: present, past and future.
+- Give instructions as commands, for example "Do not move Z to 0 on the 50x objective."
+- Use approved words. For example, write "use" (not "utilize"), "make sure" (not "ensure"), "approximately" (not "~" or "about"), and "must" or "can" (not "should").
+- Do not use contractions such as "don't" or "it's".
+- Write technical names, code names and log lines in `code` font.
+
+Do not rewrite old entries only to change their style. When you change an old entry, change its style too.
+Reason: these notes record hardware facts for different readers, some of whom do not have English as their first language. Short and clear sentences decrease errors. The summary PDF of `projects/DF_Exploration` uses the same style.
 
 ### Project-tracking policy
 
@@ -746,23 +842,6 @@ It aborts only when a throttle was **explicitly requested** (speed/accel not Non
 the sensitive/live-sample case, where silently running at full speed would be
 unsafe); when no throttle was requested (defaults → full speed, no protection
 intended) it logs a WARNING and proceeds at the stage's current motion.
-
-### Writing style: ASD-STE100 Simplified Technical English (decided 2026-11-09)
-
-Write new text in this file in ASD-STE100 Simplified Technical English (STE). Use the same style in `TODO.md`, in the project notes and in reports. The target is 90 % or more. Technical names, code names, file names, units and quoted log lines do not count.
-
-Rules to follow:
-- Write one topic in each sentence.
-- Use a maximum of 20 words in an instruction and 25 words in a description.
-- Use a maximum of six sentences in a paragraph.
-- Use the active voice. Use the simple tenses: present, past and future.
-- Give instructions as commands, for example "Do not move Z to 0 on the 50x objective."
-- Use approved words. For example, write "use" (not "utilize"), "make sure" (not "ensure"), "approximately" (not "~" or "about"), and "must" or "can" (not "should").
-- Do not use contractions such as "don't" or "it's".
-- Write technical names, code names and log lines in `code` font.
-
-Do not rewrite old entries only to change their style. When you change an old entry, change its style too.
-Reason: these notes record hardware facts for different readers, some of whom do not have English as their first language. Short and clear sentences decrease errors. The summary PDF of `projects/DF_Exploration` uses the same style.
 
 **CORRECTED 2026-07-14: it's SPEED only, not both.** Re-tested each RPC
 individually against the live gateway: `GetSpeed`/`SetSpeed` reject outright

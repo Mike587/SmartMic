@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for the read-only LiveScanService probe.
+"""Unit tests for MS_zenapi_live_scan and the LoA tray wrappers.
 
-MS_zenapi_live_scan.get_live_scan_configuration must map every field of the
-LiveScanServiceConfiguration message into a plain dict, and must not swallow a
-gateway rejection. The module must not expose load / eject / set helpers. The
-gRPC layer is MOCKED.
+get_live_scan_configuration must map every LiveScanServiceConfiguration field
+into a plain dict and must not swallow a gateway rejection. The raw tray RPCs
+send their request with a timeout. The LoA eject_tray / load_tray_and_prescan
+refuse while busy, change from the 50x to the 5x before an eject, and reset a
+DefiniteFocusTracker. SetConfiguration is not wrapped yet. Everything is MOCKED.
 """
 import asyncio
 import contextlib
@@ -125,8 +126,147 @@ def test_format_tolerates_missing_keys():
     assert "prescan on: none" in line and "MISMATCH" not in line
 
 
-def test_probe_exposes_no_moving_calls():
-    # Load/eject/set are untested on the CD7 and must not sneak in here.
+def test_set_configuration_not_wrapped_yet():
+    # Changing the prescan flags is a later step (TODO.md); keep it out until then.
     public = {n for n in dir(ls) if not n.startswith("_")}
-    for forbidden in ("eject", "load_tray", "set_live_scan", "set_configuration"):
+    for forbidden in ("set_live_scan", "set_configuration"):
         assert not any(forbidden in n.lower() for n in public), forbidden
+
+
+# --------------------------------------------------------------------------
+# Raw tray RPCs
+# --------------------------------------------------------------------------
+class _Resp:
+    def __init__(self, notifications):
+        self.notifications = notifications
+
+
+@pytest.fixture
+def rpc_calls(monkeypatch):
+    calls = []
+
+    class _FakeStub:
+        def __init__(self, channel=None, metadata=None):
+            pass
+
+        async def eject_tray(self, req, timeout=None):
+            calls.append(("eject_tray", type(req).__name__, timeout))
+            return _Resp(["ejected"])
+
+        async def load_tray_and_prescan(self, req, timeout=None):
+            calls.append(("load_tray_and_prescan", type(req).__name__, timeout))
+            return _Resp([])
+
+    monkeypatch.setattr(ls, "open_zen_channel", _fake_channel)
+    monkeypatch.setattr(ls, "LiveScanServiceStub", _FakeStub)
+    return calls
+
+
+def test_eject_rpc_sends_request_with_timeout(rpc_calls):
+    assert asyncio.run(ls.eject_tray()) == ["ejected"]
+    assert rpc_calls == [("eject_tray", "LiveScanServiceEjectTrayRequest", ls.EJECT_TIMEOUT_S)]
+
+
+def test_load_rpc_sends_request_with_timeout(rpc_calls):
+    assert asyncio.run(ls.load_tray_and_prescan(timeout_s=5.0)) == []
+    assert rpc_calls == [("load_tray_and_prescan",
+                          "LiveScanServiceLoadTrayAndPrescanRequest", 5.0)]
+
+
+# --------------------------------------------------------------------------
+# LoA wrappers (guards)
+# --------------------------------------------------------------------------
+import MS_CD7_API_LoA as ms                    # noqa: E402
+import MS_zenapi_stage_LM as stage             # noqa: E402
+
+IMMERSION = stage.IMMERSION_OBJECTIVE_POSITION
+
+
+@pytest.fixture
+def loa(monkeypatch):
+    """Mock the LoA layer; record the order of optics changes and tray RPCs."""
+    ev = []
+    state = {"busy": False, "optics": (3, 1)}
+
+    async def fake_eject():
+        ev.append("eject")
+        return ["ejected"]
+
+    async def fake_load():
+        ev.append("load")
+        state["optics"] = (2, state["optics"][1])   # ZEN changes to the 5x
+        return []
+
+    def fake_optics(obj, opt):
+        ev.append(("optics", obj, opt))
+        state["optics"] = (obj, opt)
+
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: state["busy"])
+    monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: state["optics"])
+    monkeypatch.setattr(ms, "set_optics_verified", fake_optics)
+    monkeypatch.setattr(ms, "get_current_z_position", lambda: 7e-6)
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(ls, "eject_tray", fake_eject)
+    monkeypatch.setattr(ls, "load_tray_and_prescan", fake_load)
+    return ev, state
+
+
+def test_eject_on_dry_objective_does_not_change_optics(loa):
+    ev, state = loa
+    assert ms.eject_tray() == ["ejected"]
+    assert ev == ["eject"]
+
+
+def test_eject_on_50x_changes_to_5x_first_keeping_optovar(loa):
+    ev, state = loa
+    state["optics"] = (IMMERSION, 2)
+    ms.eject_tray()
+    assert ev == [("optics", ms.EJECT_DRY_OBJECTIVE, 2), "eject"]
+
+
+def test_eject_on_50x_without_switch_ejects_directly(loa):
+    ev, state = loa
+    state["optics"] = (IMMERSION, 1)
+    ms.eject_tray(switch_to_dry_objective=False)
+    assert ev == ["eject"]
+
+
+def test_eject_not_sent_if_optics_change_fails(loa, monkeypatch):
+    ev, state = loa
+    state["optics"] = (IMMERSION, 1)
+
+    def never_settles(obj, opt):
+        raise RuntimeError("Optics never settled")
+
+    monkeypatch.setattr(ms, "set_optics_verified", never_settles)
+    with pytest.raises(RuntimeError, match="never settled"):
+        ms.eject_tray()
+    assert ev == []
+
+
+@pytest.mark.parametrize("fn", ["eject_tray", "load_tray_and_prescan"])
+def test_tray_moves_refused_while_busy(loa, fn):
+    ev, state = loa
+    state["busy"] = True
+    state["optics"] = (IMMERSION, 1)
+    with pytest.raises(RuntimeError, match="busy"):
+        getattr(ms, fn)()
+    assert ev == []   # no optics change, no tray RPC
+
+
+@pytest.mark.parametrize("fn", ["eject_tray", "load_tray_and_prescan"])
+def test_tray_moves_reset_focus_tracker(loa, fn):
+    tracker = ms.DefiniteFocusTracker(surface_z_m=1.35e-3)
+    getattr(ms, fn)(focus_tracker=tracker)
+    assert tracker.last_surface_z_m is None
+
+
+def test_load_sends_rpc_and_survives_unreadable_readback(loa, monkeypatch):
+    ev, state = loa
+
+    def boom():
+        raise RuntimeError("gateway hiccup")
+
+    monkeypatch.setattr(ms, "get_current_z_position", boom)
+    assert ms.load_tray_and_prescan() == []   # the read-back is log only
+    assert ev == ["load"]

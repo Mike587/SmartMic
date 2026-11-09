@@ -24,7 +24,7 @@ pipelines that consume it live under `projects/`, one folder each.
 | `MS_zenapi_objectivechanger.py` | Objective / optovar control |
 | `MS_zenapi_stage_LM.py` | XY-stage control |
 | `MS_zenapi_sample_carrier.py` | Sample-carrier info query; container (slide position) moves |
-| `MS_zenapi_live_scan.py` | Read-only probe of the tray load/eject (LiveScanService) configuration; run it directly to print it |
+| `MS_zenapi_live_scan.py` | Tray load / eject (LiveScanService) RPCs and the read-only prescan configuration; run it directly to print the configuration. Use the guarded `eject_tray` / `load_tray_and_prescan` in `MS_CD7_API_LoA.py` |
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run / status; run by name, path, or XML |
 | `MS_czexp_editor.py` | Read/modify ZEN `.czexp` files (position, z-stack, scan crop); checks that refuse unrunnable or unsafe files before a run |
 | `MS_Helper_function.py` | Logging, per-run version record (`write_run_info`), JSONL run records, position loading, CZI readers (incl. sample carrier from `.czi`/`.czexp`), focus scoring |

@@ -225,7 +225,14 @@ immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
 - `format_live_scan_configuration`: lists the on/off prescan steps; strips
   `.czsht` before comparing with the carrier; flags a mismatch; tolerates
   missing keys.
-- The module exposes no load / eject / set-configuration helper (read-only probe).
+- `SetConfiguration` is not wrapped yet (no `set_configuration` helper).
+- Raw `eject_tray` / `load_tray_and_prescan`: send their request with the timeout.
+- LoA `eject_tray`: a dry objective → no optics change; the 50x → change to
+  `EJECT_DRY_OBJECTIVE` (5x) with the same optovar BEFORE the eject;
+  `switch_to_dry_objective=False` → eject directly; the optics do not settle →
+  no eject. LoA `eject_tray` / `load_tray_and_prescan`: refused while busy
+  (nothing moves); a `DefiniteFocusTracker` is reset. The read-back after a load
+  is log only.
 
 > **Coverage note:** every public function in the repo is referenced above except
 > the genuinely hardware-only `MS_zenapi_*` gRPC calls and the CLI `main()` demos,

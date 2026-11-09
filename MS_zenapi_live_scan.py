@@ -6,8 +6,8 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Read-only probe of the ZEN gRPC LiveScanService (lm.live_scan.v1),
-# the service behind loading / ejecting the sample-carrier tray.
+# Wraps the ZEN gRPC LiveScanService (lm.live_scan.v1): the tray load /
+# eject RPCs and the read-only prescan configuration.
 #
 # Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
 #
@@ -24,12 +24,14 @@ Live-scan (tray load / eject) configuration probe for ZEN via gRPC.
 on load (carrier detection, bottom-thickness / material measurement, barcodes,
 overview, calibration) is set through the configuration.
 
-This module wraps ONLY ``GetConfiguration``. It is read-only and moves nothing.
-Load, eject and SetConfiguration are deliberately not wrapped: none of them has
-been tried on the CD7, and an eject while the immersion objective is in water is
-an untested hardware risk (see DEV_NOTES.md / CLAUDE.md).
+``eject_tray`` and ``load_tray_and_prescan`` are the RAW RPCs. They have no
+guards. Use the ``MS_CD7_API_LoA`` wrappers instead: they refuse while an
+experiment runs, change from the 50x to the 5x before an eject, and reset a
+``DefiniteFocusTracker``. ZEN itself retracts Z before it moves the tray, and a
+load changes the objective to the 5x (DEV_NOTES "Tray load / eject").
+``SetConfiguration`` is not wrapped yet (TODO.md).
 
-Run it directly on the scope PC to see what this gateway reports::
+Run the module directly on the scope PC to print the configuration (read-only)::
 
     pixi run -e smartmic python MS_zenapi_live_scan.py
 
@@ -38,9 +40,13 @@ Public functions
 get_live_scan_configuration    -- Read the live-scan configuration as a dict.
 format_live_scan_configuration -- One log line for it (used by preflight);
                                   flags a template / ZEN carrier mismatch.
+eject_tray                     -- Raw EjectTray RPC (moves the tray out).
+load_tray_and_prescan          -- Raw LoadTrayAndPrescan RPC (moves the tray
+                                  in, changes the objective, runs the prescan).
 """
 
 import asyncio
+import time
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
@@ -49,7 +55,15 @@ from MS_zenapi_helpers import set_logging, open_zen_channel
 from zen_api.lm.live_scan.v1 import (
     LiveScanServiceStub,
     LiveScanServiceGetConfigurationRequest,
+    LiveScanServiceEjectTrayRequest,
+    LiveScanServiceLoadTrayAndPrescanRequest,
 )
+
+# RPC timeouts (s). From the ZEN UI on 2026-11-09: eject approximately 11 s,
+# load + prescan approximately 21 s with every prescan step off. Thickness
+# measurement, barcodes or carrier detection make the load longer.
+EJECT_TIMEOUT_S = 120.0
+LOAD_TIMEOUT_S = 600.0
 
 # config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
 from zeiss_paths import CONFIG_PATH as config_path
@@ -136,6 +150,47 @@ def format_live_scan_configuration(cfg: dict, carrier=None) -> str:
         if name != carrier:
             line += f"  |  MISMATCH: ZEN carrier is '{carrier}'"
     return line
+
+
+async def eject_tray(timeout_s: float = EJECT_TIMEOUT_S) -> list:
+    """Raw ``LiveScanService.EjectTray``: move the tray out. NO guards.
+
+    Use ``MS_CD7_API_LoA.eject_tray`` instead. Logs how long the RPC took (still
+    to check: does it return at the end of the movement?).
+
+    Returns:
+        list[str]: The notifications ZEN returns.
+    """
+    return await _timed_rpc("EjectTray", LiveScanServiceEjectTrayRequest(), timeout_s)
+
+
+async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> list:
+    """Raw ``LiveScanService.LoadTrayAndPrescan``: move the tray in and run the
+    prescan with the current configuration. NO guards.
+
+    ZEN changes the objective to the 5x during the load and does not change it
+    back. Use ``MS_CD7_API_LoA.load_tray_and_prescan`` instead.
+
+    Returns:
+        list[str]: The notifications ZEN returns.
+    """
+    return await _timed_rpc("LoadTrayAndPrescan", LiveScanServiceLoadTrayAndPrescanRequest(),
+                            timeout_s)
+
+
+async def _timed_rpc(name: str, request, timeout_s: float) -> list:
+    """Send one tray RPC with a timeout, log its duration and notifications."""
+    logger = set_logging()
+    method = {"EjectTray": "eject_tray", "LoadTrayAndPrescan": "load_tray_and_prescan"}[name]
+    logger.info(f"LiveScanService.{name}: sent (timeout {timeout_s:.0f} s).")
+    t0 = time.monotonic()
+    async with open_zen_channel(config_path) as (channel, metadata):
+        service = LiveScanServiceStub(channel=channel, metadata=metadata)
+        response = await getattr(service, method)(request, timeout=timeout_s)
+    notifications = list(response.notifications)
+    logger.info(f"LiveScanService.{name}: returned after {time.monotonic() - t0:.1f} s, "
+                f"notifications: {notifications or 'none'}")
+    return notifications
 
 
 def _main():

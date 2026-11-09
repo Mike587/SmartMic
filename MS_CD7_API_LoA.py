@@ -909,6 +909,87 @@ def get_live_scan_configuration() -> Dict[str, Any]:
     return asyncio.run(MS_zenapi_live_scan.get_live_scan_configuration())
 
 
+# Dry (air) objective to change to before an eject from the 50x immersion
+# objective: Plan-Apochromat 5x/0.35 (DEV_NOTES "Optics map (this CD7)").
+EJECT_DRY_OBJECTIVE = 2
+
+
+def eject_tray(switch_to_dry_objective: bool = True,
+               focus_tracker: Optional[DefiniteFocusTracker] = None) -> List[str]:
+    """
+    Move the sample-carrier tray out (LiveScanService.EjectTray).
+
+    ZEN stops DF and retracts Z itself before it moves the tray, so no Z move is
+    done here (seen in the ZEN logs, 2026-11-09; DEV_NOTES "Tray load / eject").
+    The eject also works on the 50x immersion objective. The safe procedure is
+    to change to the 5x (air) first: this is the default.
+
+    Args:
+        switch_to_dry_objective (bool): If the 50x immersion objective is active,
+            change to EJECT_DRY_OBJECTIVE (5x) with the current optovar first,
+            verified (set_optics_verified). False: eject directly on the 50x.
+            No effect on a dry objective.
+        focus_tracker (DefiniteFocusTracker, optional): Reset before the eject —
+            the last surface belongs to the plate that leaves.
+
+    Returns:
+        List[str]: The notifications ZEN returns.
+
+    Raises:
+        RuntimeError: If an experiment runs (nothing is moved), or the change to
+            the dry objective does not settle (the tray is not ejected).
+    """
+    log = set_logging()
+    if is_microscope_busy():
+        raise RuntimeError("Microscope is busy (an experiment runs) — tray not ejected.")
+    if focus_tracker is not None:
+        focus_tracker.reset()
+    if switch_to_dry_objective:
+        objective, optovar = get_current_objective_and_optovar()
+        if objective == MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION:
+            log.info(f"Eject: immersion objective active — changing to objective "
+                     f"{EJECT_DRY_OBJECTIVE} (5x) first.")
+            # Raises RuntimeError if the optics do not settle: then no eject.
+            set_optics_verified(EJECT_DRY_OBJECTIVE, optovar)
+    return asyncio.run(MS_zenapi_live_scan.eject_tray())
+
+
+def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) -> List[str]:
+    """
+    Move the tray in and run the prescan (LiveScanService.LoadTrayAndPrescan).
+
+    The prescan steps are those of the current live-scan configuration
+    (get_live_scan_configuration). ZEN changes the objective to the 5x
+    (position 2) during the load and does not change it back. Set the objective
+    again before you acquire. Do not start DF while a load runs. The objective
+    and Z after the load are logged.
+
+    Args:
+        focus_tracker (DefiniteFocusTracker, optional): Reset before the load —
+            the last surface belongs to the previous plate.
+
+    Returns:
+        List[str]: The notifications ZEN returns.
+
+    Raises:
+        RuntimeError: If an experiment runs (nothing is moved).
+    """
+    log = set_logging()
+    if is_microscope_busy():
+        raise RuntimeError("Microscope is busy (an experiment runs) — tray not loaded.")
+    if focus_tracker is not None:
+        focus_tracker.reset()
+    notifications = asyncio.run(MS_zenapi_live_scan.load_tray_and_prescan())
+    try:
+        objective, optovar = get_current_objective_and_optovar()
+        z_um = get_current_z_position() * 1e6
+        log.info(f"After load: objective {objective}, optovar {optovar}, Z {z_um:.1f} µm, "
+                 f"carrier '{get_sample_carrier_name()}'. Set the objective before you acquire.")
+    except Exception as e:
+        log.warning(f"After load: could not read the objective / Z / carrier ({e}).")
+    return notifications
+
+
 def move_to_container(row_index: int, column_index: int,
                       focus_tracker: Optional[DefiniteFocusTracker] = None) -> None:
     """
