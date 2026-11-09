@@ -26,7 +26,7 @@ pipelines that consume it live under `projects/`, one folder each.
 | `MS_zenapi_sample_carrier.py` | Sample-carrier info query; container (slide position) moves |
 | `MS_zenapi_experiment_methods.py` | Experiment load / clone / run / status; run by name, path, or XML |
 | `MS_czexp_editor.py` | Read/modify ZEN `.czexp` files (position, z-stack, scan crop) |
-| `MS_Helper_function.py` | Logging, JSONL run records, position loading, CZI readers (incl. sample carrier from `.czi`/`.czexp`), focus scoring |
+| `MS_Helper_function.py` | Logging, per-run version record (`write_run_info`), JSONL run records, position loading, CZI readers (incl. sample carrier from `.czi`/`.czexp`), focus scoring |
 | `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init, logging, objective lookups) |
 | `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env); result-JSON read-back |
 | `zeiss_paths.py` | Path bootstrap — see below |

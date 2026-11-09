@@ -89,6 +89,13 @@ These are the bulk of the value. Grouped by module.
 - `setup_run_logger`: creates a timestamped log file, returns `(logger, path)`
   (the return-shape that TODO.md already corrected), file exists, second call
   doesn't duplicate handlers.
+- `write_run_info`: `run_info_<ts>.json` beside `run_<ts>.log` (other names →
+  `<stem>_run_info.json`); records SmartMic + each passed repo (commit, root,
+  uncommitted files; `None` for a non-repo) with the ZEN versions faked; a
+  WARNING names uncommitted files. Uses the `git_repo` fixture (a throwaway
+  repo in tmp; skipped without git). `zeiss_paths.git_state` itself is tested
+  in `test_zeiss_paths.py` (clean, dirty + untracked, subfolder → enclosing
+  repo, not a repo, git missing).
 - `compute_focus_score`: sharp-CZI score **>** blurry-CZI score; returns a float;
   `None`/graceful on a non-CZI path.
 - `get_focus_position_from_czi`: extracts the embedded `FocusPosition` (µm) from a

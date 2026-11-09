@@ -143,6 +143,31 @@ def run_tag() -> str:
     return uuid.uuid4().hex[:8]
 
 
+@pytest.fixture
+def git_repo(tmp_path):
+    """A throwaway git repo with one commit (``tracked.txt``); skipped without git.
+
+    Returns ``(path, full_commit_hash)``.
+    """
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
+                               "-c", "commit.gpgsign=false", *args],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    git("init", "-q")
+    (repo / "tracked.txt").write_text("v1\n", encoding="utf-8")
+    git("add", "tracked.txt")
+    git("commit", "-q", "-m", "init")
+    return repo, git("rev-parse", "HEAD")
+
+
 # --------------------------------------------------------------------------
 # Hardware fixtures
 # --------------------------------------------------------------------------

@@ -797,6 +797,21 @@ versioned package to win, remove/rename the loose `python_examples/zen_api` copy
 reorder `zeiss_paths` to prefer the `python_package` src) — not changed here, since
 the loose copy may be intentionally the one matched to the gateway.
 
+**Per-run version record — promoted from Marc_SM_003 (2026-11-09):** the
+preflight line is for a human reading the log; a dataset also needs a
+machine-readable record of the exact code. `MS_Helper_function.write_run_info
+(log_file, log, repos={...}, extra={...})` writes `run_info_<ts>.json` beside
+`setup_run_logger`'s `run_<ts>.log`: SmartMic's FULL commit + uncommitted files,
+the same for every repo passed in `repos` (the project's own repo, its ia
+repos), and the four version identities above. Uncommitted files are logged as
+a WARNING per repo, so a run on modified code shows in the run log too. The
+per-repo state comes from `zeiss_paths.git_state(path)`, which also returns the
+checkout `root` git reported on: a folder that is not its own repo reports the
+ENCLOSING repo (e.g. a project folder under `SmartMic/projects` without its own
+`.git` would report SmartMic's commit), and `root` makes that visible. Marc_SM_003
+used it for plates 1–4 with the repos at the top level of the JSON; the library
+version puts them under `"repos"`.
+
 ### Promoted from Marc_SM_002 (decided 2026-09-29, implemented 2026-10-14)
 
 The Marc_SM_002 run produced project code that every pipeline needs. It now

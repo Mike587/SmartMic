@@ -272,6 +272,41 @@ def smartmic_version():
     return result.stdout.strip() or None
 
 
+def git_state(repo):
+    """Exact code state of the git checkout containing ``repo``, for run records.
+
+    Unlike :func:`smartmic_version` (a short ``describe`` string for log lines),
+    this gives the FULL commit hash plus the list of uncommitted files, so a
+    dataset can be traced back to the exact code that produced it. Works for any
+    repo: SmartMic itself, a project with its own git repo, an analysis repo.
+
+    Returns ``{"root": str | None, "commit": str | None, "dirty_files": [str]}``:
+
+    * ``root`` — top level of the checkout that git actually reported on. It can
+      differ from ``repo``: a folder that is NOT its own repo but sits inside one
+      (e.g. a project folder without its own ``.git`` under ``SmartMic/projects``)
+      reports the ENCLOSING repo — ``root`` makes that visible.
+    * ``commit`` — ``None`` if git is unavailable, ``repo`` doesn't exist or is not
+      in a git checkout (e.g. a vendored/frozen copy), or the repo has no commit.
+    * ``dirty_files`` — ``git status --porcelain`` paths (relative to ``root``),
+      tracked and untracked; ``[]`` when clean or unknown.
+    """
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", str(repo), *args],
+                               capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    root = git("rev-parse", "--show-toplevel")
+    commit = git("rev-parse", "HEAD") if root else None
+    status = (git("status", "--porcelain") or "") if root else ""
+    return {"root": str(Path(root.strip())) if root else None,
+            "commit": commit.strip() if commit else None,
+            "dirty_files": [line[3:] for line in status.splitlines() if line.strip()]}
+
+
 # ---------------------------------------------------------------------------
 # Auto-immersion (re-immersion) settings: read-only, out-of-band.
 #

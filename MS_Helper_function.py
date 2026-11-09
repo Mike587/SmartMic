@@ -96,6 +96,76 @@ def setup_run_logger(
     return logger, log_file
 
 
+def write_run_info(log_file: Path, log: logging.Logger,
+                   repos: Optional[Dict[str, Path]] = None,
+                   extra: Optional[dict] = None,
+                   script: Optional[Path] = None) -> Path:
+    """
+    Write the run's version record, ``run_info_<ts>.json``, next to its run log.
+
+    The record pins a dataset to the exact code and software that produced it:
+    SmartMic's full commit + uncommitted files, the same for each repo in
+    ``repos`` (the project's own repo, its analysis repo(s), …), and the ZEN app,
+    ZenApiGateway and ``zen_api`` stub versions (none of which the gRPC API
+    reports — see ``zeiss_paths``). ``preflight()`` logs a one-line summary of the
+    ZEN/SmartMic versions; this is the full, machine-readable record. Call it
+    once per run, right after ``setup_run_logger``. Promoted from Marc_SM_003.
+
+    Every repo's commit is also logged, with a WARNING listing its uncommitted
+    files, so a run on modified code is visible in the run log itself.
+
+    Args:
+        log_file: The run log from ``setup_run_logger`` (``run_<ts>.log``); the
+                  record is written beside it as ``run_info_<ts>.json`` (any
+                  other log name ``<stem>.log`` → ``<stem>_run_info.json``).
+        log:      Logger for the summary lines.
+        repos:    ``{name: path}`` of further git repos to record, e.g.
+                  ``{"project": PROJECT_DIR, "analysis": ANALYSIS_DIR}``. A path
+                  that is not a git checkout records ``commit: None``.
+        extra:    Optional JSON-serialisable dict stored under ``"extra"``
+                  (e.g. the run's key settings).
+        script:   The script to record; defaults to ``sys.argv[0]``.
+
+    Returns:
+        Path of the written JSON file.
+    """
+    import zeiss_paths   # lazy: keeps this module importable without the Zeiss tree
+
+    if script is None and sys.argv and sys.argv[0]:
+        script = Path(sys.argv[0]).resolve()
+    api_ver, api_path = zeiss_paths.zen_api_version()
+    info = {
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "script": str(script) if script else None,
+        "smartmic": {"describe": zeiss_paths.smartmic_version(),
+                     **zeiss_paths.git_state(zeiss_paths.THIS_DIR)},
+        "repos": {name: {"path": str(path), **zeiss_paths.git_state(path)}
+                  for name, path in (repos or {}).items()},
+        "zen_app": zeiss_paths.zen_app_version(),
+        "zen_api_gateway": zeiss_paths.zen_api_gateway_version(),
+        "zen_api": {"version": api_ver, "path": api_path},
+        "python": sys.version.split()[0],
+    }
+    if extra is not None:
+        info["extra"] = extra
+
+    log_file = Path(log_file)
+    stem = log_file.stem
+    name = ("run_info" + stem[3:]) if stem.startswith("run_") else f"{stem}_run_info"
+    path = log_file.with_name(name + ".json")
+    path.write_text(json.dumps(info, indent=2, default=str), encoding="utf-8")
+
+    for repo_name, state in [("smartmic", info["smartmic"]), *info["repos"].items()]:
+        dirty = state["dirty_files"]
+        msg = f"{repo_name} commit {state['commit'] or 'unknown (not a git checkout?)'}"
+        if dirty:
+            log.warning(f"{msg} — {len(dirty)} UNCOMMITTED file(s): {', '.join(dirty)}")
+        else:
+            log.info(msg)
+    log.info(f"Version record: {path}")
+    return path
+
+
 def append_jsonl(path: Path, record: dict) -> None:
     """
     Append one record as a JSON line — the per-record log of a resumable run

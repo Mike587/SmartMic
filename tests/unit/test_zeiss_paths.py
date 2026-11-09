@@ -107,6 +107,55 @@ def test_smartmic_version_contract():
 
 
 # --------------------------------------------------------------------------
+# git_state (full commit + uncommitted files, for run_info records)
+# --------------------------------------------------------------------------
+def test_git_state_clean_repo(git_repo):
+    repo, commit = git_repo
+    state = zp.git_state(repo)
+    assert state == {"root": str(repo), "commit": commit, "dirty_files": []}
+    assert len(state["commit"]) == 40          # the FULL hash, not an abbreviation
+
+
+def test_git_state_lists_modified_and_untracked(git_repo):
+    repo, commit = git_repo
+    (repo / "tracked.txt").write_text("v2\n", encoding="utf-8")
+    (repo / "new.txt").write_text("x\n", encoding="utf-8")
+    state = zp.git_state(repo)
+    assert state["commit"] == commit
+    assert sorted(state["dirty_files"]) == ["new.txt", "tracked.txt"]
+
+
+def test_git_state_subfolder_reports_the_enclosing_repo(git_repo):
+    # A folder that is not its own repo reports the repo it sits in; "root"
+    # shows that (e.g. a project folder without its own .git).
+    repo, commit = git_repo
+    sub = repo / "sub"
+    sub.mkdir()
+    state = zp.git_state(sub)
+    assert state["root"] == str(repo) and state["commit"] == commit
+
+
+@pytest.mark.parametrize("make", [lambda p: p, lambda p: p / "missing"])
+def test_git_state_not_a_repo(tmp_path, make):
+    assert zp.git_state(make(tmp_path)) == {"root": None, "commit": None, "dirty_files": []}
+
+
+def test_git_state_git_missing(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr(sp, "run", _raise)
+    assert zp.git_state(tmp_path) == {"root": None, "commit": None, "dirty_files": []}
+
+
+def test_git_state_on_smartmic_itself():
+    state = zp.git_state(zp.THIS_DIR)
+    assert state["root"] is not None and len(state["commit"]) == 40
+
+
+# --------------------------------------------------------------------------
 # Auto-immersion (re-immersion) settings: Options.config + ZEN logs
 # --------------------------------------------------------------------------
 _OPTIONS_CONFIG = """\ufeff<?xml version="1.0" encoding="utf-8"?>

@@ -81,6 +81,55 @@ def test_setup_run_logger(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# write_run_info (version record next to the run log)
+# --------------------------------------------------------------------------
+@pytest.fixture
+def fake_versions(monkeypatch):
+    import zeiss_paths as zp
+    monkeypatch.setattr(zp, "zen_app_version", lambda: "3.13.1")
+    monkeypatch.setattr(zp, "zen_api_gateway_version", lambda: "1.2.3.4")
+    monkeypatch.setattr(zp, "zen_api_version", lambda: ("2025.10.1", "C:/zen_api"))
+    monkeypatch.setattr(zp, "smartmic_version", lambda: "abc1234-dirty")
+
+
+def test_write_run_info_record(tmp_path, git_repo, fake_versions, caplog):
+    import json
+    repo, commit = git_repo
+    (repo / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    log_file = tmp_path / "logs" / "run_20261109_120000.log"
+    log_file.parent.mkdir()
+    log = logging.getLogger("smartmic_test_run_info")
+
+    with caplog.at_level(logging.INFO, logger=log.name):
+        path = helper.write_run_info(log_file, log,
+                                     repos={"project": repo, "analysis": tmp_path / "not_a_repo"},
+                                     extra={"plate": 4}, script=tmp_path / "MS_x.py")
+
+    assert path == log_file.with_name("run_info_20261109_120000.json")
+    info = json.loads(path.read_text(encoding="utf-8"))
+    assert info["script"] == str(tmp_path / "MS_x.py")
+    assert info["smartmic"]["describe"] == "abc1234-dirty"
+    assert len(info["smartmic"]["commit"]) == 40           # SmartMic's own checkout
+    assert info["repos"]["project"] == {"path": str(repo), "root": str(repo), "commit": commit,
+                                        "dirty_files": ["tracked.txt"]}
+    assert info["repos"]["analysis"]["commit"] is None
+    assert (info["zen_app"], info["zen_api_gateway"]) == ("3.13.1", "1.2.3.4")
+    assert info["zen_api"] == {"version": "2025.10.1", "path": "C:/zen_api"}
+    assert info["extra"] == {"plate": 4}
+
+    # Uncommitted code in a run is a WARNING naming the files; a missing repo says so.
+    warn = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(m.startswith(f"project commit {commit}") and "tracked.txt" in m for m in warn)
+    assert any("analysis commit unknown" in r.getMessage() for r in caplog.records)
+    assert any(str(path) in r.getMessage() for r in caplog.records)
+
+
+def test_write_run_info_other_log_name(tmp_path, fake_versions):
+    path = helper.write_run_info(tmp_path / "probe.log", logging.getLogger("smartmic_test_run_info"))
+    assert path.name == "probe_run_info.json" and path.exists()
+
+
+# --------------------------------------------------------------------------
 # Focus scoring / CZI metadata (need pylibCZIrw + the bundled CZIs)
 # --------------------------------------------------------------------------
 @pytest.fixture
