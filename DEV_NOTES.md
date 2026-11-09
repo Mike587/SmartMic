@@ -346,6 +346,12 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   left in ZEN's *default* folder still causes `ALREADY_EXISTS` — a **known latent
   bug** (see TODO / TEST_PLAN §12). Use unique output names if you can't guarantee a
   clean default folder.
+  - **A rerun into the same folder gets `<name>_000001.czi`, `_000002`, …** That is
+    SmartMic's `_unique_czi_name`, NOT ZEN: it logs "File X.czi already exists.
+    Using X_000001.czi instead." (Marc_SM_003 shakedown reruns, 2026-11-02; the
+    project notes first credited ZEN). Nothing is overwritten, but the file is not
+    under the requested name: always use the `exp_result_path` the run returns,
+    never rebuild the path from `custom_filename`.
 
 - **The cleanup deletes everything in ZEN's default folder — WON'T FIX.**
   `_move_result_and_cleanup` globs `*.czi` in ZEN's default output folder and
