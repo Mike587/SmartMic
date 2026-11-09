@@ -233,6 +233,116 @@ def test_set_zstack_range(synth_root):
     assert last == pytest.approx(5e-6)
 
 
+def _zstack_value(root, tag):
+    zs = cz.find_zstack_setup(root)
+    return float(zs.find(tag).find("Distance").find("Value").text)
+
+
+def test_set_zstack_range_expect_mode_match(czexp_dir):
+    _, root = cz.load_czexp(czexp_dir / "positions_384.czexp")     # FixedZ
+    cz.set_zstack_range(root, 2856e-6, 3256e-6, 5e-6, expect_mode="FixedZ")
+    assert _zstack_value(root, "First") == pytest.approx(2856e-6)
+    assert _zstack_value(root, "Last") == pytest.approx(3256e-6)
+
+
+def test_set_zstack_range_expect_mode_mismatch_writes_nothing(czexp_dir):
+    # The Marc_SM_003 incident: a relative ±200 µm range into a FixedZ file
+    # would run at absolute Z −200 … +200 µm.  Must be refused, file untouched.
+    _, root = cz.load_czexp(czexp_dir / "positions_384.czexp")     # FixedZ
+    before = (_zstack_value(root, "First"), _zstack_value(root, "Last"),
+              _zstack_value(root, "Interval"))
+    with pytest.raises(ValueError, match="FocusZStackMode is 'FixedZ'"):
+        cz.set_zstack_range(root, -200e-6, 200e-6, 5e-6, expect_mode="CurrentZ")
+    after = (_zstack_value(root, "First"), _zstack_value(root, "Last"),
+             _zstack_value(root, "Interval"))
+    assert after == before
+
+
+def test_set_zstack_range_expect_mode_missing_field_refused(synth_root):
+    # No FocusZStackMode → can't tell relative from absolute → refuse.
+    with pytest.raises(ValueError, match="None"):
+        cz.set_zstack_range(synth_root, -5e-6, 5e-6, expect_mode="CurrentZ")
+
+
+def test_set_zstack_range_expect_mode_bad_value(lsm_root):
+    with pytest.raises(ValueError, match="expected must be one of"):
+        cz.set_zstack_range(lsm_root, -5e-6, 5e-6, expect_mode="relative")
+
+
+# --------------------------------------------------------------------------
+# FocusZStackMode: decides relative (CurrentZ) vs absolute (FixedZ) First/Last
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("name,expected", [
+    ("zstack_LSM.czexp", "CurrentZ"),        # CENTER mode, relative
+    ("positions_384.czexp", "FixedZ"),
+    ("swaf_fine_20x.czexp", "CurrentZ"),     # has an embedded SWAF experiment too
+])
+def test_get_focus_z_stack_mode_real(czexp_dir, name, expected):
+    _, root = cz.load_czexp(czexp_dir / name)
+    assert cz.get_focus_z_stack_mode(root) == expected
+
+
+def test_get_focus_z_stack_mode_missing(synth_root):
+    assert cz.get_focus_z_stack_mode(synth_root) is None
+
+
+def _mode_xml(*blocks, embedded=None):
+    """Acquisition blocks with the given modes; optionally an embedded
+    (software-autofocus) experiment with its own mode."""
+    def fs(mode, inner=""):
+        return (f"<FocusSetup><FocusStrategy><FocusZStackMode>{mode}</FocusZStackMode>"
+                f"</FocusStrategy>{inner}</FocusSetup>")
+    inner = ""
+    if embedded is not None:
+        inner = (f"<SoftwareAutofocus><Extensions><Extension><Experiment><ExperimentBlocks>"
+                 f"<AcquisitionBlock><HelperSetups>{fs(embedded)}</HelperSetups>"
+                 f"<SubDimensionSetups><ZStackSetup>"
+                 f"<First><Distance><Value>-9</Value></Distance></First>"
+                 f"<Last><Distance><Value>9</Value></Distance></Last>"
+                 f"</ZStackSetup></SubDimensionSetups>"
+                 f"</AcquisitionBlock></ExperimentBlocks></Experiment></Extension>"
+                 f"</Extensions></SoftwareAutofocus>")
+    body = "".join(f"<AcquisitionBlock><HelperSetups>{fs(m, inner)}</HelperSetups>"
+                   f"</AcquisitionBlock>" for m in blocks)
+    return ET.fromstring(f"<HardwareExperiment><ExperimentBlocks>{body}</ExperimentBlocks>"
+                         f"</HardwareExperiment>")
+
+
+def test_get_focus_z_stack_mode_ignores_embedded_autofocus_experiment():
+    root = _mode_xml("FixedZ", embedded="CurrentZ")
+    assert cz.get_focus_z_stack_mode(root) == "FixedZ"
+
+
+def test_get_focus_z_stack_mode_conflicting_blocks_raise():
+    with pytest.raises(ValueError, match="conflicting"):
+        cz.get_focus_z_stack_mode(_mode_xml("FixedZ", "CurrentZ"))
+
+
+def test_find_zstack_setup_skips_embedded_autofocus_stack():
+    # Only the SWAF's own z-stack has First/Last → it must NOT be picked up
+    # (set_zstack_range would otherwise edit the autofocus range).
+    with pytest.raises(ValueError, match="not found"):
+        cz.find_zstack_setup(_mode_xml("CurrentZ", embedded="CurrentZ"))
+
+
+def test_require_focus_z_stack_mode(lsm_root):
+    assert cz.require_focus_z_stack_mode(lsm_root, "CurrentZ") == "CurrentZ"
+    with pytest.raises(ValueError, match=r"x\.czexp: FocusZStackMode is 'CurrentZ'"):
+        cz.require_focus_z_stack_mode(lsm_root, "FixedZ", path="x.czexp")
+
+
+def test_is_zstack_center_mode(lsm_root, czexp_dir):
+    assert cz.is_zstack_center_mode(lsm_root) is True
+    _, root = cz.load_czexp(czexp_dir / "positions_384.czexp")
+    assert cz.is_zstack_center_mode(root) is False
+
+
+def test_summarize_reports_z_modes(lsm_root):
+    s = cz.summarize(lsm_root)
+    assert s["focus_z_stack_mode"] == "CurrentZ"
+    assert s["zstack_center_mode"] is True
+
+
 def test_fit_lsm_crop_constant_pixel(synth_root):
     base = cz.get_lsm_pixel_size_um(synth_root)
     applied = cz.fit_lsm_crop(synth_root, 207.36)

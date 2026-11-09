@@ -61,7 +61,12 @@ These are the bulk of the value. Grouped by module.
 - `set_position` / `add_single_tile_region`: set X/Y/Z (metres in, µm in file),
   reload, assert the written µm values.
 - `set_zstack_range`: set first/last/interval (m), assert via `get_zstack_interval_m`
-  and the First/Last elements.
+  and the First/Last elements. With `expect_mode`: a matching file is written; a
+  mismatched / missing `FocusZStackMode` raises and leaves the file untouched.
+- `get_focus_z_stack_mode` / `require_focus_z_stack_mode` / `is_zstack_center_mode`:
+  real fixtures (CurrentZ, FixedZ, CENTER on/off); the copy inside an embedded
+  software-autofocus experiment is ignored (also by `find_zstack_setup`);
+  conflicting acquisition blocks raise.
 - `fit_lsm_crop`: assert frame/zoom math at constant pixel size and at a fixed frame.
   (The `target_fov_um <= 0` → `ValueError` guard added alongside the other
   2026-07-15 fixes is not covered here — a gap.)

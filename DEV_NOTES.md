@@ -427,6 +427,32 @@ the experiment is in use-positions mode) and navigates. An experiment with an em
 editing an **already-authored** position instead (`set_position` on `_002`). Verify
 per experiment by image content.
 
+**`FocusZStackMode`, not `IsCenterMode`, decides whether a z-stack's First/Last
+are relative or absolute** (found in Marc_SM_003, 2026-11-02; safety-relevant).
+- The field is `<FocusSetup><FocusStrategy><FocusZStackMode>`, i.e. part of the
+  focus strategy, not of the `ZStackSetup`.
+- `CurrentZ` → First/Last are **offsets** from the focus at the position (the
+  region `<Z>` when there is a used region). Seen: Marc_SM_003's 2.5x BF sweep,
+  Marc_SM_002's CENTER-mode Airyscan stack.
+- `FixedZ` → First/Last are **absolute Z**, also when `IsCenterMode` is true;
+  the region `<Z>` does not shift the stack.
+- What happened: a FixedZ + CENTER-mode LSM stack given relative ±200 µm ran at
+  absolute Z −200 … +200 µm, about 2.9 mm below the sample. That is the safe
+  direction on this inverted scope, but outside the project's Z guard. The
+  user's own FixedZ file (absolute 2856 … 3256 µm) ran exactly there.
+- The old `MS_czexp_editor` docstrings explained the stack centre via
+  `IsCenterMode` / the region `<Z>` only, which misled the project code.
+- **Library (2026-11-09):** `MS_czexp_editor.get_focus_z_stack_mode` reads it,
+  `require_focus_z_stack_mode` refuses a mismatch, and
+  `set_zstack_range(..., expect_mode="CurrentZ" | "FixedZ")` checks before
+  writing. `expect_mode=None` still writes unchecked, so existing project callers
+  keep working; new code should always pass it. A missing field (no focus
+  strategy saved) counts as unknown and is refused.
+- A software-autofocus strategy embeds a complete experiment with its own
+  `FocusZStackMode` and `ZStackSetup`. Those are ignored, by both the reader and
+  `find_zstack_setup` (which used to fall back to the SWAF's stack when the
+  experiment had none of its own).
+
 ---
 
 ## Multi-slide carriers: containers = ZEN "Scan Positions" (3x slide insert, 2026-09-29)

@@ -23,7 +23,8 @@ A .czexp is a ZEN HardwareExperiment XML.  The fields this module edits:
 
   POSITION   SingleTileRegion "P1"  → <X> <Y> <Z>          (stage coords in µm)
   Z-STACK    ZStackSetup            → <First>/<Last>/<Interval> <Value>
-                                       (values are in METRES despite the "um" label)
+                                       (values are in METRES despite the "um" label;
+                                       relative or absolute per <FocusZStackMode>)
   CROP       Detector "MTBLSMImagingDevice"
                                      → <Zoom> <FrameSize> <Frame> <ImageFrame>
                                        <Sampling> <SamplingMode>
@@ -39,8 +40,15 @@ Two modes (see fit_lsm_crop):
                            set to match AND SamplingMode is switched to "User".
 
 ZEN gotchas these helpers handle (all learned against the live system):
-  * The CENTER-mode z-stack is built around the tile-region <Z>, not the
-    First/Last midpoint — so set_position writes <Z> = target centre Z.
+  * <FocusZStackMode> (in the focus strategy), NOT <IsCenterMode>, decides how
+    ZEN reads the z-stack First/Last (Marc_SM_003, 2026-11-02):
+      CurrentZ → First/Last are OFFSETS from the focus at the position
+                 (the tile-region <Z> when there is a used region);
+      FixedZ   → First/Last are ABSOLUTE Z, also in CENTER mode; the region
+                 <Z> does not shift the stack.
+    Read it with get_focus_z_stack_mode; pass expect_mode= to set_zstack_range
+    so a relative range is never written into a FixedZ file (that ran ~2.9 mm
+    below the sample) or vice versa.
   * Frame size is DERIVED from FOV × Sampling and is recomputed on load under
     SamplingMode=SR; forcing a manual frame requires SamplingMode=User + a
     matching Sampling value (this is how the FAZ experiment keeps its 512²).
@@ -67,6 +75,13 @@ FRAME_SIZE_MAX = 5120
 
 # FocusStrategy field values that mean "no strategy is doing anything".
 FOCUS_OFF_VALUES = {"", "None", "NONE", "none"}
+
+# <FocusZStackMode> values → how ZEN reads the z-stack First/Last.
+# Anything else (or a missing field) is unknown: refuse rather than guess.
+FOCUS_Z_STACK_MODES = {
+    "CurrentZ": "relative",   # offsets from the focus at the position
+    "FixedZ": "absolute",     # absolute Z, regardless of IsCenterMode
+}
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +132,21 @@ def _require(elem, tag):
 # Element locators
 # ---------------------------------------------------------------------------
 
+def _iter_own(root, tag):
+    """root.iter(tag), minus elements inside an embedded <Experiment>.
+
+    A software-autofocus strategy carries its own complete experiment
+    (FocusSetup/SoftwareAutofocus/Extensions/Extension/Experiment/...) with its
+    own FocusSetup and ZStackSetup; those describe the autofocus run, not this
+    experiment's acquisition.
+    """
+    embedded = set()
+    for exp in root.iter("Experiment"):
+        if exp is not root:
+            embedded.update(exp.iter(tag))
+    return [e for e in root.iter(tag) if e not in embedded]
+
+
 def find_lsm_detector(root):
     """Return the <Detector Id='MTBLSMImagingDevice'> element."""
     for det in root.iter("Detector"):
@@ -140,8 +170,11 @@ def find_stitch_regions(root):
 
 
 def find_zstack_setup(root):
-    """Return the <ZStackSetup> element that defines First/Last/Interval."""
-    for zs in root.iter("ZStackSetup"):
+    """Return the <ZStackSetup> element that defines First/Last/Interval.
+
+    A software-autofocus sub-experiment's own ZStackSetup is never returned.
+    """
+    for zs in _iter_own(root, "ZStackSetup"):
         if zs.find("First") is not None and zs.find("Last") is not None:
             return zs
     raise ValueError("ZStackSetup with First/Last not found")
@@ -237,6 +270,68 @@ def get_zstack_interval_m(root):
     return float(_require(_require(zs, "Interval"), "Distance").find("Value").text)
 
 
+def get_focus_z_stack_mode(root):
+    """The experiment's <FocusZStackMode>: "CurrentZ", "FixedZ", or None.
+
+    THIS decides how ZEN reads the z-stack First/Last, not <IsCenterMode>
+    (found in Marc_SM_003, 2026-11-02; DEV_NOTES "FocusZStackMode, not
+    IsCenterMode"):
+      CurrentZ → First/Last are offsets from the focus at the position.
+      FixedZ   → First/Last are absolute Z, also when IsCenterMode is true.
+                 A FixedZ + CENTER-mode stack given relative ±200 µm ran at
+                 absolute Z −200 … +200 µm.
+    The value is returned as written; check it against FOCUS_Z_STACK_MODES
+    (or use require_focus_z_stack_mode) before relying on it.
+
+    The copy inside a software-autofocus sub-experiment is ignored.  Returns
+    None when the field is absent (no focus strategy saved).
+
+    Raises:
+        ValueError: The experiment's own acquisition blocks disagree.
+    """
+    modes = {e.text.strip() for e in _iter_own(root, "FocusZStackMode")
+             if e.text and e.text.strip()}
+    if len(modes) > 1:
+        raise ValueError(f"conflicting FocusZStackMode values {sorted(modes)}")
+    return modes.pop() if modes else None
+
+
+def require_focus_z_stack_mode(root, expected, path=None):
+    """Raise unless the experiment's FocusZStackMode is ``expected``.
+
+    expected: "CurrentZ" (First/Last relative) or "FixedZ" (absolute).
+    Returns the mode.  Use before writing a z-stack range, so that offsets are
+    never written into a FixedZ file (or absolute Z into a CurrentZ file).
+
+    Raises:
+        ValueError: ``expected`` is not a known mode, or the file's mode is
+            different, missing or unknown.
+    """
+    if expected not in FOCUS_Z_STACK_MODES:
+        raise ValueError(f"expected must be one of {sorted(FOCUS_Z_STACK_MODES)}, "
+                         f"got {expected!r}")
+    found = get_focus_z_stack_mode(root)
+    if found != expected:
+        where = f"{path}: " if path is not None else ""
+        raise ValueError(
+            f"{where}FocusZStackMode is {found!r}, expected {expected!r} "
+            f"({FOCUS_Z_STACK_MODES[expected]} z-stack First/Last). It decides "
+            f"whether ZEN reads First/Last as offsets (CurrentZ) or absolute Z "
+            f"(FixedZ) — change it in ZEN and re-save, or write the other kind of range.")
+    return found
+
+
+def is_zstack_center_mode(root):
+    """True if the z-stack is in CENTER mode (<IsCenterMode>true</IsCenterMode>).
+
+    Only says how the stack is set up in the ZEN UI (centre ± range vs
+    first/last); whether First/Last are relative or absolute is decided by
+    get_focus_z_stack_mode.
+    """
+    flag = find_zstack_setup(root).find("IsCenterMode")
+    return flag is not None and (flag.text or "").strip().lower() == "true"
+
+
 def get_tile_region_centers(root):
     """{region name: (x_m, y_m)} of the multi-tile regions used for acquisition.
 
@@ -282,6 +377,8 @@ def summarize(root):
             }
             for r in regions
         ],
+        "focus_z_stack_mode": get_focus_z_stack_mode(root),
+        "zstack_center_mode": is_zstack_center_mode(root),
         "zstack_first_m": zval("First"),
         "zstack_last_m": zval("Last"),
         "zstack_interval_m": zval("Interval"),
@@ -302,9 +399,13 @@ def summarize(root):
 def set_position(root, x_m, y_m, z_m=None, region_index=0):
     """Set a tile region's stage position.  X/Y/Z are written in µm (× 1e6).
 
-    The tile-region <Z> is the focus reference: with a CENTER-mode z-stack ZEN
-    centres the stack on this value, so it MUST be the target centre Z (not the
-    base template's placeholder).
+    What the region <Z> does to a z-stack depends on <FocusZStackMode>
+    (get_focus_z_stack_mode), not on CENTER mode:
+      CurrentZ → First/Last are offsets from the focus at the position, so
+                 <Z> must be the target centre Z (not the base template's
+                 placeholder);
+      FixedZ   → First/Last are absolute Z; <Z> does not move the stack —
+                 write the absolute range with set_zstack_range.
     """
     regions = find_tile_regions(root)
     if not regions:
@@ -328,8 +429,10 @@ def add_single_tile_region(root, x_m, y_m, z_m=None, name="P1",
     StageService move would be in machine coords and miss on a calibrated plate).
     If a SingleTileRegion already exists it is updated in place.
 
-    With a CENTER-mode z-stack the <Z> is the stack centre, so pass the target
-    centre Z (e.g. the overview focus); leave z_m=None to write 0.
+    With FocusZStackMode=CurrentZ the <Z> is the reference the relative
+    First/Last are added to, so pass the target centre Z (e.g. the overview
+    focus); with FixedZ the stack is absolute and <Z> does not move it (see
+    set_position).  Leave z_m=None to write 0.
     """
     existing = list(root.iter("SingleTileRegion"))
     if existing:
@@ -385,8 +488,23 @@ def clear_single_tile_regions(root):
     return removed
 
 
-def set_zstack_range(root, first_m, last_m, interval_m=None):
-    """Set the z-stack First/Last (metres); optionally the Interval (step)."""
+def set_zstack_range(root, first_m, last_m, interval_m=None, expect_mode=None):
+    """Set the z-stack First/Last (metres); optionally the Interval (step).
+
+    How ZEN reads First/Last is decided by the file's <FocusZStackMode>
+    (get_focus_z_stack_mode), NOT by <IsCenterMode>:
+      "CurrentZ" → offsets from the focus at the position (e.g. −h … +h);
+      "FixedZ"   → absolute Z (e.g. z0 − h … z0 + h), also in CENTER mode.
+    Pass ``expect_mode`` ("CurrentZ" or "FixedZ") for the kind of range you
+    are writing; a file in the other (or no/unknown) mode is refused before
+    anything is written.  ``expect_mode=None`` writes without checking — kept
+    for existing callers; new code should always pass it.
+
+    Raises:
+        ValueError: ``expect_mode`` is given and the file does not match it.
+    """
+    if expect_mode is not None:
+        require_focus_z_stack_mode(root, expect_mode)
     zs = find_zstack_setup(root)
 
     def set_val(tag, value_m):
