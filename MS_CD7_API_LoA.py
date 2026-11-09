@@ -108,11 +108,20 @@ def run_definite_focus_find_surface(max_retries: int = 3,
 
 def run_definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], int]:
     """
-    Run DefiniteFocus RecallFocus — snap back to the last stored focus position.
+    Run DefiniteFocus RecallFocus: go back to the stored distance from the reflex.
 
-    This is a fast operation (~1 s) that requires a previous FindSurface +
+    This is a fast operation (0.7 to 2 s) that requires a previous FindSurface +
     StoreFocus to have been executed first:
     run_definite_focus_find_surface(store_focus=True).
+
+    Measured on the CD7 on 2026-11-09 (DEV_NOTES "What each DF RPC does"):
+    - 20x and 50x objectives: Recall goes to the reflex plus the stored offset
+      (±0.15 µm), also after a new FindSurface.
+    - 5x objective: Recall goes to the reflex. It does not use the stored offset,
+      because StoreFocus on the 5x records no offset.
+    - After an objective change: Recall does a full FindSurface. The stored offset
+      is not used. On the 50x objective this is a search without a seed (see
+      DEV_NOTES "50x: DF locks onto the plate UNDERSIDE").
 
     Returns:
         Tuple (z_um, attempts_used).  z_um is None if all attempts fail.

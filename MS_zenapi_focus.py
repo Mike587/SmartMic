@@ -24,7 +24,7 @@
 # Key functions
 # -------------
 # definite_focus_find_surface   -- Run DF FindSurface with retry logic
-# definite_focus_recall         -- Recall the last stored DF focus position
+# definite_focus_recall         -- RecallFocus: back to the reflex + stored offset (20x/50x)
 # move_focus_to_new_z_position  -- Move the Z-drive to an absolute position
 # get_current_z_focus_position  -- Read the current Z-drive position
 #################################################################
@@ -202,7 +202,7 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
 
 
 async def definite_focus_recall(max_retries: int = 3):
-    """Quickly return the Z-drive to the last stored Definite Focus position.
+    """Go back to the stored distance from the reflex (DF RecallFocus).
 
     Uses ``recall_focus`` rather than a full ``find_surface`` sweep, so it is
     much faster.  Requires that ``store_focus`` has been called previously
@@ -211,7 +211,9 @@ async def definite_focus_recall(max_retries: int = 3):
     Measured on the CD7 (2026-11-09): on the 20x and 50x objectives RecallFocus
     goes back to the reflex plus the stored offset (±0.15 µm). On the 5x
     objective it goes to the reflex and does not use the offset. After an
-    objective change it does a full FindSurface.
+    objective change it does a full FindSurface; on the 50x objective that is
+    a search without a seed (DEV_NOTES "50x: DF locks onto the plate
+    UNDERSIDE"). It does not return to a stored absolute Z.
 
     Args:
         max_retries: Maximum number of attempts (default 3).
