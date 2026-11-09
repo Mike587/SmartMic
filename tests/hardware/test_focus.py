@@ -48,8 +48,8 @@ def test_df_repeatability(at_focus_optics, hw):
 
 def test_df_recall(at_focus_optics):
     scope = at_focus_optics
-    # FindSurface stores a focus position; recall should snap back to it.
-    ok, msg, _ = scope.run_definite_focus_find_surface()
+    # FindSurface with store_focus=True stores the focus; recall should snap back to it.
+    ok, msg, _ = scope.run_definite_focus_find_surface(store_focus=True)
     assert ok is True, msg
     z_um, attempts = scope.run_definite_focus_recall()
     assert z_um is not None

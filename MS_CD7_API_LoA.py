@@ -71,7 +71,8 @@ DEFAULT_EXPERIMENT_OUTPUT_FOLDER = MS_Helper_function.DEFAULT_EXPERIMENT_OUTPUT_
 # helpers. Each call creates its own event loop — do not mix with top-level async code.
 
 def run_definite_focus_find_surface(max_retries: int = 3,
-                                    start_z_m: Optional[float] = None) -> Tuple[bool, str, int]:
+                                    start_z_m: Optional[float] = None,
+                                    store_focus: bool = False) -> Tuple[bool, str, int]:
     """
     Run definite focus find surface with retry logic.
 
@@ -80,6 +81,9 @@ def run_definite_focus_find_surface(max_retries: int = 3,
         start_z_m   (float|None):   Z position in metres to move to before searching.
                                     None → use the async function's default (−300 µm).
                                     Pass last_surface_z − 100e-6 to speed up subsequent DFs.
+        store_focus (bool):         Do StoreFocus after a successful search (default
+                                    False). Set it only if you use
+                                    run_definite_focus_recall later.
 
     Returns:
         Tuple[bool, str, int]: (success, message, attempts_used)
@@ -87,6 +91,8 @@ def run_definite_focus_find_surface(max_retries: int = 3,
     kwargs = {"max_retries": max_retries}
     if start_z_m is not None:
         kwargs["start_z_m"] = start_z_m
+    if store_focus:
+        kwargs["store_focus"] = True
     try:
         # definite_focus_find_surface only ever returns on success — it raises
         # (with attempts_used attached) after exhausting max_retries — so there
@@ -105,7 +111,8 @@ def run_definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], in
     Run DefiniteFocus RecallFocus — snap back to the last stored focus position.
 
     This is a fast operation (~1 s) that requires a previous FindSurface +
-    StoreFocus to have been executed first.
+    StoreFocus to have been executed first:
+    run_definite_focus_find_surface(store_focus=True).
 
     Returns:
         Tuple (z_um, attempts_used).  z_um is None if all attempts fail.

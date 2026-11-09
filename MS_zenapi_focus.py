@@ -79,34 +79,21 @@ async def _read_z_um(focus_service) -> float:
     return pos.value * 1e6
 
 
-async def _store_current_focus(focus_service, definite_focus_service, logger):
-    """Best effort: store the current Z as the DF focus. Failures are only logged.
-
-    Used after a failed search so the pipeline can at least attempt a
-    recall_focus rather than being completely lost.
-    """
-    try:
-        z_um = await _read_z_um(focus_service)
-    except Exception as e:
-        logger.error(f"Could not get current position after find_surface failure: {e}")
-        return
-    logger.info(f"Current Z-Position after all failed attempts: {z_um:.3f} [micron]")
-
-    try:
-        await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
-    except Exception as e:
-        logger.error(f"Could not store focus position: {e}")
-        return
-    logger.info(f"Stored current focus position {z_um:.3f} [micron] despite find_surface failure")
-
-
-async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6):
+async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6,
+                                      store_focus: bool = False):
     """Run Definite Focus FindSurface with linear-backoff retry logic.
 
     Moves the Z-drive to *start_z_m* first so that DF always starts from a
     known position, which makes the surface search more reliable and faster.
-    After a successful find the focus position is stored via ``store_focus``
-    so that ``recall_focus`` can quickly return to it later.
+
+    StoreFocus is optional (``store_focus``, default False). Measured on the
+    CD7 on 2026-11-09 (DEV_NOTES "What each DF RPC does"): StoreFocus is the
+    DF command ``InitOnCurrentPosition``. On the 20x and 50x objectives it
+    records the offset to the reflex (0.45 to 0.9 s). On the 5x objective it
+    does a full search sweep (+414 µm, 1.8 s) and records no offset. Set
+    ``store_focus=True`` only if you use ``definite_focus_recall`` later.
+    After a failed search nothing is stored: an offset recorded at a random Z
+    would send a later RecallFocus to an incorrect Z.
 
     A result of z < 0 is treated as a failure because on this system the
     sample surface is always at a positive Z coordinate; a negative return
@@ -122,6 +109,8 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         start_z_m:   Absolute Z position in metres to move to before starting
             the surface search (default −300 µm).  Pass a value close to the
             expected surface Z (e.g. last_surface_z − 100 µm) to speed up DF.
+        store_focus: If True, do StoreFocus after a successful search, so that
+            ``definite_focus_recall`` can return to this surface. Default False.
 
     Returns:
         Tuple ``(True, attempts_used)``.  It never returns ``(False, ...)``:
@@ -132,8 +121,7 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         Exception: The last attempt's exception once all attempts have failed,
             with the real attempt count attached as ``.attempts_used`` (read by
             ``MS_CD7_API_LoA.run_definite_focus_find_surface`` for accurate
-            retry telemetry).  Before raising, the current Z is stored as the
-            focus position (best effort) so a ``recall_focus`` is still possible.
+            retry telemetry).  Nothing is stored after a failure.
     """
     if max_retries < 1:
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")
@@ -181,9 +169,10 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
                 z_um = await _read_z_um(focus_service)
                 logger.info(f"Z-Position (ZDrive) after FS: {z_um:.3f} [micron]")
 
-                # Persist the focus position so recall_focus can use it later.
-                await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
-                logger.info(f"Focus Position {z_um:.3f} [micron] stored.")
+                if store_focus:
+                    # Only for a later recall_focus (see the docstring).
+                    await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
+                    logger.info(f"Focus Position {z_um:.3f} [micron] stored.")
                 return True, attempt
 
             except Exception as e:
@@ -205,7 +194,6 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
                     logger.error(f"Could not move Z before retry: {move_e}")
 
         logger.error(f"Definite Focus find_surface failed after {max_retries} attempts")
-        await _store_current_focus(focus_service, definite_focus_service, logger)
 
         # Attach the real attempt count so a caller that only sees the exception
         # can still report accurate retry telemetry instead of guessing.
@@ -218,7 +206,12 @@ async def definite_focus_recall(max_retries: int = 3):
 
     Uses ``recall_focus`` rather than a full ``find_surface`` sweep, so it is
     much faster.  Requires that ``store_focus`` has been called previously
-    (e.g. after a successful ``definite_focus_find_surface``).
+    (e.g. ``definite_focus_find_surface(store_focus=True)``).
+
+    Measured on the CD7 (2026-11-09): on the 20x and 50x objectives RecallFocus
+    goes back to the reflex plus the stored offset (±0.15 µm). On the 5x
+    objective it goes to the reflex and does not use the offset. After an
+    objective change it does a full FindSurface.
 
     Args:
         max_retries: Maximum number of attempts (default 3).

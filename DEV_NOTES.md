@@ -73,6 +73,10 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
     - The CZI `FocusPosition` equals the drive Z exactly (widefield).
     - At 50x + 2x, `compute_focus_score` (raw Laplacian) only sees pixel noise. Bin 4×4 first.
   - **Switching to the 50x over the API applies the water automatically.** `set_optics_verified(4, …)` took 70 s: ImmersionAdapter "Creating", pump cycles, `IsImmersionApplied = True`.
+  - **Library change (2026-11-09):**
+    - `definite_focus_find_surface` / `run_definite_focus_find_surface` do StoreFocus only with `store_focus=True` (default False). Use it only before `run_definite_focus_recall`.
+    - After a failed search they do not store anything. Before this change, they stored the current Z, and an offset recorded at a random Z sends a later RecallFocus to an incorrect Z.
+    - The automatic StoreFocus after each search cost 0.45 to 1.8 s. On the 5x it also did a +414 µm sweep.
   - Seen, not confirmed: the surface drifted about +1.5–3 µm/h, and the first FindSurface right after an objective change was 3–4 µm off (2 cases).
 
 - **50x: DF locks onto the plate UNDERSIDE with quality 99 if started too low (reproduced 2026-11-09).**
