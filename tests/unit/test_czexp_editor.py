@@ -557,3 +557,55 @@ def test_get_tile_region_centers_duplicate_unused_is_fine():
 def test_get_tile_region_centers_incomplete_region_raises(region):
     with pytest.raises(ValueError):
         cz.get_tile_region_centers(_regions_xml(region))
+
+
+# --------------------------------------------------------------------------
+# get_tile_region_shape_ids / retarget_tile_region (re-aim a region at a well)
+# --------------------------------------------------------------------------
+def test_get_tile_region_shape_ids_real(stitch_root):
+    assert cz.get_tile_region_shape_ids(stitch_root) == {"I13": "9-13"}
+
+
+def test_get_tile_region_shape_ids_selection_and_missing_id():
+    root = ET.fromstring(
+        "<HardwareExperiment><TileRegions>"
+        "<TileRegion Name='AA1'><TemplateShapeId>27-1</TemplateShapeId></TileRegion>"
+        "<TileRegion Name='B2'><TemplateShapeId>2-2</TemplateShapeId>"
+        "<IsUsedForAcquisition>false</IsUsedForAcquisition></TileRegion>"
+        "<TileRegion Name='X'></TileRegion>"
+        "</TileRegions></HardwareExperiment>")
+    # The name is never parsed: a 1536-style row name works like any other.
+    assert cz.get_tile_region_shape_ids(root) == {"AA1": "27-1", "X": None}
+    with pytest.raises(ValueError, match="A1"):
+        cz.get_tile_region_shape_ids(_regions_xml(("A1", "1,2", None), ("A1", "3,4", None)))
+
+
+def test_retarget_tile_region_rewrites_all_three_links(stitch_root):
+    tiling = {t: stitch_root.find(".//TileRegion").findtext(t) for t in ("Columns", "Rows", "ContourSize")}
+    old = cz.retarget_tile_region(stitch_root, "AF48", 0.1, 0.02, z_m=3000e-6, shape_id="32-48")
+    assert old == {"authored_name": "I13", "authored_shape_id": "9-13"}
+    reg = stitch_root.find(".//TileRegion")
+    assert reg.get("Name") == "AF48" and reg.findtext("TemplateShapeId") == "32-48"
+    assert cz.get_tile_region_centers(stitch_root) == {"AF48": (pytest.approx(0.1), pytest.approx(0.02))}
+    assert float(reg.findtext("Z")) == pytest.approx(3000.0)        # was 2985.683
+    assert {t: reg.findtext(t) for t in tiling} == tiling          # tiling untouched
+
+
+def test_retarget_tile_region_refuses_a_stale_container_link(stitch_root):
+    with pytest.raises(ValueError, match="9-13"):
+        cz.retarget_tile_region(stitch_root, "B2", 0.01, 0.02)
+    assert stitch_root.find(".//TileRegion").get("Name") == "I13"   # nothing changed
+
+
+@pytest.mark.parametrize("bad", ["B2", "2_2", "", "2-"])
+def test_retarget_tile_region_refuses_a_malformed_shape_id(stitch_root, bad):
+    with pytest.raises(ValueError, match="row-column"):
+        cz.retarget_tile_region(stitch_root, "B2", 0.01, 0.02, shape_id=bad)
+
+
+def test_retarget_tile_region_without_container_link():
+    root = _regions_xml(("A1", "1,2", None))
+    assert cz.retarget_tile_region(root, "B2", 0.01, 0.02) == {"authored_name": "A1",
+                                                              "authored_shape_id": None}
+    reg = root.find(".//TileRegion")
+    assert reg.get("Name") == "B2" and reg.find("TemplateShapeId") is None   # none added

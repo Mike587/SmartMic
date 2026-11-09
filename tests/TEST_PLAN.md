@@ -74,6 +74,12 @@ These are the bulk of the value. Grouped by module.
   Tiles off, a TileRegion, a SingleTileRegion or no TilesSetup pass; an embedded
   autofocus experiment's tiles/regions are ignored both ways; every real
   fixture passes.
+- `get_tile_region_shape_ids`: the stitch fixture (`I13` → `9-13`); unused
+  regions skipped, a missing id → None, a 1536-style name (`AA1`) not parsed;
+  duplicate names raise.
+- `retarget_tile_region`: Name, TemplateShapeId, centre and Z rewritten, tiling
+  untouched; a region with a link and no `shape_id` raises and stays unchanged;
+  a malformed `shape_id` raises; a region without a link gets none added.
 - `fit_lsm_crop`: assert frame/zoom math at constant pixel size and at a fixed frame.
   (The `target_fov_um <= 0` → `ValueError` guard added alongside the other
   2026-07-15 fixes is not covered here — a gap.)

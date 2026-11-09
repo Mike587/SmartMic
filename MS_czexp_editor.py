@@ -68,6 +68,7 @@ CLI:
 """
 
 import codecs
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -427,6 +428,37 @@ def get_tile_region_centers(root):
     return centers
 
 
+def get_tile_region_shape_ids(root):
+    """{region name: TemplateShapeId} of the multi-tile regions used for acquisition.
+
+    <TemplateShapeId> is ZEN's link from a region to its sample-carrier
+    container (well): "row-column", both 1-based, e.g. B2 → "2-2", H12 →
+    "8-12" (seen on 96- and 384-well carriers). Read it from an experiment
+    ZEN laid out with a region per well (e.g. a whole-plate OV) instead of
+    working it out from the well name: the name is only a label, so this
+    stays right for any naming (rows past Z on a 1536-well plate) and for
+    carriers whose row/column labels are switched or inverted.
+
+    Same region selection as get_tile_region_centers (used regions, file
+    order). A region without a TemplateShapeId maps to None.
+
+    Raises:
+        ValueError: A used region without a Name, or two with the same Name.
+    """
+    ids = {}
+    for tr in find_stitch_regions(root):
+        if (tr.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
+            continue
+        name = tr.get("Name")
+        if not name:
+            raise ValueError("<TileRegion> without a Name attribute")
+        if name in ids:
+            raise ValueError(f"two used <TileRegion>s are named {name!r}")
+        text = tr.findtext("TemplateShapeId")
+        ids[name] = text.strip() if text and text.strip() else None
+    return ids
+
+
 def summarize(root):
     """Return a dict of the current values this module can edit (for logging)."""
     det = find_lsm_detector(root)
@@ -537,6 +569,49 @@ def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
         if z_el is not None:
             z_el.text = _fmt_float(z_m * 1e6)
     return x_m * 1e6, y_m * 1e6
+
+
+def retarget_tile_region(root, name, x_m, y_m, z_m=None, shape_id=None, region_index=0):
+    """Re-aim a tile region authored for one well at another well.
+
+    A region is tied to its well three ways, and all three are rewritten:
+      * <CenterPosition> (and <Z> if z_m is given), via set_tile_region_center;
+      * its Name, which becomes the CZI scene name;
+      * its <TemplateShapeId> (the container link, "row-column"), when the
+        region has one. Take shape_id from get_tile_region_shape_ids on an
+        experiment with a region per well, not from the well name.
+    The tiling (columns, rows, contour) is left as authored.
+
+    Why the container link too (Marc_SM_003, 2026-11-02): with ZEN's container
+    adaptation on (<IsContainerAdaptionEnabled>true), a region still linked
+    to the authored well might be moved back there by ZEN. Not observed —
+    the re-aimed regions were always rewritten — but a stale link is refused
+    rather than risked.
+
+    Returns {"authored_name", "authored_shape_id"} (the values replaced).
+
+    Raises:
+        ValueError: The region has a TemplateShapeId and shape_id is None, or
+            shape_id is not "row-column" digits.
+    """
+    regions = find_stitch_regions(root)
+    if not regions:
+        raise ValueError("no TileRegion (stitch region) to re-aim")
+    region = regions[region_index]
+    shape = region.find("TemplateShapeId")
+    if shape_id is not None and not re.fullmatch(r"\d+-\d+", str(shape_id)):
+        raise ValueError(f"TemplateShapeId must be 'row-column' (1-based), got {shape_id!r}")
+    if shape is not None and shape_id is None:
+        raise ValueError(
+            f"region {region.get('Name')!r} is linked to container {shape.text!r}; pass the "
+            f"target's shape_id (get_tile_region_shape_ids) so the link moves with it")
+    authored = {"authored_name": region.get("Name"),
+                "authored_shape_id": shape.text if shape is not None else None}
+    set_tile_region_center(root, x_m, y_m, z_m=z_m, region_index=region_index)
+    region.set("Name", name)
+    if shape is not None:
+        shape.text = str(shape_id)
+    return authored
 
 
 def clear_single_tile_regions(root):

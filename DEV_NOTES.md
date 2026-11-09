@@ -473,6 +473,33 @@ run** (found in Marc_SM_003, 2026-11-02, shakedown step 4).
   which refuses any strategy.
 - Both ignore the copy inside an embedded software-autofocus experiment.
 
+**Re-aiming a tile region at another well: rewrite its container link too**
+(Marc_SM_003, 2026-11-02; promoted 2026-11-09).
+- A `<TileRegion>` is tied to its well three ways: `<CenterPosition>` (+ `<Z>`),
+  its `Name` (which becomes the CZI scene name), and `<TemplateShapeId>`, ZEN's
+  link to the carrier container. Marc_SM_003 makes each well's OV from one
+  region authored for B2 and rewrites all three. On the scope the re-aimed
+  region imaged the right well, under the right scene name.
+- Why the link: the base has `<IsContainerAdaptionEnabled>true`, so a region
+  still linked to B2 might be moved back to B2 by ZEN. **Not observed** (the
+  link was always rewritten); a precaution, untested either way.
+- `TemplateShapeId` format: "row-column", 1-based (B2 → `2-2`, H12 → `8-12`).
+  Seen on 96- and 384-well carriers only.
+- **Take the ID from ZEN, don't compute it from the name.** The name is a label:
+  a 1536-well plate (32 × 48) has rows past Z (normally AA–AF; how ZEN names
+  them is unconfirmed, no 1536 experiment on this machine), and carrier
+  templates can switch or invert the row/column labels
+  (`AreAxisAnnotationsSwitched`, `Is{Row,Column}AnnotationDirectionInverted`).
+  Marc_SM_003's first version worked the ID out from a single-letter row; it
+  refused two-letter rows but would have mapped lowercase ones to the wrong well.
+- **Library:** `MS_czexp_editor.get_tile_region_shape_ids(root)` reads
+  `{name: TemplateShapeId}` from an experiment ZEN laid out with a region per
+  well (Marc_SM_003: its 4-line scan, also its source of well centres).
+  `retarget_tile_region(root, name, x_m, y_m, z_m=, shape_id=)` rewrites all
+  three and refuses to leave a stale link (a region that has a TemplateShapeId
+  needs `shape_id`). Its output was byte-identical to Marc_SM_003's old code
+  for all 48 wells.
+
 ---
 
 ## Multi-slide carriers: containers = ZEN "Scan Positions" (3x slide insert, 2026-09-29)
