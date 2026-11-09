@@ -67,6 +67,13 @@ These are the bulk of the value. Grouped by module.
   real fixtures (CurrentZ, FixedZ, CENTER on/off); the copy inside an embedded
   software-autofocus experiment is ignored (also by `find_zstack_setup`);
   conflicting acquisition blocks raise.
+- `require_no_focus_search`: FollowSurface without a search and "no strategy"
+  pass; a DefiniteFocus or SoftwareAutofocus search raises (path and `reason`
+  in the message); real fixtures (the SWAF and stitch fixtures carry a search).
+- `require_runnable_tiles` / `tiles_activated`: Tiles on with no region raises;
+  Tiles off, a TileRegion, a SingleTileRegion or no TilesSetup pass; an embedded
+  autofocus experiment's tiles/regions are ignored both ways; every real
+  fixture passes.
 - `fit_lsm_crop`: assert frame/zoom math at constant pixel size and at a fixed frame.
   (The `target_fov_um <= 0` → `ValueError` guard added alongside the other
   2026-07-15 fixes is not covered here — a gap.)

@@ -453,6 +453,26 @@ are relative or absolute** (found in Marc_SM_003, 2026-11-02; safety-relevant).
   `find_zstack_setup` (which used to fall back to the SWAF's stack when the
   experiment had none of its own).
 
+**Method 1 needs Tiles OFF: Tiles on with no tile region makes ZEN refuse the
+run** (found in Marc_SM_003, 2026-11-02, shakedown step 4).
+- The final LSM base had been saved with Tiles switched on
+  (`<TilesSetup IsActivated="true">`) but with no `<TileRegion>` or
+  `<SingleTileRegion>`. `run_experiment_from_path` failed with "ABORTED: Failed
+  to start experiment". Nothing moved and no image was written.
+- After the user re-saved it with Tiles off, it acquired at the current stage
+  position (method 1 above), as intended.
+- **Library (2026-11-09):** `MS_czexp_editor.require_runnable_tiles(root, path)`
+  refuses this before the run (`tiles_activated` reads the flag). It accepts
+  any region and doesn't check `IsUsedForAcquisition`; whether ZEN also refuses
+  a file whose regions are all unused is untested.
+- Same promotion: `require_no_focus_search(root, path, reason=…)`, for runs that
+  set Z themselves. It refuses a focus strategy with a `SearchAction`
+  (DefiniteFocus, SoftwareAutofocus) but allows one without, e.g.
+  FollowSurface + SearchAction None, which only uses the stored region Z (how
+  Marc_SM_003's re-aimed OV gets its focus). Stricter than `has_focus_strategy`,
+  which refuses any strategy.
+- Both ignore the copy inside an embedded software-autofocus experiment.
+
 ---
 
 ## Multi-slide carriers: containers = ZEN "Scan Positions" (3x slide insert, 2026-09-29)

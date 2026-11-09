@@ -434,6 +434,85 @@ def test_has_focus_strategy_deactivated_setup_or_strategy():
 
 
 # --------------------------------------------------------------------------
+# Run-safety checks: require_no_focus_search, require_runnable_tiles
+# --------------------------------------------------------------------------
+def test_require_no_focus_search_allows_follow_surface_without_search():
+    # Marc_SM_003's OV bases: FollowSurface, no search → uses the region Z.
+    root = ET.fromstring(_focus_xml(method="FollowSurface", surface="Local"))
+    assert cz.require_no_focus_search(root)["method"] == "FollowSurface"
+    assert cz.require_no_focus_search(ET.fromstring(_focus_xml())) is None
+
+
+@pytest.mark.parametrize("search", ["DefiniteFocusFindSurface", "SoftwareAutofocus"])
+def test_require_no_focus_search_refuses_a_search(search):
+    root = ET.fromstring(_focus_xml(method="FollowAction", search=search))
+    with pytest.raises(ValueError, match=rf"x\.czexp: .*focus search.*{search}.*\(U-bottom\)"):
+        cz.require_no_focus_search(root, "x.czexp", reason="U-bottom")
+
+
+@pytest.mark.parametrize("name,refused", [
+    ("zstack_LSM.czexp", False), ("positions_384.czexp", False),
+    ("swaf_fine_20x.czexp", True), ("stitch_region.czexp", True)])   # SoftwareAutofocus search
+def test_require_no_focus_search_real(czexp_dir, name, refused):
+    _, root = cz.load_czexp(czexp_dir / name)
+    if refused:
+        with pytest.raises(ValueError, match="SoftwareAutofocus"):
+            cz.require_no_focus_search(root)
+    else:
+        cz.require_no_focus_search(root)
+
+
+def _tiles_xml(activated, regions="", embedded=None):
+    """Own TilesSetup (+ regions); optionally an embedded autofocus experiment
+    whose TilesSetup is (activated, regions)."""
+    inner = ""
+    if embedded is not None:
+        act, reg = embedded
+        inner = (f'<SoftwareAutofocus><Experiment><TilesSetup IsActivated="{act}">{reg}'
+                 f'</TilesSetup></Experiment></SoftwareAutofocus>')
+    return ET.fromstring(f'<HardwareExperiment><TilesSetup IsActivated="{activated}">{regions}'
+                         f'</TilesSetup>{inner}</HardwareExperiment>')
+
+
+TILE = '<TileRegions><TileRegion Name="B2" /></TileRegions>'
+SINGLE = '<SingleTileRegions><SingleTileRegion Name="P1" /></SingleTileRegions>'
+
+
+def test_require_runnable_tiles_refuses_tiles_on_without_region():
+    root = _tiles_xml("true", "<TileRegions /><SingleTileRegions />")
+    assert cz.tiles_activated(root) is True
+    with pytest.raises(ValueError, match=r"final\.czexp: Tiles is switched on but there is no tile region"):
+        cz.require_runnable_tiles(root, "final.czexp")
+
+
+@pytest.mark.parametrize("root", [
+    _tiles_xml("false"),                       # Tiles off → acquires at the stage position
+    _tiles_xml("true", TILE),
+    _tiles_xml("true", SINGLE),
+    ET.fromstring("<HardwareExperiment />"),   # no TilesSetup at all
+])
+def test_require_runnable_tiles_passes(root):
+    cz.require_runnable_tiles(root)
+
+
+def test_require_runnable_tiles_ignores_embedded_autofocus_experiment():
+    # The autofocus sub-experiment's region does not make the outer run startable …
+    with pytest.raises(ValueError, match="no tile region"):
+        cz.require_runnable_tiles(_tiles_xml("true", embedded=("true", TILE)))
+    # … and its Tiles-on-without-region does not block an outer run with Tiles off.
+    root = _tiles_xml("false", embedded=("true", ""))
+    assert cz.tiles_activated(root) is False
+    cz.require_runnable_tiles(root)
+
+
+@pytest.mark.parametrize("name", ["zstack_LSM.czexp", "positions_384.czexp", "stitch_region.czexp",
+                                  "swaf_fine_20x.czexp", "zstack_small.czexp", "snap_single.czexp"])
+def test_require_runnable_tiles_real_fixtures(czexp_dir, name):
+    _, root = cz.load_czexp(czexp_dir / name)
+    cz.require_runnable_tiles(root)
+
+
+# --------------------------------------------------------------------------
 # get_tile_region_centers
 # --------------------------------------------------------------------------
 def test_get_tile_region_centers_real(stitch_root):

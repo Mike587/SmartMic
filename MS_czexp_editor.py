@@ -52,6 +52,10 @@ ZEN gotchas these helpers handle (all learned against the live system):
   * Frame size is DERIVED from FOV × Sampling and is recomputed on load under
     SamplingMode=SR; forcing a manual frame requires SamplingMode=User + a
     matching Sampling value (this is how the FAZ experiment keeps its 512²).
+  * Tiles switched on with no tile region: ZEN refuses to start the run
+    ("Failed to start experiment", Marc_SM_003) — require_runnable_tiles.
+    A focus strategy can run a search (DF/SWAF) even if the caller sets Z
+    itself — require_no_focus_search.
   * Generated files are run via ExperimentService.Load BY PATH (see the LoA's
     run_experiment_from_path) — load, do NOT import-then-run.
 
@@ -250,6 +254,71 @@ def has_focus_strategy(root):
     assert/abort before running a generated .czexp.
     """
     return get_focus_strategy(root) is not None
+
+
+# ---------------------------------------------------------------------------
+# Run-safety checks (raise before a generated .czexp is run)
+# ---------------------------------------------------------------------------
+
+def require_no_focus_search(root, path=None, reason=None):
+    """Raise if the experiment's focus strategy runs a focus SEARCH.
+
+    For runs that set Z themselves (e.g. Marc_SM_003: DefiniteFocus and SWAF
+    don't work on U-bottom plates; focus comes from image sweeps).  A strategy
+    WITHOUT a search action is allowed: e.g. Method=FollowSurface with
+    SearchAction=None only uses the stored Z of each region, which is how a
+    re-aimed OV gets its focus Z.  Stricter than "no strategy at all" — use
+    has_focus_strategy for that.
+
+    reason: optional text appended to the error (why this run can't search).
+    Returns the strategy dict (see get_focus_strategy) or None.
+
+    Raises:
+        ValueError: An active strategy names a SearchAction (DefiniteFocus,
+            SoftwareAutofocus, …).
+    """
+    strategy = get_focus_strategy(root)
+    if strategy is not None and strategy["search_action"] not in FOCUS_OFF_VALUES:
+        where = f"{path}: " if path is not None else ""
+        raise ValueError(
+            f"{where}the focus strategy runs a focus search {strategy}; this run sets Z "
+            f"itself" + (f" ({reason})" if reason else "")
+            + " — remove the search in ZEN and re-save.")
+    return strategy
+
+
+def tiles_activated(root):
+    """True if the experiment's own <TilesSetup> is switched on (Tiles in ZEN).
+
+    A software-autofocus sub-experiment's TilesSetup is ignored.
+    """
+    tiles = next(iter(_iter_own(root, "TilesSetup")), None)
+    return tiles is not None and (tiles.get("IsActivated") or "false").lower() == "true"
+
+
+def require_runnable_tiles(root, path=None):
+    """Raise if Tiles is switched on but the experiment has no tile region.
+
+    ZEN refuses to start such an experiment ("ABORTED: Failed to start
+    experiment", Marc_SM_003 shakedown 2026-11-02: a final LSM base saved with
+    Tiles on and no region).  With Tiles OFF the experiment acquires at the
+    current stage position — the usual set-up for a base the caller positions
+    by moving the stage first.  Any <TileRegion> or <SingleTileRegion> counts
+    (IsUsedForAcquisition is not checked).  Regions inside a software-autofocus
+    sub-experiment are ignored.
+
+    Raises:
+        ValueError: Tiles on, no region.
+    """
+    if not tiles_activated(root):
+        return
+    if _iter_own(root, "TileRegion") or _iter_own(root, "SingleTileRegion"):
+        return
+    where = f"{path}: " if path is not None else ""
+    raise ValueError(
+        f"{where}Tiles is switched on but there is no tile region — ZEN refuses to start "
+        f"it (\"Failed to start experiment\"). Switch Tiles off in ZEN (the experiment "
+        f"then acquires at the stage position) or add a region, and re-save.")
 
 
 # ---------------------------------------------------------------------------
