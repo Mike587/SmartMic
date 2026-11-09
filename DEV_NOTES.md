@@ -85,6 +85,34 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
     4. Check every result against the expected Z: about −149 µm means the underside.
   - `DefiniteFocusTracker`'s adaptive start (last surface −100 µm) violates rule 2 as soon as the next surface is more than about 49 µm higher. See TODO.
 
+- **Dry objectives: DF finds the plate UNDERSIDE and adds an offset from the carrier's bottom thickness (measured 2026-11-09).**
+  - **Test:** 20x/0.7, same XY, carrier bottom thickness 250 µm and then 170 µm (same skirt).
+    - With 250 µm DF parked at 1202.7 µm, but the dirt on the well bottom was sharp **48 µm lower**.
+    - With 170 µm, DF and the image focus agreed (±2 µm).
+    - Both results had quality 99.
+  - **Scale:** about **0.55–0.6 µm Z per µm of thickness error**. A thickness of 0 parks DF on the air–glass underside (seen in the log: 94 µm below the 170 µm result on 5x).
+  - **Where the thickness comes from** (`MtbBottomPropertiesChangedEvent` in `ZENService.log.xml`): the active sample carrier.
+    - That is the template value, **unless "measure bottom thickness" is ticked at plate load**. Then ZEN measures the glass and the measured value replaces the template value (checked: a 250 µm template with the measurement on gave 168 µm and correct focus).
+    - It does not come from the objective correction collar ("Cover bottom thickness", 130–210 µm), which ZEN sets from the same value.
+    - It does not come from an API-run experiment's template, which leaves DF unchanged.
+  - **The load measurement:**
+    1. ZEN sets the DF thickness to **0** and runs FindSurface at a detection point, which parks DF on the air–glass underside.
+    2. It runs a hidden `CoverGlassDetectionExperiment` (a camera Z-stack, about 12 s).
+    3. It sends the measured thickness to DF.
+
+    This is the "thickness 0" in the log. A DF search of your own started inside that window parks on the underside.
+  - **Consequences:**
+    1. On dry objectives, the DF focus is only as good as the bottom thickness. Use "measure bottom thickness" at load, or a correct template. An error of 10 µm moves focus by about 6 µm, and quality does not show it.
+    2. Do not start DF while a carrier is loading.
+    3. The measurement is made at one point. A well-to-well variation of glass thickness still goes straight into the DF focus.
+  - **The carrier MATERIAL matters even more.** Same glass plate and XY on 20x/0.7, material switched Glass → Polystyrene in the sample setup:
+    - ZEN rescaled the thickness to keep the measured optical thickness (168 × 1.594/1.52 = 176.18 µm).
+    - DF then parked **137 µm below the real surface** (1022.0 against 1159.1 µm, quality 99), below the plate, in air, with nothing in focus.
+    - The search first approaches the underside reflex, then moves about 80 µm **down** instead of up.
+    - Switching back to Glass restored 1159.5 µm (DAPI sharp at DF +0.5 µm).
+    - **The material must match the plate.** A real polystyrene plate has not been tested.
+  - The 50x W was not tested with a wrong thickness. It has no air–glass interface; there DF parks directly on a water–glass reflex (see the underside entry above).
+
 - **5x↔50x surfaces differ a lot here.** The 5x tissue-scan surface read ~1189–1194
   µm; a 50x DF (seeded at 1080 µm) landed ~939 µm. Treat the per-objective surface
   Z as independent — never assume 5x and 50x focus at the same Z.
@@ -637,6 +665,34 @@ by `check_sample_carrier`. Surveyed on every `.czexp`/`.czi` on this machine
   "can't check" there unless given the expected slide name, and never a
   mismatch. Which slide was imaged can only be checked from the images.
 - Neither file records a plate identity (barcode, holder number).
+
+## Tray load / eject: LiveScanService (2026-11-09)
+
+`zen_api.lm.live_scan.v1.LiveScanService` has `LoadTrayAndPrescan`,
+`EjectTray` (both take **no arguments**), `GetConfiguration` and
+`SetConfiguration`. What the prescan does on load is set only through the
+configuration. `MS_zenapi_live_scan.py` wraps **only** `GetConfiguration`.
+`preflight()` logs it on one line (template, material/RI, prescan steps on and
+off) and flags a template / ZEN carrier mismatch. The line is log only and never
+aborts a run.
+
+- **`GetConfiguration` works on this gateway** (2026-11-09, 6-well plate in
+  ZEN). Returned: `sample_holder_template='Multiwell 6 - 250um.czsht'`,
+  `measure_bottom_thickness=True`, `use_right_barcode=True`, every other flag
+  (detection, material, overview, barcodes, calibration) `False`,
+  `refractive_index=1.594`, `material='Polystyrene'`.
+- **The template is the ZEN carrier name plus `.czsht`:**
+  `SampleCarrierService` reported `'Multiwell 6 - 250um'` at the same time,
+  with the same material/RI. (The `.czsht` suffix is the same convention as
+  `ScanAreaSampleHolderInfo` in a `.czexp`, see the section above.) Not
+  checked: whether `SetConfiguration` with another template changes the ZEN
+  carrier.
+- `SampleCarrierService` thickness was `176.178947…`, not the 250 µm in the
+  name. Expected: it came from a test Mike was running at the time. So a
+  carrier's reported thickness need not match its template name.
+- **Not tried yet:** `LoadTrayAndPrescan`, `EjectTray`, `SetConfiguration`.
+  Before the first eject: use a dry objective (does ZEN retract Z before moving
+  the tray?) and give the load a long timeout (prescan + thickness measurement).
 
 ---
 

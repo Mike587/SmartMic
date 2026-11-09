@@ -153,6 +153,10 @@ Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a
   `SetSpeed`, see `test_stage_motion.py`) still passes, with an info log noting
   the throttle wasn't supported. *(Added after this plan was written — see
   `MS_CD7_API_LoA.preflight`.)*
+- `preflight` live-scan line *(added 2026-11-09)*: an autouse fixture mocks
+  `get_live_scan_configuration` so no test reaches gRPC. The config line is
+  logged; a template / carrier mismatch is flagged but still passes; an
+  unreadable config logs "could not read" and passes; gateway down → not queried.
 
 ### `tests/unit/test_stage_guard.py` — immersion guard in `MS_zenapi_stage_LM`
 *(Added after this plan was written.)* `move_stage_to_new_xy_position` lowers Z
@@ -212,6 +216,16 @@ immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
 - `run_analysis_json` *(added 2026-10-14)*: returns the parsed
   `<tag>_<suffix>.json`; `None` if the analysis failed, wrote no result, left
   only a stale result from an earlier run (old mtime), or wrote invalid JSON.
+
+### `tests/unit/test_live_scan.py` — `MS_zenapi_live_scan` *(added 2026-11-09, mocked)*
+- `CONFIG_FIELDS` matches the `LiveScanServiceConfiguration` proto fields (flags a
+  Zeiss field rename/addition).
+- `get_live_scan_configuration` maps every field into the dict; a gRPC rejection
+  propagates (not swallowed).
+- `format_live_scan_configuration`: lists the on/off prescan steps; strips
+  `.czsht` before comparing with the carrier; flags a mismatch; tolerates
+  missing keys.
+- The module exposes no load / eject / set-configuration helper (read-only probe).
 
 > **Coverage note:** every public function in the repo is referenced above except
 > the genuinely hardware-only `MS_zenapi_*` gRPC calls and the CLI `main()` demos,

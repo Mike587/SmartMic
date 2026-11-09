@@ -181,6 +181,27 @@ class _Log:
 _FULL_MOTION = {"speed_x": 100, "speed_y": 100,
                 "acceleration_x": 100, "acceleration_y": 100}
 
+# As read on the CD7 (2026-11-09), template renamed to match the test carrier.
+_LIVE_SCAN_CFG = {
+    "sample_holder_template": "PLATE.czsht",
+    "live_scan_detection": False,
+    "measure_bottom_thickness": True,
+    "determine_bottom_material": False,
+    "create_carrier_overview": False,
+    "read_barcodes": False,
+    "use_left_barcode": False,
+    "use_right_barcode": True,
+    "automatic_live_scan_calibration": False,
+    "refractive_index": 1.594,
+    "material": "Polystyrene",
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_live_scan_rpc(monkeypatch):
+    # preflight reads the live-scan config over gRPC; keep every test offline.
+    monkeypatch.setattr(ms, "get_live_scan_configuration", lambda: dict(_LIVE_SCAN_CFG))
+
 
 def test_preflight_happy_sets_stage_motion(monkeypatch):
     calls = {"motion": 0}
@@ -273,3 +294,56 @@ def test_preflight_passes_when_immersion_settings_unreadable(monkeypatch):
     assert ms.preflight("PLATE", log) is True
     assert log.errors == []
     assert any("Auto-immersion refill settings: could not read" in m for m in log.infos)
+
+
+def _passing_preflight_mocks(monkeypatch, carrier="PLATE"):
+    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: carrier)
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(ms, "set_stage_motion_sync",
+                        lambda speed=None, accel=None: _FULL_MOTION)
+
+
+def test_preflight_logs_live_scan_config(monkeypatch):
+    _passing_preflight_mocks(monkeypatch)
+    log = _Log()
+    assert ms.preflight("PLATE", log) is True
+    line = next(m for m in log.infos if m.startswith("Live-scan (tray load) config"))
+    assert "template 'PLATE.czsht'" in line
+    assert "prescan on: measure_bottom_thickness, use_right_barcode" in line
+    assert "MISMATCH" not in line
+
+
+def test_preflight_flags_live_scan_template_mismatch_but_passes(monkeypatch):
+    _passing_preflight_mocks(monkeypatch)
+    cfg = dict(_LIVE_SCAN_CFG, sample_holder_template="Multiwell 6 - 250um.czsht")
+    monkeypatch.setattr(ms, "get_live_scan_configuration", lambda: cfg)
+    log = _Log()
+    assert ms.preflight("PLATE", log) is True   # log only, never aborts
+    assert log.errors == []
+    assert any("MISMATCH: ZEN carrier is 'PLATE'" in m for m in log.infos)
+
+
+def test_preflight_passes_when_live_scan_unreadable(monkeypatch):
+    # Log-only: a gateway that rejects LiveScanService must never abort a run.
+    def boom():
+        raise RuntimeError("UNIMPLEMENTED")
+
+    _passing_preflight_mocks(monkeypatch)
+    monkeypatch.setattr(ms, "get_live_scan_configuration", boom)
+    log = _Log()
+    assert ms.preflight("PLATE", log) is True
+    assert log.errors == []
+    assert any("Live-scan config: could not read (UNIMPLEMENTED)" in m for m in log.infos)
+
+
+def test_preflight_gateway_down_skips_live_scan(monkeypatch):
+    calls = []
+
+    def boom():
+        raise RuntimeError("no gateway")
+
+    monkeypatch.setattr(ms, "get_sample_carrier_name", boom)
+    monkeypatch.setattr(ms, "get_live_scan_configuration",
+                        lambda: calls.append(1) or dict(_LIVE_SCAN_CFG))
+    assert ms.preflight("PLATE", _Log()) is False
+    assert calls == []

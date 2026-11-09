@@ -26,6 +26,7 @@ import MS_zenapi_objectivechanger
 import MS_zenapi_stage_LM
 import MS_zenapi_swaf
 import MS_zenapi_sample_carrier
+import MS_zenapi_live_scan
 import MS_Helper_function
 from MS_zenapi_helpers import set_logging
 
@@ -896,6 +897,18 @@ def get_current_container() -> Optional[Tuple[int, int]]:
     return asyncio.run(MS_zenapi_sample_carrier.get_current_container())
 
 
+def get_live_scan_configuration() -> Dict[str, Any]:
+    """
+    Get ZEN's live-scan (tray load / prescan) configuration. Read-only.
+
+    Returns:
+        Dict[str, Any] with the keys in MS_zenapi_live_scan.CONFIG_FIELDS
+        (sample_holder_template, the prescan flags, refractive_index,
+        material). See MS_zenapi_live_scan.get_live_scan_configuration.
+    """
+    return asyncio.run(MS_zenapi_live_scan.get_live_scan_configuration())
+
+
 def move_to_container(row_index: int, column_index: int,
                       focus_tracker: Optional[DefiniteFocusTracker] = None) -> None:
     """
@@ -980,6 +993,9 @@ def preflight(expected_carrier: str, log,
       4. sets the XY-stage travel speed + acceleration once for the run (device
          state the controller holds across calls) and logs the read-back.
 
+    Also logs, never aborting on them: version identity, the auto-immersion
+    refill settings, and the live-scan (tray load / prescan) configuration.
+
     Args:
         expected_carrier (str): The sample-carrier name the run requires; the
             run aborts if a different carrier is loaded.
@@ -1027,6 +1043,16 @@ def preflight(expected_carrier: str, log,
     except Exception as e:
         log.error(f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
         return False
+
+    # 1b. Record the live-scan (tray load / prescan) configuration: carrier
+    # template, bottom material / RI, which prescan steps a load runs. Log only,
+    # never a reason to abort; flags a template / carrier mismatch (DEV_NOTES
+    # "Tray load / eject").
+    try:
+        log.info(MS_zenapi_live_scan.format_live_scan_configuration(
+            get_live_scan_configuration(), carrier=carrier))
+    except Exception as e:
+        log.info(f"Live-scan config: could not read ({e})")
 
     # 2. Microscope idle.
     try:
