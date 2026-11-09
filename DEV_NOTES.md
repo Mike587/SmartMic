@@ -418,7 +418,10 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
   Given a `DefiniteFocusTracker`, it resets it (the last surface belongs to
   the previous slide). **Verified on the scope 2026-10-14**
   (`sandbox/MS_hw_check_move_to_container.py`; carrier `Insert - 3x Slide -
-  432332-9110-000`, empty slides, 5x). Slide 1 → 2 and back, from Z 300 µm.
+  432332-9110-000`, empty slides, 5x). That is a different ZEN carrier from
+  Marc_SM_002's: the same 3x insert, but defined for plain 76 × 26 mm slides,
+  where `Insert - 3x Slide - Chamber Slide 8x - 432332-9110-000` is defined
+  for ibidi 8-well chamber slides. Slide 1 → 2 and back, from Z 300 µm.
   Each time Z was 0.000 µm before the switch was issued. The switch took
   ~5 s including the 1 s settle. Afterwards XY was (12999.99, 38000.00) µm
   and Z 4.59 µm. The operator confirmed the order in ZEN: Z down, then the
@@ -436,6 +439,35 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
   surface" approach found every surface in the test; `DefiniteFocusTracker`
   adds a full-range fallback for a surface below the adaptive start), but
   don't assume one Z per slide.
+
+## What a CZI / .czexp records about the sample carrier (2026-11-09)
+
+Read by `MS_Helper_function.get_sample_carrier_from_czi` / `_czexp`, checked
+by `check_sample_carrier`. Surveyed on every `.czexp`/`.czi` on this machine
+(tests fixtures, all projects, Marc_SM_002 on `F:\UserData\mike`).
+
+- **Where:** `…/SampleHolder/Template` (`Name` attribute plus geometry:
+  `ShapeRows`/`ShapeColumns`, `ShapeWidth`/`ShapeHeight`,
+  `ShapeDistanceX`/`Y`, `BoundsSize`, `AnchorPoint`, `BottomThickness`, all
+  **µm**; e.g. a 384 plate: pitch 4500, bounds 127800,85500). SWAF/stitching
+  experiments carry a second copy under `AdditionalSettings/
+  ScanAreaSampleHolderInfo`, named with a `.czsht` suffix
+  (`Multichamber 384.czsht`), and nested `SampleHolder` blocks without a
+  Template. Use the outermost `SampleHolder/Template`.
+- **A plate** (`InsertType` `Default`): the Template IS the ZEN carrier,
+  e.g. `Marc_96W_U-Bottom`. Its name should equal the API's
+  `get_sample_carrier_name()` (not yet confirmed on the scope; TODO).
+- **Slides in an insert** (`InsertType` `PartOfInsert`): the Template is the
+  ONE SLIDE, e.g. `Chamber Slide 8x - 76 x 26 mm - Vertical` (Marc_SM_002)
+  or `Slide 76 x 26 mm - Vertical` (HD_Nuclei, Slide_Search).
+  `PartOfInsertName` is empty, so the ZEN carrier (`Insert - 3x Slide -
+  Chamber Slide 8x - 432332-9110-000`, what a project's
+  `EXPECTED_SAMPLE_CARRIER` holds) is **not in the file**, and neither is
+  the slot (see the section above: `<Containers />`). So a file's carrier
+  name never equals the API's for an insert. `check_sample_carrier` returns
+  "can't check" there unless given the expected slide name, and never a
+  mismatch. Which slide was imaged can only be checked from the images.
+- Neither file records a plate identity (barcode, holder number).
 
 ---
 

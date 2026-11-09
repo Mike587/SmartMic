@@ -225,6 +225,191 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
     return positions
 
 
+# --------------------------------------------------------------------------
+# Sample carrier (ZEN SampleHolder "Template") from a .czi / .czexp
+# --------------------------------------------------------------------------
+# Parents a carrier Template is found under. The experiment's own one is
+# SampleHolder/Template; SWAF/stitching blocks also carry a copy under
+# AdditionalSettings/ScanAreaSampleHolderInfo, named with a ".czsht" suffix.
+_CARRIER_TEMPLATE_PARENTS = ("SampleHolder", "ScanAreaSampleHolderInfo")
+
+
+def _strip_czsht(name: str) -> str:
+    return name[:-len(".czsht")] if name.lower().endswith(".czsht") else name
+
+
+def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict]:
+    """
+    Read the sample-carrier Template from parsed .czi metadata or .czexp XML.
+
+    Uses the first ``SampleHolder/Template`` in document order (the
+    experiment's own carrier, the outermost one). Falls back to a
+    ``ScanAreaSampleHolderInfo/Template`` (its ``.czsht`` suffix removed) only
+    if there is none. Warns if the file names more than one carrier.
+
+    Lengths are µm in the file and returned in metres. Returns ``None`` if the
+    XML holds no carrier Template. See ``get_sample_carrier_from_czi`` for the
+    keys and for what an insert carrier records.
+    """
+    found = [(parent.tag, child)
+             for parent in root.iter()
+             for child in parent
+             if child.tag == "Template" and parent.tag in _CARRIER_TEMPLATE_PARENTS]
+    if not found:
+        return None
+    tmpl = next((t for p, t in found if p == "SampleHolder"), found[0][1])
+
+    names = {_strip_czsht(t.get("Name", "")) for _, t in found}
+    if len(names) > 1:
+        logging.getLogger("smartmic").warning(
+            f"{source or 'metadata'}: more than one sample carrier "
+            f"({', '.join(sorted(names))}); using '{_strip_czsht(tmpl.get('Name', ''))}'.")
+
+    def _float(tag: str) -> Optional[float]:
+        try:
+            v = float(tmpl.findtext(tag))
+        except (TypeError, ValueError):
+            return None
+        return None if v != v else v          # NaN → None
+
+    def _int(tag: str) -> Optional[int]:
+        v = _float(tag)
+        return int(v) if v is not None else None
+
+    def _m(tag: str) -> Optional[float]:      # µm → m
+        v = _float(tag)
+        return v / 1e6 if v is not None else None
+
+    def _pair_m(tag: str) -> Optional[Tuple[float, float]]:   # "x,y" µm → m
+        try:
+            x, y = (float(v) / 1e6 for v in tmpl.findtext(tag).split(","))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return (x, y)
+
+    def _text(tag: str) -> Optional[str]:
+        t = tmpl.findtext(tag)
+        return t.strip() if t and t.strip() else None
+
+    insert_type = _text("InsertType")
+    return {
+        "name":                _strip_czsht(tmpl.get("Name", "")),
+        "category":            _text("Category"),
+        "shape_type":          _text("ShapeType"),
+        "rows":                _int("ShapeRows"),
+        "columns":             _int("ShapeColumns"),
+        "well_width_m":        _m("ShapeWidth"),
+        "well_height_m":       _m("ShapeHeight"),
+        "pitch_x_m":           _m("ShapeDistanceX"),
+        "pitch_y_m":           _m("ShapeDistanceY"),
+        "bounds_size_m":       _pair_m("BoundsSize"),
+        "anchor_point_m":      _pair_m("AnchorPoint"),
+        "bottom_material":     _text("BottomMaterial"),
+        "bottom_thickness_m":  _m("BottomThickness"),
+        "insert_type":         insert_type,
+        "part_of_insert_name": _text("PartOfInsertName"),
+        "is_part_of_insert":   insert_type == "PartOfInsert",
+    }
+
+
+def get_sample_carrier_from_czi(czi_path: Path) -> Optional[Dict]:
+    """
+    Read the sample carrier a CZI was acquired with, from its embedded
+    experiment metadata (``…/SampleHolder/Template``).
+
+    Returns a dict (any value may be ``None`` if the file lacks it):
+
+    - ``name``: the Template name, e.g. ``"Multichamber 384"``,
+      ``"Marc_96W_U-Bottom"``, ``"Chamber Slide 8x - 76 x 26 mm - Vertical"``.
+    - ``category`` (``"Multiwell"``, ``"Multichamber"``, …), ``shape_type``
+      (``"Rectangle"``, ``"Ellipse"``, …), ``rows``, ``columns``.
+    - ``well_width_m`` / ``well_height_m`` (one well), ``pitch_x_m`` /
+      ``pitch_y_m`` (well centre to well centre), ``bounds_size_m`` and
+      ``anchor_point_m`` as ``(x, y)``: all metres (µm in the file).
+    - ``bottom_material``, ``bottom_thickness_m``.
+    - ``insert_type`` (``"Default"`` or ``"PartOfInsert"``),
+      ``part_of_insert_name``, ``is_part_of_insert``.
+
+    CAUTION, inserts: for a carrier that is an insert holding slides (e.g.
+    ZEN carrier ``Insert - 3x Slide - Chamber Slide 8x - 432332-9110-000``)
+    the file records only the ONE SLIDE (``name`` = ``"Chamber Slide 8x - 76
+    x 26 mm - Vertical"``, ``is_part_of_insert`` True). The insert's name is
+    not stored (``part_of_insert_name`` is empty), nor which slot was imaged.
+    So ``name`` equals the API's ``get_sample_carrier_name()`` only for a
+    carrier that is not an insert (a plate). Use ``check_sample_carrier``.
+    DEV_NOTES "What a CZI / .czexp records about the sample carrier".
+
+    Returns ``None`` if the file is unreadable or holds no carrier.
+    """
+    try:
+        from pylibCZIrw import czi as pyczi
+        with pyczi.open_czi(str(czi_path)) as czidoc:
+            root = ET.fromstring(czidoc.raw_metadata)
+    except Exception as e:
+        print(f"[CARRIER ERROR] {type(e).__name__}: {e}")
+        return None
+    return _parse_sample_carrier(root, Path(czi_path).name)
+
+
+def get_sample_carrier_from_czexp(czexp_path: Path) -> Optional[Dict]:
+    """
+    Read the sample carrier a ZEN .czexp experiment is set up for
+    (``SampleHolder/Template``). Same dict, and the same caution about
+    inserts, as ``get_sample_carrier_from_czi``.
+
+    Returns ``None`` if the file is unreadable or holds no carrier.
+    """
+    try:
+        root = ET.parse(str(czexp_path)).getroot()
+    except Exception as e:
+        print(f"[CARRIER ERROR] {type(e).__name__}: {e}")
+        return None
+    return _parse_sample_carrier(root, Path(czexp_path).name)
+
+
+def check_sample_carrier(carrier: Optional[Dict],
+                         expected_carrier: Optional[str] = None,
+                         expected_slide: Optional[str] = None,
+                         ) -> Tuple[Optional[bool], str]:
+    """
+    Check a carrier read by ``get_sample_carrier_from_czi`` / ``_czexp``
+    against what a project expects.
+
+    Args:
+        carrier:          The dict from the reader (``None`` → can't check).
+        expected_carrier: The ZEN carrier name, as the API reports it (a
+                          project's ``EXPECTED_SAMPLE_CARRIER``). Compared
+                          only for a carrier that is not an insert.
+        expected_slide:   For an insert carrier, the slide Template the file
+                          should record, e.g. ``"Chamber Slide 8x - 76 x 26
+                          mm - Vertical"``.
+
+    Returns:
+        ``(ok, message)``. ``ok`` is True (matches), False (doesn't match), or
+        None (can't be checked: no carrier in the file, nothing expected, or
+        an insert with no ``expected_slide``, since the file doesn't record
+        the insert).
+    """
+    if carrier is None:
+        return None, "no sample carrier in the file"
+    name = carrier["name"]
+
+    if carrier["is_part_of_insert"]:
+        if expected_slide is None:
+            return None, (f"slide '{name}' in an insert: the file records only the "
+                          f"slide, not the insert or its slot, so carrier "
+                          f"'{expected_carrier}' can't be checked from it")
+        if name == expected_slide:
+            return True, f"slide '{name}' (in an insert) as expected"
+        return False, f"slide '{name}' (in an insert), expected '{expected_slide}'"
+
+    if expected_carrier is None:
+        return None, f"carrier '{name}': no expected carrier given"
+    if name == expected_carrier:
+        return True, f"carrier '{name}' as expected"
+    return False, f"carrier '{name}', expected '{expected_carrier}'"
+
+
 def compute_focus_score(czi_path: Path) -> float | None:
     """
     Compute a Laplacian-variance sharpness metric for a CZI file.

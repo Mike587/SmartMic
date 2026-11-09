@@ -235,3 +235,136 @@ def test_read_jsonl_skips_blank_lines(tmp_path):
     log = tmp_path / "cells.jsonl"
     log.write_text('{"a": 1}\n\n{"b": 2}\n', encoding="utf-8")
     assert helper.read_jsonl(log) == [{"a": 1}, {"b": 2}]
+
+
+# --------------------------------------------------------------------------
+# Sample carrier (SampleHolder Template) from .czi / .czexp
+# --------------------------------------------------------------------------
+def test_sample_carrier_from_czi_plate(sharp):
+    pytest.importorskip("pylibCZIrw")
+    c = helper.get_sample_carrier_from_czi(sharp)
+    assert c["name"] == "Multichamber 384"
+    assert c["category"] == "Multichamber"
+    assert (c["rows"], c["columns"]) == (16, 24)
+    # µm in the file → m: 4.5 mm pitch, SBS footprint 127.8 × 85.5 mm.
+    assert c["pitch_x_m"] == pytest.approx(4.5e-3)
+    assert c["pitch_y_m"] == pytest.approx(4.5e-3)
+    assert c["bounds_size_m"] == pytest.approx((0.1278, 0.0855))
+    assert c["insert_type"] == "Default"
+    assert c["is_part_of_insert"] is False
+
+
+def test_sample_carrier_from_czexp_96well(czexp_dir):
+    c = helper.get_sample_carrier_from_czexp(czexp_dir / "zstack_LSM.czexp")
+    assert c["name"] == "Multiwell 96"
+    assert (c["rows"], c["columns"]) == (8, 12)
+    assert c["pitch_x_m"] == pytest.approx(9e-3)
+    assert c["is_part_of_insert"] is False
+
+
+def test_sample_carrier_ignores_czsht_copy(czexp_dir, caplog):
+    # stitch_region also holds a "Multichamber 384.czsht" copy under
+    # ScanAreaSampleHolderInfo, and nested SampleHolders without a Template.
+    with caplog.at_level(logging.WARNING, logger="smartmic"):
+        c = helper.get_sample_carrier_from_czexp(czexp_dir / "stitch_region.czexp")
+    assert c["name"] == "Multichamber 384"
+    assert "more than one sample carrier" not in caplog.text
+
+
+# Trimmed from a Marc_SM_002 .czexp: ZEN carrier "Insert - 3x Slide - Chamber
+# Slide 8x - 432332-9110-000". The file records only the slide, not the insert.
+INSERT_XML = """<HardwareExperiment>
+  <SampleHolder>
+    <Template Name="Chamber Slide 8x - 76 x 26 mm - Vertical">
+      <AnchorPoint>0,0</AnchorPoint>
+      <BoundsSize>26000,76000</BoundsSize>
+      <Category>Multichamber</Category>
+      <ShapeType>Rectangle</ShapeType>
+      <ShapeColumns>2</ShapeColumns>
+      <ShapeRows>4</ShapeRows>
+      <ShapeWidth>9500</ShapeWidth>
+      <ShapeHeight>10600</ShapeHeight>
+      <ShapeDistanceX>10900</ShapeDistanceX>
+      <ShapeDistanceY>12100</ShapeDistanceY>
+      <BottomMaterial>Glass</BottomMaterial>
+      <BottomThickness>186</BottomThickness>
+      <BottomOffsetMeasured>NaN</BottomOffsetMeasured>
+      <InsertType>PartOfInsert</InsertType>
+      <PartOfInsertName></PartOfInsertName>
+    </Template>
+  </SampleHolder>
+</HardwareExperiment>"""
+
+
+def _write(tmp_path, xml, name="synthetic.czexp"):
+    f = tmp_path / name
+    f.write_text(xml, encoding="utf-8")
+    return f
+
+
+def test_sample_carrier_insert_records_only_the_slide(tmp_path):
+    c = helper.get_sample_carrier_from_czexp(_write(tmp_path, INSERT_XML))
+    assert c["name"] == "Chamber Slide 8x - 76 x 26 mm - Vertical"
+    assert (c["rows"], c["columns"]) == (4, 2)
+    assert c["well_width_m"] == pytest.approx(9.5e-3)
+    assert c["bounds_size_m"] == pytest.approx((0.026, 0.076))
+    assert c["bottom_thickness_m"] == pytest.approx(186e-6)
+    assert c["insert_type"] == "PartOfInsert"
+    assert c["is_part_of_insert"] is True
+    assert c["part_of_insert_name"] is None
+
+
+def test_sample_carrier_falls_back_to_czsht_copy(tmp_path):
+    xml = """<X><AdditionalSettings><ScanAreaSampleHolderInfo>
+      <Template Name="Multiwell 96.czsht"><ShapeRows>8</ShapeRows></Template>
+    </ScanAreaSampleHolderInfo></AdditionalSettings></X>"""
+    c = helper.get_sample_carrier_from_czexp(_write(tmp_path, xml))
+    assert c["name"] == "Multiwell 96"
+    assert c["rows"] == 8
+    assert c["pitch_x_m"] is None           # missing tag → None
+
+
+def test_sample_carrier_conflicting_names_warn(tmp_path, caplog):
+    xml = """<X>
+      <SampleHolder><Template Name="Multiwell 96" /></SampleHolder>
+      <ScanAreaSampleHolderInfo><Template Name="Multichamber 384.czsht" /></ScanAreaSampleHolderInfo>
+    </X>"""
+    with caplog.at_level(logging.WARNING, logger="smartmic"):
+        c = helper.get_sample_carrier_from_czexp(_write(tmp_path, xml))
+    assert c["name"] == "Multiwell 96"      # the experiment's own SampleHolder wins
+    assert "more than one sample carrier" in caplog.text
+
+
+def test_sample_carrier_none_without_template(tmp_path):
+    xml = "<X><SampleHolder><Overlap>0.1</Overlap></SampleHolder></X>"
+    assert helper.get_sample_carrier_from_czexp(_write(tmp_path, xml)) is None
+
+
+def test_sample_carrier_missing_files_return_none(tmp_path):
+    assert helper.get_sample_carrier_from_czexp(tmp_path / "nope.czexp") is None
+    assert helper.get_sample_carrier_from_czi(tmp_path / "nope.czi") is None
+
+
+def test_check_sample_carrier_plate():
+    plate = {"name": "Marc_96W_U-Bottom", "is_part_of_insert": False}
+    assert helper.check_sample_carrier(plate, "Marc_96W_U-Bottom")[0] is True
+    assert helper.check_sample_carrier(plate, "Multiwell 96")[0] is False
+    assert helper.check_sample_carrier(plate)[0] is None
+    # expected_slide is irrelevant for a plate
+    assert helper.check_sample_carrier(plate, "Marc_96W_U-Bottom", "x")[0] is True
+
+
+def test_check_sample_carrier_insert():
+    slide = {"name": "Chamber Slide 8x - 76 x 26 mm - Vertical", "is_part_of_insert": True}
+    insert = "Insert - 3x Slide - Chamber Slide 8x - 432332-9110-000"
+    # The insert name is never in the file: can't check, never a false mismatch.
+    ok, msg = helper.check_sample_carrier(slide, insert)
+    assert ok is None and "can't be checked" in msg
+    assert helper.check_sample_carrier(
+        slide, insert, "Chamber Slide 8x - 76 x 26 mm - Vertical")[0] is True
+    assert helper.check_sample_carrier(
+        slide, insert, "Slide 76 x 26 mm - Vertical")[0] is False
+
+
+def test_check_sample_carrier_no_carrier():
+    assert helper.check_sample_carrier(None, "Multiwell 96")[0] is None
