@@ -80,6 +80,13 @@ These are the bulk of the value. Grouped by module.
 - `retarget_tile_region`: Name, TemplateShapeId, centre and Z rewritten, tiling
   untouched; a region with a link and no `shape_id` raises and stays unchanged;
   a malformed `shape_id` raises; a region without a link gets none added.
+- `fit_lsm_stack_to_box`: FixedZ → absolute range (`z_reference` absolute),
+  CurrentZ → offsets (`region_z` with a region, whose X/Y/Z are set;
+  `current_z` without); FOV = max(sx, sy) + 2·margin at constant pixel size;
+  SamplingMode=User by default; a mode mismatch or unknown `expect_mode` raises
+  and writes nothing; a focus search is refused only when forbidden; Tiles on
+  without a region is refused; options (forced frame, z step, max scan speed,
+  run-mode lock); the real `zstack_LSM` fixture (CurrentZ + region).
 - `fit_lsm_crop`: assert frame/zoom math at constant pixel size and at a fixed frame.
   (The `target_fov_um <= 0` → `ValueError` guard added alongside the other
   2026-07-15 fixes is not covered here — a gap.)

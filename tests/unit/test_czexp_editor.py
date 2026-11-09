@@ -6,6 +6,7 @@ region functions against an actual ZEN file; synthetic XML covers the
 exact-value logic (crop math, run-mode stripping, stitching detection)
 deterministically.
 """
+import re
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -609,3 +610,111 @@ def test_retarget_tile_region_without_container_link():
                                                               "authored_shape_id": None}
     reg = root.find(".//TileRegion")
     assert reg.get("Name") == "B2" and reg.find("TemplateShapeId") is None   # none added
+
+
+# --------------------------------------------------------------------------
+# fit_lsm_stack_to_box (LSM z-stack + crop fitted to one object's box)
+# --------------------------------------------------------------------------
+def _box_base(tmp_path, mode, region=True, search="None", tiles=None):
+    """SYNTH_LSM (0.405 µm base pixel) with a FocusZStackMode, written to a file."""
+    xml = SYNTH_LSM.replace(
+        "<RunMode>",
+        f"<FocusSetup><FocusStrategy><Method>None</Method><SearchAction>{search}</SearchAction>"
+        f"<SurfaceMode>None</SurfaceMode><FocusZStackMode>{mode}</FocusZStackMode>"
+        f"</FocusStrategy></FocusSetup><RunMode>", 1)
+    if not region:
+        xml = re.sub(r"<SingleTileRegions>.*</SingleTileRegions>", "<SingleTileRegions />", xml,
+                     flags=re.S)
+    if tiles is not None:
+        xml = xml.replace("<RunMode>", f'<TilesSetup IsActivated="{tiles}" /><RunMode>', 1)
+    path = tmp_path / f"base_{mode}_{region}.czexp"
+    path.write_text(xml, encoding="utf-8")
+    return path
+
+
+BOX_C = (0.0123, 0.0456, 2900e-6)          # x, y, z (m)
+BOX_S = (100e-6, 80e-6, 60e-6)             # sx, sy, sz (m)
+
+
+def _fit(tmp_path, base, **kw):
+    kw = {"expect_mode": "FixedZ", "xy_margin_m": 20e-6, "z_margin_m": 10e-6, **kw}
+    out = tmp_path / "out.czexp"
+    res = cz.fit_lsm_stack_to_box(base, out, BOX_C, BOX_S, **kw)
+    _, root = cz.load_czexp(out)
+    return res, root
+
+
+def test_fit_box_fixedz_without_region_is_absolute(tmp_path):
+    res, root = _fit(tmp_path, _box_base(tmp_path, "FixedZ", region=False))
+    assert (res["z_reference"], res["positioned_by_region"]) == ("absolute", False)
+    assert res["half_z_m"] == pytest.approx(40e-6)                       # 60/2 + 10
+    assert _zstack_value(root, "First") == pytest.approx(2860e-6)
+    assert _zstack_value(root, "Last") == pytest.approx(2940e-6)
+    assert res["actual_fov_um"] == pytest.approx(140.0)                  # max(100, 80) + 2·20
+    assert res["frame_size"] == round(140 / 0.405)                      # constant pixel size
+    assert res["n_slices"] == 41                                         # 80 µm @ 2 µm (base step)
+    assert cz.find_lsm_detector(root).findtext("SamplingMode") == "User"
+    assert res["sampling_mode"] == "User"
+
+
+def test_fit_box_currentz_with_region_is_relative_to_the_region_z(tmp_path):
+    res, root = _fit(tmp_path, _box_base(tmp_path, "CurrentZ"), expect_mode="CurrentZ")
+    assert (res["z_reference"], res["positioned_by_region"]) == ("region_z", True)
+    assert _zstack_value(root, "First") == pytest.approx(-40e-6)
+    assert _zstack_value(root, "Last") == pytest.approx(40e-6)
+    reg = root.find(".//SingleTileRegion")
+    assert [float(reg.findtext(t)) for t in "XYZ"] == pytest.approx([12300.0, 45600.0, 2900.0])
+
+
+def test_fit_box_currentz_without_region_needs_the_caller_at_center_z(tmp_path):
+    res, _ = _fit(tmp_path, _box_base(tmp_path, "CurrentZ", region=False), expect_mode="CurrentZ")
+    assert (res["z_reference"], res["positioned_by_region"]) == ("current_z", False)
+
+
+def test_fit_box_fixedz_with_region_sets_the_region_and_stays_absolute(tmp_path):
+    res, root = _fit(tmp_path, _box_base(tmp_path, "FixedZ"))
+    assert (res["z_reference"], res["positioned_by_region"]) == ("absolute", True)
+    assert float(root.find(".//SingleTileRegion").findtext("Z")) == pytest.approx(2900.0)
+    assert _zstack_value(root, "First") == pytest.approx(2860e-6)
+
+
+@pytest.mark.parametrize("mode,expect", [("FixedZ", "CurrentZ"), ("CurrentZ", "FixedZ")])
+def test_fit_box_mode_mismatch_refused_nothing_written(tmp_path, mode, expect):
+    with pytest.raises(ValueError, match="FocusZStackMode"):
+        _fit(tmp_path, _box_base(tmp_path, mode), expect_mode=expect)
+    assert not (tmp_path / "out.czexp").exists()
+
+
+def test_fit_box_needs_a_known_expect_mode(tmp_path):
+    with pytest.raises(ValueError, match="expect_mode"):
+        _fit(tmp_path, _box_base(tmp_path, "FixedZ"), expect_mode=None)
+
+
+def test_fit_box_refused_bases(tmp_path):
+    searching = _box_base(tmp_path, "FixedZ", search="DefiniteFocusFindSurface")
+    _fit(tmp_path, searching)                                           # allowed unless forbidden
+    with pytest.raises(ValueError, match=r"focus search.*\(U-bottom\)"):
+        _fit(tmp_path, searching, forbid_focus_search="U-bottom")
+    with pytest.raises(ValueError, match="no tile region"):
+        _fit(tmp_path, _box_base(tmp_path, "FixedZ", region=False, tiles="true"))
+
+
+def test_fit_box_options(tmp_path):
+    base = _box_base(tmp_path, "FixedZ")
+    res, root = _fit(tmp_path, base, sampling_mode_user=False)
+    assert cz.find_lsm_detector(root).findtext("SamplingMode") == "SR"  # constant pixel, ZEN's choice
+    res, root = _fit(tmp_path, base, frame_size=512, z_step_m=4e-6, max_scan_speed=True,
+                     lock_run_mode=True, sampling_mode_user=False)
+    det = cz.find_lsm_detector(root)
+    assert res["frame_size"] == 512 and det.findtext("SamplingMode") == "User"   # forced frame
+    assert res["z_step_m"] == pytest.approx(4e-6) and res["n_slices"] == 21
+    assert res["max_scan_speed"] is True and det.findtext("IsMaxScanSpeedSet") == "true"
+    assert "OptimizeBeforePerformEnabled" not in root.findtext("RunMode")
+
+
+def test_fit_box_real_fixture(lsm_path, tmp_path):
+    # zstack_LSM.czexp: CurrentZ, one position region.
+    res, root = _fit(tmp_path, lsm_path, expect_mode="CurrentZ")
+    assert (res["z_reference"], res["positioned_by_region"]) == ("region_z", True)
+    assert _zstack_value(root, "First") == pytest.approx(-40e-6)
+    assert res["actual_fov_um"] == pytest.approx(140.0)

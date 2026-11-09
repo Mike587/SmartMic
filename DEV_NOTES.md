@@ -452,6 +452,21 @@ are relative or absolute** (found in Marc_SM_003, 2026-11-02; safety-relevant).
   `FocusZStackMode` and `ZStackSetup`. Those are ignored, by both the reader and
   `find_zstack_setup` (which used to fall back to the SWAF's stack when the
   experiment had none of its own).
+- **Builder (2026-11-09, promoted from Marc_SM_003):**
+  `MS_czexp_editor.fit_lsm_stack_to_box(base, out, center_m, size_m,
+  expect_mode=…, xy_margin_m=…, z_margin_m=…)` writes an LSM z-stack + square
+  crop fitted to one object's box. `expect_mode` is required: the caller says
+  which kind of Z it handles and a base in the other mode is refused. Its
+  `z_reference` says what the stack is relative to: `absolute` (FixedZ),
+  `region_z` (CurrentZ with a position region, set to the centre) or
+  `current_z` (CurrentZ without one: move Z to the centre before the run).
+  Marc_SM_003's finals were byte-identical to its old code (36 cases).
+- **The two older copies of this builder are not switched** (own repos):
+  - Marc_SM `make_spheroid_dv` always writes ABSOLUTE First/Last, with a
+    comment that ZEN centres a CENTER-mode stack on the region `<Z>` (the old,
+    wrong belief). It is right only because its DV bases are FixedZ (checked
+    2026-11-09); a CurrentZ base would run millimetres off.
+  - HD_Nuclei_from_slide `make_image_nuclei`: the same steps, no mode check.
 
 **Method 1 needs Tiles OFF: Tiles on with no tile region makes ZEN refuse the
 run** (found in Marc_SM_003, 2026-11-02, shakedown step 4).

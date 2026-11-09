@@ -804,6 +804,99 @@ def set_lsm_sampling_mode_user(root):
 
 
 # ---------------------------------------------------------------------------
+# Builder: an LSM z-stack fitted to one object
+# ---------------------------------------------------------------------------
+
+def fit_lsm_stack_to_box(base_path, out_path, center_m, size_m, *, expect_mode,
+                         xy_margin_m, z_margin_m, z_step_m=None, frame_size=None,
+                         sampling_mode_user=True, max_scan_speed=False,
+                         lock_run_mode=False, forbid_focus_search=False):
+    """Write a copy of an LSM z-stack experiment that images one object's box.
+
+    center_m = (x, y, z), size_m = (sx, sy, sz): the object's box, metres.
+    The copy gets:
+      * a z-stack over center z ± (sz/2 + z_margin_m), written the way the
+        base's FocusZStackMode says ZEN reads it (offsets for CurrentZ,
+        absolute Z for FixedZ);
+      * a square LSM field of view of max(sx, sy) + 2·xy_margin_m
+        (fit_lsm_crop: constant pixel size, or frame_size×frame_size);
+      * the region X/Y/Z set to the centre, IF the base has a position
+        region. A base without one acquires at the current stage position:
+        the caller moves there first (see "z_reference" below).
+
+    expect_mode: "CurrentZ" or "FixedZ", the mode the caller has written its
+        Z handling for. A base in another (or no) mode is refused, so a range
+        is never written in the wrong kind of Z (DEV_NOTES "FocusZStackMode,
+        not IsCenterMode": relative ±200 µm in a FixedZ file ran at absolute
+        −200 … +200 µm).
+    sampling_mode_user: set SamplingMode=User so ZEN keeps the fitted frame
+        (default; Marc_SM_003, HD_Nuclei). With False, only a forced
+        frame_size switches to User (fit_lsm_crop).
+    max_scan_speed / lock_run_mode: set_lsm_scan_speed_max / set_run_mode_lock.
+    forbid_focus_search: True, or a reason string, refuses a base whose focus
+        strategy runs a search (require_no_focus_search). Tiles on without a
+        region is always refused (require_runnable_tiles).
+
+    The caller still owns the safety of the Z it asks for (its Z guard /
+    ceiling): this only writes the requested range.
+
+    Returns a dict: out_path, focus_z_stack_mode, positioned_by_region,
+    z_reference ("absolute" | "region_z" | "current_z": what the z-stack is
+    relative to; "current_z" means the caller must move Z to center z before
+    the run), first_m / last_m (as written), half_z_m, z_step_m, n_slices,
+    max_scan_speed, run_mode, plus fit_lsm_crop's values (actual_fov_um,
+    frame_size, zoom, pixel_um, …; sampling_mode as written).
+
+    Raises:
+        ValueError: mode mismatch, a refused base (see above), or a size that
+            gives no field of view.
+    """
+    if expect_mode not in FOCUS_Z_STACK_MODES:
+        raise ValueError(f"expect_mode must be one of {sorted(FOCUS_Z_STACK_MODES)}, "
+                         f"got {expect_mode!r}")
+    cx, cy, cz = center_m
+    sx, sy, sz = size_m
+    tree, root = load_czexp(base_path)
+    require_runnable_tiles(root, base_path)
+    if forbid_focus_search:
+        require_no_focus_search(root, base_path,
+                                reason=forbid_focus_search if isinstance(forbid_focus_search, str)
+                                else None)
+    require_focus_z_stack_mode(root, expect_mode, base_path)
+
+    regions = _iter_own(root, "SingleTileRegion")
+    if regions:
+        r = regions[0]
+        _require(r, "X").text = _fmt_float(cx * 1e6)
+        _require(r, "Y").text = _fmt_float(cy * 1e6)
+        _require(r, "Z").text = _fmt_float(cz * 1e6)
+
+    half_z = sz / 2.0 + z_margin_m
+    if expect_mode == "CurrentZ":                  # offsets from the focus at the position
+        first, last = -half_z, half_z
+        z_reference = "region_z" if regions else "current_z"
+    else:                                          # FixedZ: absolute Z
+        first, last = cz - half_z, cz + half_z
+        z_reference = "absolute"
+    set_zstack_range(root, first, last, interval_m=z_step_m)
+
+    crop = fit_lsm_crop(root, (max(sx, sy) + 2.0 * xy_margin_m) * 1e6,
+                        frame_size_override=frame_size)
+    if sampling_mode_user and set_lsm_sampling_mode_user(root) is not None:
+        crop["sampling_mode"] = "User"
+    scan_max = set_lsm_scan_speed_max(root) if max_scan_speed else False
+    run_mode = set_run_mode_lock(root) if lock_run_mode else None
+    save_czexp(tree, out_path)
+
+    step = get_zstack_interval_m(root)
+    return {"out_path": str(out_path), "focus_z_stack_mode": expect_mode,
+            "positioned_by_region": bool(regions), "z_reference": z_reference,
+            "first_m": first, "last_m": last, "half_z_m": half_z, "z_step_m": step,
+            "n_slices": int(round(2.0 * half_z / step)) + 1,
+            "max_scan_speed": scan_max, "run_mode": run_mode, **crop}
+
+
+# ---------------------------------------------------------------------------
 # CLI: inspect a czexp, or dry-run a fit
 # ---------------------------------------------------------------------------
 
