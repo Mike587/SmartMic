@@ -53,9 +53,43 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   for the 50x immersion one — seed it near the surface, or focus inside the
   experiment.
 
+- **What each DF RPC does, per objective (measured 2026-11-09).**
+  - **Setup:** project `DF_Exploration` (local), one XY in a water-filled 6-well glass-bottom plate ("Multiwell 6", glass 168 µm), 2x tube lens. Raw `DefiniteFocusService` calls, a Z trace polled at about 60 ms, and DF events from `ZENService.log.xml`.
+  - **Where to see what DF did:** the API returns no quality, but the log does: `MtbStabilizingCycleFinishedEvent(): mtbResult, signalQuality, focusPosition [µm], errorCode`. The log also shows the firmware command behind each RPC (below), `FocusPositionLimitParameter` 4500, and the carrier bottom thickness in nm.
+  - **`FindSurface`** (SetOffset → Finding). It always ends on the surface, and the returned `zposition` equals the drive read-back.
+    - 5x: a fast sweep **up to about +410 µm above the surface** (+590 µm from −500 µm), then down. 2–3 s, ±0.5 µm.
+    - 20x/0.7 and 20x/0.95: a staircase **from below** (about 115–125 µm steps, 0.5 s each). From above, it first drops to −55 µm. Never more than +2.3 µm above the surface. 3–4 s near the surface, about 9 s from Z=0. ±0.15–0.25 µm.
+    - 50x W: from above (+5…+30 µm), down to the surface in 2–3 s, ±0.07 µm. From below it climbs (about 20 µm steps) to the **first reflex above the start** (see the underside entry below).
+    - The 30 starts on 5x and the 36–40 on each 20x, from −1000 µm up to +50 µm above the surface, all found the same surface.
+  - **`StoreFocus`** = `InitOnCurrentPosition`. On 20x/50x it takes about 0.45–0.9 s, does not move (50x: a brief +6 µm lift), and logs `MtbFocusPositionOffsetChangedEvent(offset, Calculated)`, i.e. it stores the **offset to the reflex**. On 5x it instead does a full sweep and stores **no** offset.
+  - **`RecallFocus`** = `FindFocus` → "Stabilizing" (a short local cycle). On 20x/50x it **returns to reflex + stored offset to ±0.07–0.15 µm**, from above or below, also after a FindSurface. On 5x it goes to the reflex (offset ignored, ±2 µm). After an objective change it falls back to a full FindSurface.
+  - **`LockFocus(timeout)` is rejected on every objective:** gRPC INTERNAL within ms, without reaching DF. Nothing is logged except the gateway forward. **`UnlockFocus` is a no-op.** Continuous stabilisation is therefore only possible inside an experiment (`.czexp` `DefiniteFocus` / `DefiniteFocusStabilize`).
+  - **`FocusService.Stop` does not stop a DF search.** On 5x Z kept rising; DF then reports `ErrFocusStabilizer (0x29)` even though it found the surface with quality 99. **0x29 = DF interrupted.** So no software guard can brake a DF search; only its start Z decides where it goes.
+  - **Image focus vs DF surface** (DAPI dirt on the well bottom):
+    - 5x: about −12 µm (broad depth of field);
+    - 20x/0.7: about +1 µm;
+    - 20x/0.95: about +1.5 µm;
+    - 50x: about +1 µm.
+    - The CZI `FocusPosition` equals the drive Z exactly (widefield).
+    - At 50x + 2x, `compute_focus_score` (raw Laplacian) only sees pixel noise. Bin 4×4 first.
+  - **Switching to the 50x over the API applies the water automatically.** `set_optics_verified(4, …)` took 70 s: ImmersionAdapter "Creating", pump cycles, `IsImmersionApplied = True`.
+  - Seen, not confirmed: the surface drifted about +1.5–3 µm/h, and the first FindSurface right after an objective change was 3–4 µm off (2 cases).
+
+- **50x: DF locks onto the plate UNDERSIDE with quality 99 if started too low (reproduced 2026-11-09).**
+  - Same setup, well bottom S = 1192.4 µm. From S −30/−60/−100 µm, FindSurface climbed and found S (quality 96). From **S −170 µm it locked at S −149.16 µm** (the water–glass interface on the objective side; 170 µm × 1.33/1.52 = 149 µm) with **quality 99 and "Success"**. Same signature as the New-03 C7 failure (below). Over the API, DF took the first reflex above its start. That does **not** explain New-03 itself: there DF started *between* the two interfaces (43 µm above the underside, 109 µm below the well bottom) and still went down to the underside. Here, starts between them (−30…−100 µm) climbed to the well bottom. The difference could be the in-experiment DF (FocusStrategy) or the stored-reference state; not yet tested.
+  - Right after switching to the 50x, a FindSurface from S −292 µm went **down** instead (no reference yet: `offsetToRestore = 0`). It ran to **−1000 µm** in 31 s and found nothing (ReflexNotFound), which **breaks the water bridge**. Re-immersion in ZEN fixed it.
+  - **Rules for the 50x:**
+    1. Seed DF **above** the expected surface (+5…+30 µm always found S).
+    2. Never start more than about 149 µm below it.
+    3. Never search blind after the objective change.
+    4. Check every result against the expected Z: about −149 µm means the underside.
+  - `DefiniteFocusTracker`'s adaptive start (last surface −100 µm) violates rule 2 as soon as the next surface is more than about 49 µm higher. See TODO.
+
 - **5x↔50x surfaces differ a lot here.** The 5x tissue-scan surface read ~1189–1194
   µm; a 50x DF (seeded at 1080 µm) landed ~939 µm. Treat the per-objective surface
   Z as independent — never assume 5x and 50x focus at the same Z.
+  (On the 6-well glass-bottom plate, 2026-11-09, the opposite held: 5x about 1201 µm,
+  20x about 1190 µm, 50x about 1192 µm. The offset depends on the plate.)
 
 - **ZEN computes the tile grid from the CURRENT objective/optovar at RUN time.**
   Launching an experiment before a slow optics change has propagated (especially
@@ -139,6 +173,10 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   everything, so "dark stack" does NOT mean a laser fault. The software
   autofocus could not fix it (search range ±20 µm); its score fell from
   300–700 to ~50 at that position and nobody looked.
+  (Same lock reproduced over the API 2026-11-09, but only from a start
+  *below* the underside: from between the interfaces, the API FindSurface
+  climbed to the well bottom. So New-03's start alone does not explain it.
+  See "50x: DF locks onto the plate UNDERSIDE" above.)
   Why at C7: FindSurface starts at the **previous position's Z**. The plate
   was tilted +107 µm over the 54 mm between columns 1 and 7, so after the
   C1→C7 jump the start (1197) was 43 µm above the plate bottom but 109 µm
