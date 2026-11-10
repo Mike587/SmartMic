@@ -14,6 +14,7 @@
 
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -251,6 +252,10 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
 
     Raises:
         FileNotFoundError: if *file_path* does not exist.
+        ValueError: if a used position has no ``<X>`` or ``<Y>``, or an
+            ``<X>``/``<Y>``/``<Z>`` that is not a finite number. A missing or
+            empty ``<Z>`` gives ``z_m = 0.0`` (as before); positions that are
+            not used are not checked.
     """
     file_path = Path(file_path)
     if not file_path.exists():
@@ -262,11 +267,22 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
         # matching ZEN's own behaviour (the flag is only written when False).
         return (text or "true").strip().lower() == "true"
 
-    def _float(text: str, fallback: float = 0.0) -> float:
+    def _um(region: ET.Element, tag: str, well: str, required: bool) -> float:
+        # A coordinate that cannot be read must stop the run. A silent 0.0
+        # would send the stage to (0, 0).
+        text = (region.findtext(tag) or "").strip()
+        where = f"{file_path.name}: well '{well}', position '{region.get('Name', '')}'"
+        if not text:
+            if required:
+                raise ValueError(f"{where}: <{tag}> is missing or empty")
+            return 0.0
         try:
-            return float(text or fallback)
-        except (ValueError, TypeError):
-            return fallback
+            value = float(text)
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value):
+            raise ValueError(f"{where}: <{tag}> is not a finite number ({text!r})")
+        return value
 
     root = ET.parse(file_path).getroot()
     positions = []
@@ -285,9 +301,9 @@ def load_positions_from_czexp(file_path: Path) -> List[dict]:
                     "well":          well_id,
                     "position_name": region.get("Name", ""),
                     "scene_index":   scene_idx,
-                    "x_m":           _float(region.findtext("X")) / 1e6,
-                    "y_m":           _float(region.findtext("Y")) / 1e6,
-                    "z_m":           _float(region.findtext("Z")) / 1e6,
+                    "x_m":           _um(region, "X", well_id, required=True) / 1e6,
+                    "y_m":           _um(region, "Y", well_id, required=True) / 1e6,
+                    "z_m":           _um(region, "Z", well_id, required=False) / 1e6,
                 })
             scene_idx += 1
 

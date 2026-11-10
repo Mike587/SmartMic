@@ -43,6 +43,7 @@ refuse_if_immersion_active         -- Immersion guard shared by the Z=0-lowering
 """
 
 import asyncio
+import math
 import numpy as np
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
@@ -242,10 +243,18 @@ async def set_stage_motion(speed_percent: float = None,
         ``{"speed_x", "speed_y", "acceleration_x", "acceleration_y"}`` (percent).
         ``speed_x``/``speed_y`` are ``None`` when the device rejected the speed
         knob (see above) — that is NOT a failure of this function.
+
+    Raises:
+        ValueError: If a percent is not a finite number in [0, 100] (bool is
+            refused). Nothing is sent to the device.
     """
     logger = set_logging()
     speed = STAGE_TRAVEL_SPEED_PERCENT if speed_percent is None else speed_percent
     accel = STAGE_ACCELERATION_PERCENT if acceleration_percent is None else acceleration_percent
+    for name, value in (("speed_percent", speed), ("acceleration_percent", accel)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not 0 <= value <= 100):
+            raise ValueError(f"{name} must be a finite number in [0, 100], got {value!r}")
 
     async with open_zen_channel(config_path) as (channel, metadata):
         stage_service = StageServiceStub(channel=channel, metadata=metadata)

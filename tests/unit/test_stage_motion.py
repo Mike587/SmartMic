@@ -130,3 +130,35 @@ def test_set_stage_motion_acceleration_failure_raises(monkeypatch):
 
     with pytest.raises(RuntimeError):
         asyncio.run(stage.set_stage_motion())
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"speed_percent": -1},
+    {"speed_percent": 100.1},
+    {"acceleration_percent": -0.5},
+    {"acceleration_percent": 500},
+    {"acceleration_percent": float("nan")},
+    {"acceleration_percent": float("inf")},
+    {"speed_percent": True},
+    {"acceleration_percent": "40"},
+])
+def test_set_stage_motion_refuses_bad_percent(monkeypatch, kwargs):
+    # A percent outside [0, 100], non-finite or not a number must raise before
+    # anything is sent to the device.
+    rec = {"speed": [], "accel": []}
+    monkeypatch.setattr(stage, "open_zen_channel", _fake_channel)
+    monkeypatch.setattr(stage, "StageServiceStub", _make_stub(rec))
+
+    with pytest.raises(ValueError):
+        asyncio.run(stage.set_stage_motion(**kwargs))
+    assert rec == {"speed": [], "accel": []}
+
+
+@pytest.mark.parametrize("percent", [0, 100, 12.5])
+def test_set_stage_motion_accepts_the_range_limits(monkeypatch, percent):
+    rec = {"speed": [], "accel": []}
+    monkeypatch.setattr(stage, "open_zen_channel", _fake_channel)
+    monkeypatch.setattr(stage, "StageServiceStub", _make_stub(rec))
+
+    asyncio.run(stage.set_stage_motion(percent, percent))
+    assert rec["accel"] == [(percent, percent)]

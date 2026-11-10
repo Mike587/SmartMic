@@ -66,6 +66,46 @@ def test_load_positions_used_flag_defaults_true(tmp_path):
     assert p["x_m"] == pytest.approx(1000 / 1e6)
 
 
+def _positions_file(tmp_path, region_xml):
+    f = tmp_path / "synthetic.czexp"
+    f.write_text(f'<HardwareExperiment><SingleTileRegionArray Name="C7">'
+                 f'<SingleTileRegions>{region_xml}</SingleTileRegions>'
+                 f'</SingleTileRegionArray></HardwareExperiment>', encoding="utf-8")
+    return f
+
+
+# A coordinate that cannot be read must stop the run: a silent 0.0 would send
+# the stage to (0, 0).
+@pytest.mark.parametrize("coords", [
+    "<Y>2</Y><Z>3</Z>",                      # X missing
+    "<X>1</X><Z>3</Z>",                      # Y missing
+    "<X></X><Y>2</Y><Z>3</Z>",               # X empty
+    "<X>abc</X><Y>2</Y><Z>3</Z>",            # X not a number
+    "<X>1</X><Y>NaN</Y><Z>3</Z>",            # Y not finite
+    "<X>1</X><Y>2</Y><Z>inf</Z>",            # Z not finite
+    "<X>1</X><Y>2</Y><Z>1,5</Z>",            # Z not a number
+])
+def test_load_positions_bad_coordinate_raises(tmp_path, coords):
+    f = _positions_file(tmp_path, f'<SingleTileRegion Name="P3">{coords}</SingleTileRegion>')
+    with pytest.raises(ValueError, match="C7.*P3"):
+        helper.load_positions_from_czexp(f)
+
+
+def test_load_positions_missing_z_is_zero(tmp_path):
+    f = _positions_file(tmp_path,
+                        '<SingleTileRegion Name="P1"><X>1</X><Y>2</Y></SingleTileRegion>')
+    assert helper.load_positions_from_czexp(f)[0]["z_m"] == 0.0
+
+
+def test_load_positions_unused_position_is_not_checked(tmp_path):
+    f = _positions_file(
+        tmp_path,
+        '<SingleTileRegion Name="P1"><X>1</X><Y>2</Y><Z>3</Z></SingleTileRegion>'
+        '<SingleTileRegion Name="P2"><X>abc</X>'
+        '<IsUsedForAcquisition>false</IsUsedForAcquisition></SingleTileRegion>')
+    assert [p["position_name"] for p in helper.load_positions_from_czexp(f)] == ["P1"]
+
+
 # --------------------------------------------------------------------------
 # setup_run_logger
 # --------------------------------------------------------------------------

@@ -469,10 +469,16 @@ def _validate_range(value, lo, hi, label: str, type_check, type_name: str,
     Backs validate_objective_number / validate_optovar_number /
     validate_z_position / validate_xy_position below, which differed only in
     bounds, the expected type, and label text.
+
+    bool is refused (it is an int in Python: True would select position 1).
+    NaN and ±inf are refused: every comparison with NaN is False, so a plain
+    ``value < lo or value > hi`` test lets NaN through to the hardware.
     """
-    if not isinstance(value, type_check):
+    if isinstance(value, bool) or not isinstance(value, type_check):
         return False, f"{label} must be {type_name}, got {type(value)}"
-    if value < lo or value > hi:
+    if not math.isfinite(value):
+        return False, f"{label} must be a finite number, got {value}"
+    if not lo <= value <= hi:
         return False, f"{label} {value}{unit} outside safe range [{lo}, {hi}]{unit}"
     return True, f"Valid {label.lower()}"
 
@@ -856,7 +862,8 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
         bool: True if change completed successfully, False if timeout
     
     Raises:
-        ValueError: If objective_nr or optovar_nr are invalid
+        ValueError: If objective_nr or optovar_nr are invalid, or the changer
+            reports a position that is not in its inventory (not retried).
     """
     # Validate inputs
     obj_valid, obj_msg = validate_objective_number(objective_nr)
@@ -913,7 +920,12 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
                 # Timeout reached
                 print(f"[WARN] Timeout after {adjusted_timeout}s, retry {retry_count + 1}/{max_retries}")
                 retry_count += 1
-                
+
+            except (ValueError, TypeError):
+                # Not transient: e.g. the target position is not in the reported
+                # inventory (MS_zenapi_objectivechanger._require). A retry cannot
+                # fix a configuration mismatch, and a False return would hide it.
+                raise
             except Exception as e:
                 print(f"[WARN] Exception during objective change: {e}")
                 print(f"[INFO] Retry {retry_count + 1}/{max_retries}")

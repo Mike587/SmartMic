@@ -159,6 +159,49 @@ def test_set_optics_happy_path(monkeypatch):
     assert ms.set_objective_set_optovar_sync(2, 2) is True
 
 
+def test_set_optics_config_error_is_not_retried(monkeypatch):
+    # A position that is not in the changer inventory (ValueError from
+    # MS_zenapi_objectivechanger._require) is a configuration mismatch, not a
+    # transient failure: it must propagate at once, not end as a False return.
+    calls = {"n": 0}
+
+    async def get_current():
+        return (2, 2)
+
+    async def set_oo(obj, opt):
+        calls["n"] += 1
+        raise ValueError("New objective: objective position 3 is not in the inventory")
+
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
+    with pytest.raises(ValueError, match="not in the inventory"):
+        ms.set_objective_set_optovar_sync(3, 1)
+    assert calls["n"] == 1
+
+
+def test_set_optics_transient_error_is_still_retried(monkeypatch):
+    # Other errors (gRPC, connection) keep the retry: the second attempt succeeds.
+    state = {"n": 0, "pos": (2, 2)}
+
+    async def get_current():
+        return state["pos"]
+
+    async def set_oo(obj, opt):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("transient")
+        state["pos"] = (obj, opt)
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
+    monkeypatch.setattr(ms.asyncio, "sleep", no_sleep)
+    assert ms.set_objective_set_optovar_sync(3, 1) is True
+    assert state["n"] == 2
+
+
 # --------------------------------------------------------------------------
 # preflight (start-of-run checks + stage-motion setup)
 # --------------------------------------------------------------------------

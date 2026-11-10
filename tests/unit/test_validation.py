@@ -67,3 +67,34 @@ def test_validate_xy_position(x, y, ok):
     valid, msg = ms.validate_xy_position(x, y)
     assert valid is ok
     assert isinstance(msg, str)
+
+
+# NaN compares False with everything, so a plain "< lo or > hi" test lets it
+# through to the hardware; ±inf and NaN must all be refused.
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_positions_are_refused(bad):
+    assert ms.validate_z_position(bad)[0] is False
+    assert ms.validate_xy_position(bad, 0.01)[0] is False
+    assert ms.validate_xy_position(0.01, bad)[0] is False
+
+
+# bool is an int in Python: True would otherwise select position 1.
+@pytest.mark.parametrize("flag", [True, False])
+def test_bool_is_refused(flag):
+    assert ms.validate_objective_number(flag)[0] is False
+    assert ms.validate_optovar_number(flag)[0] is False
+    assert ms.validate_z_position(flag)[0] is False
+    assert ms.validate_xy_position(flag, 0.01)[0] is False
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_moves_raise_before_any_rpc(monkeypatch, bad):
+    def no_rpc(coro):
+        coro.close()
+        raise AssertionError("an RPC was started")
+
+    monkeypatch.setattr(ms.asyncio, "run", no_rpc)
+    with pytest.raises(ValueError):
+        ms.move_focus_to_new_z_position(bad)
+    with pytest.raises(ValueError):
+        ms.move_stage_to_new_xy_position(bad, 0.01)
