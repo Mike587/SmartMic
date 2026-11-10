@@ -460,3 +460,95 @@ def test_stop_experiment_wraps_the_async_stop(monkeypatch):
         return True
     monkeypatch.setattr(MS_zenapi_experiment_methods, "stop_running_experiment", fake_stop)
     assert ms.stop_experiment() is True
+
+
+# --------------------------------------------------------------------------
+# Rule "a failure raises": the functions for new code (metres, exceptions)
+# --------------------------------------------------------------------------
+def test_df_find_surface_returns_z_in_metres(monkeypatch):
+    seen = {}
+
+    def fake_find(max_retries, start_z_m, store_focus):
+        seen["args"] = (max_retries, start_z_m, store_focus)
+        return True, "ok", 1
+
+    monkeypatch.setattr(ms, "run_definite_focus_find_surface", fake_find)
+    monkeypatch.setattr(ms, "get_current_z_position", lambda: -0.000123)
+    assert ms.df_find_surface(2, -0.0002, True) == -0.000123
+    assert seen["args"] == (2, -0.0002, True)
+
+
+def test_df_find_surface_raises_on_a_failed_search(monkeypatch):
+    monkeypatch.setattr(ms, "run_definite_focus_find_surface",
+                        lambda *a: (False, "surface not found", 3))
+    monkeypatch.setattr(ms, "get_current_z_position",
+                        lambda: pytest.fail("Z was read after a failed search"))
+    with pytest.raises(ms.FocusSearchFailed, match="surface not found") as exc:
+        ms.df_find_surface()
+    assert (exc.value.method, exc.value.attempts) == ("FindSurface", 3)
+
+
+def test_df_find_surface_lets_a_bad_argument_through(monkeypatch):
+    def bad(*a):
+        raise ValueError("max_retries must be >= 1")
+    monkeypatch.setattr(ms, "run_definite_focus_find_surface", bad)
+    with pytest.raises(ValueError):
+        ms.df_find_surface(0)
+
+
+def test_df_recall_focus_converts_um_to_metres(monkeypatch):
+    monkeypatch.setattr(ms, "run_definite_focus_recall", lambda n: (-150.5, 1))
+    assert ms.df_recall_focus() == pytest.approx(-150.5e-6)
+
+
+def test_df_recall_focus_raises_on_failure(monkeypatch):
+    monkeypatch.setattr(ms, "run_definite_focus_recall", lambda n: (None, 3))
+    with pytest.raises(ms.FocusSearchFailed) as exc:
+        ms.df_recall_focus()
+    assert (exc.value.method, exc.value.attempts) == ("RecallFocus", 3)
+
+
+@pytest.mark.parametrize("new, old, arg", [
+    ("swaf_find_focus", "run_swaf", "SWAF_EXP"),
+    ("swaf_find_focus_from_path", "run_swaf_from_path", "x/swaf.czexp"),
+])
+def test_swaf_find_focus_metres_and_raise(monkeypatch, new, old, arg):
+    monkeypatch.setattr(ms, old, lambda a, timeout=30: (1234.5, 1))
+    assert getattr(ms, new)(arg) == pytest.approx(1234.5e-6)
+    # 0.0 µm is a valid focus position, not a failure.
+    monkeypatch.setattr(ms, old, lambda a, timeout=30: (0.0, 1))
+    assert getattr(ms, new)(arg) == 0.0
+
+    monkeypatch.setattr(ms, old, lambda a, timeout=30: (None, 2))
+    with pytest.raises(ms.FocusSearchFailed) as exc:
+        getattr(ms, new)(arg, timeout=5)
+    assert (exc.value.method, exc.value.attempts) == ("SWAF", 2)
+
+
+def test_focus_search_failed_is_not_a_df_fault():
+    # A single failed search can be skipped; a DefiniteFocusFault stops the run.
+    assert not issubclass(ms.FocusSearchFailed, ms.DefiniteFocusFault)
+    assert issubclass(ms.FocusSearchFailed, RuntimeError)
+
+
+def test_require_preflight_passes(monkeypatch):
+    _passing_preflight_mocks(monkeypatch)
+    assert ms.require_preflight("PLATE", _Log()) is None
+
+
+def test_require_preflight_raises_with_the_reason(monkeypatch):
+    _passing_preflight_mocks(monkeypatch, carrier="OTHER")
+    log = _Log()
+    with pytest.raises(ms.PreflightFailed, match="Wrong sample carrier: 'OTHER'"):
+        ms.require_preflight("PLATE", log)
+    assert any("Wrong sample carrier" in m for m in log.errors)   # still in the run log
+
+
+def test_require_preflight_reports_the_check_that_stopped_it(monkeypatch):
+    # The immersion-guard line is an error that does not abort; the reason in
+    # the exception must be the check that did (here: the busy microscope).
+    _passing_preflight_mocks(monkeypatch)
+    _immersion_slots(monkeypatch, [1])
+    monkeypatch.setattr(ms, "is_microscope_busy", lambda: True)
+    with pytest.raises(ms.PreflightFailed, match="busy"):
+        ms.require_preflight("PLATE", _Log())

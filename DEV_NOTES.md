@@ -1273,19 +1273,48 @@ The old names still work: `MS_Helper_function` re-exports its three modules, and
 - Comments say why the code is as it is. What the code did before is in git and
   in this file.
 
-### Rule for new code: a failure raises (proposal, Mike to confirm)
+### Rule: a failure raises, and a length is in metres (Mike, 2026-11-10)
 
-The library reports a failure in four ways today: an exception (moves), a
+The library reported a failure in four ways: an exception (moves), a
 `(False, message, attempts)` tuple (DF), `None` (RecallFocus, SWAF) and `False`
 (optics, `preflight`). A caller that does not examine the result continues with
-no error. New functions must raise. Do not change the old functions without the
-projects that call them.
+no error. Three functions also returned µm with no unit in the name.
+
+The rule: a library function raises on a failure, and a length it returns is in
+metres. A value in another unit has the unit in its name or key (`thickness_um`).
+
+The old functions are NOT changed, because all local projects call them
+(`ok, msg, n = ms.run_definite_focus_find_surface()`, `if not ms.preflight(...)`).
+A changed return type would break each project, and a µm value that silently
+becomes metres is a hardware hazard (a caller that multiplies by 1e-6 moves to
+approximately Z = 0). The LoA has a second set of functions that follow the rule:
+
+| Legacy (unchanged) | For new code | On failure |
+|--------------------|--------------|------------|
+| `run_definite_focus_find_surface` → `(ok, msg, n)` | `df_find_surface` → surface Z (m) | `FocusSearchFailed` |
+| `run_definite_focus_recall` → `(z_um or None, n)` | `df_recall_focus` → Z (m) | `FocusSearchFailed` |
+| `run_swaf`, `run_swaf_from_path` → `(z_um or None, n)` | `swaf_find_focus`, `swaf_find_focus_from_path` → Z (m) | `FocusSearchFailed` |
+| `set_objective_set_optovar_sync` → `bool` | `set_optics_verified` | `RuntimeError` |
+| `preflight` → `bool` | `require_preflight` | `PreflightFailed` |
+
+- The new functions call the legacy ones, so the hardware sequence is the same.
+- `FocusSearchFailed` has `.method` and `.attempts`. It is not a
+  `DefiniteFocusFault`: one failed search can be skipped; a fault stops the run.
+- `PreflightFailed` has the last error line of `preflight` (the check that
+  stopped it) in its message.
+- `DefiniteFocusTracker.find_surface` still returns `None` for one failed
+  position. This is its contract (the pipeline skips the position), and it
+  raises `DefiniteFocusFault` after repeated failures.
+- Not changed: the async functions in `MS_zenapi_focus` / `MS_zenapi_swaf`
+  (`definite_focus_recall`, `run_software_autofocus*` return µm) and the CZI
+  readers in `MS_metadata` (µm, said in the docstrings).
+- To do with each project: change it to the new functions. Then the legacy
+  functions can go.
 
 ### Not done, and why
 
-- **Units of return values (item 19).** `run_swaf` and `run_definite_focus_recall`
-  return µm; the moves and the tracker use metres. A change breaks the projects.
-  Do it together with them.
+- **Units of return values (item 19).** Done later the same day with new
+  functions: see "Rule: a failure raises, and a length is in metres".
 - **Loaded experiments stay in ZEN (item 27).** This needs a measurement on a
   long run.
 - **Region id (item 41).** `add_single_tile_region` makes a region only if the

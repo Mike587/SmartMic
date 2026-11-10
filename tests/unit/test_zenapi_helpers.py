@@ -157,7 +157,7 @@ def test_timeout_inside_the_channel_names_the_call(monkeypatch):
 
     async def body():
         async with zh.open_zen_channel("cfg"):
-            raise asyncio.TimeoutError()
+            raise asyncio.TimeoutError("Deadline exceeded")   # the text grpclib gives
 
     with pytest.raises(asyncio.TimeoutError, match=r"StageService/GetPosition .* 60 s"):
         asyncio.run(body())

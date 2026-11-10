@@ -281,7 +281,7 @@ async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
     try:
         yield channel, metadata
     except asyncio.TimeoutError as e:
-        if e.args:          # already has a message
+        if "ZEN-API gateway" in str(e):     # already named by an inner channel
             raise
         route = getattr(channel, "last_route", None) or "a ZEN-API call"
         limit = getattr(channel, "last_timeout", None)
@@ -289,6 +289,7 @@ async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
             f"No answer from the ZEN-API gateway: {route} did not finish within "
             f"{f'{limit:.0f} s' if limit else 'its time limit'}. ZEN may still "
             f"carry out the request (a timeout stops the wait, not the hardware)."
+            f"{f' [{e}]' if str(e) else ''}"
         ) from e
     finally:
         channel.close()

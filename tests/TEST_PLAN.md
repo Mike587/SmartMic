@@ -563,3 +563,7 @@ isn't lost:
   immersion slot, `stop_experiment`.
 - `test_validation.py`: `MS_limits.require_*`.
 - Hardware tests to add: Stop during a run; the guard on the 50x (refusal only).
+- `test_loa_wrappers.py` (rule "a failure raises"): `df_find_surface`,
+  `df_recall_focus`, `swaf_find_focus*` return metres and raise
+  `FocusSearchFailed`; `require_preflight` raises `PreflightFailed` with the
+  reason of the check that stopped it.
