@@ -44,7 +44,6 @@ refuse_if_immersion_active         -- Immersion guard shared by the Z=0-lowering
 
 import asyncio
 import math
-import numpy as np
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
 import MS_zenapi_focus
@@ -134,10 +133,7 @@ async def get_current_xy_stage_coordinates():
 
         # StageService returns positions in metres; convert to µm for the log only.
         posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-        logger.info(
-            f"Stage XY Position 1: "
-            f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
-        )
+        logger.info(f"Stage XY position: {posXY.x * 1e6:.2f} - {posXY.y * 1e6:.2f} [micron]")
 
         return [posXY.x, posXY.y]
 
@@ -191,8 +187,8 @@ async def move_stage_to_new_xy_position(x: float, y: float):
 
         posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
         logger.info(
-            f"Stage XY Position 1: "
-            f"{np.round(posXY.x * 1e6, 2)} - {np.round(posXY.y * 1e6, 2)} [micron]"
+            f"Stage XY position before the move: "
+            f"{posXY.x * 1e6:.2f} - {posXY.y * 1e6:.2f} [micron]"
         )
 
         # Perform the XY move (coordinates in metres).
@@ -200,8 +196,8 @@ async def move_stage_to_new_xy_position(x: float, y: float):
 
         new_posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
         logger.info(
-            f"Stage XY Position 2: "
-            f"{np.round(new_posXY.x * 1e6, 2)} - {np.round(new_posXY.y * 1e6, 2)} [micron]"
+            f"Stage XY position after the move: "
+            f"{new_posXY.x * 1e6:.2f} - {new_posXY.y * 1e6:.2f} [micron]"
         )
 
         # Allow the stage to settle mechanically before the next operation.

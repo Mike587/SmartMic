@@ -345,3 +345,29 @@ def test_zen_auto_immersion_settings_contract():
     assert set(info) == {"user_options_path", "user_options",
                          "service_options", "service_options_time"}
     assert isinstance(zp.format_auto_immersion_settings(info), str)
+
+
+# --------------------------------------------------------------------------
+# The ZEN log readers moved to MS_zen_logs (2026-11-10). The tests above still
+# reach them as zp.<name>: that is the compatibility hook, checked here.
+# --------------------------------------------------------------------------
+def test_moved_log_readers_resolve_through_zeiss_paths():
+    import MS_zen_logs
+    assert zp.zen_df_bottom is MS_zen_logs.zen_df_bottom
+    assert zp.zen_app_version is MS_zen_logs.zen_app_version
+    assert zp._last_df_bottom is MS_zen_logs._last_df_bottom
+
+
+def test_unknown_attribute_still_raises():
+    with pytest.raises(AttributeError, match="no_such_name"):
+        zp.no_such_name
+
+
+def test_log_readers_follow_a_changed_logging_dir(tmp_path, monkeypatch):
+    # MS_zen_logs reads zeiss_paths.ZEN_LOGGING_DIR at call time.
+    import MS_zen_logs
+    monkeypatch.setattr(zp, "ZEN_LOGGING_DIR", tmp_path)
+    assert MS_zen_logs.zen_app_version() is None
+    (tmp_path / "ZEN.log.xml").write_text(
+        '<data name="SoftwareVersion" value="9.9.9" />', encoding="utf-8")
+    assert MS_zen_logs.zen_app_version() == "9.9.9"

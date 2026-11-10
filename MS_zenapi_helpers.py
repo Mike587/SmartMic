@@ -44,7 +44,7 @@ Logging
 -------
 ``set_logging`` returns a plain :mod:`logging` logger (NOT loguru anymore) on the
 shared ``"smartmic"`` logger name, the same name used by
-:func:`MS_Helper_function.setup_run_logger`.  This unifies SmartMic onto one
+:func:`MS_run_log.setup_run_logger`.  This unifies SmartMic onto one
 logging stack: when a pipeline (e.g. the PoC) has already called
 ``setup_run_logger`` to attach a per-run file handler, the wrapper modules'
 ``set_logging()`` returns that same configured logger, so their output lands in
@@ -53,6 +53,7 @@ attaches a UTF-8 stdout handler so logs still print.
 """
 
 import configparser
+import functools
 import logging
 import ssl
 import sys
@@ -62,14 +63,14 @@ from typing import List, Tuple, Union
 
 from grpclib.client import Channel
 
-# Shared with MS_Helper_function.setup_run_logger so both configure/return the
-# SAME logger object.  Keep the format in sync with that function.
-_LOGGER_NAME = "smartmic"
-_LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
-_LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
+# The one logger name and line format of SmartMic. setup_run_logger
+# (MS_run_log) imports them, so both configure the SAME logger object.
+LOGGER_NAME = "smartmic"
+LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
+LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 
-def _ensure_utf8_stdout() -> None:
+def ensure_utf8_stdout() -> None:
     """Best-effort: make ``sys.stdout`` encode UTF-8 so characters like µ don't
     crash on a Windows cp1252 console.
 
@@ -85,14 +86,14 @@ def _ensure_utf8_stdout() -> None:
         pass
 
 
-def set_logging(name: str = _LOGGER_NAME) -> logging.Logger:
+def set_logging(name: str = LOGGER_NAME) -> logging.Logger:
     """Return the shared stdlib logger, attaching a stdout handler if needed.
 
     Replaces the previous loguru-based helper so the whole SmartMic library uses
     ONE logging stack (stdlib :mod:`logging`).
 
     Returns ``logging.getLogger(name)``.  If that logger already has handlers —
-    e.g. :func:`MS_Helper_function.setup_run_logger` configured it with a per-run
+    e.g. :func:`MS_run_log.setup_run_logger` configured it with a per-run
     file handler — it is returned untouched, so wrapper-module logs flow into the
     same run log.  Otherwise a UTF-8-wrapped stdout handler is attached (so
     standalone use of a wrapper module still prints, and special characters like
@@ -105,9 +106,9 @@ def set_logging(name: str = _LOGGER_NAME) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
     if not logger.handlers:
-        _ensure_utf8_stdout()
+        ensure_utf8_stdout()
         handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
         logger.addHandler(handler)
     return logger
 
@@ -137,16 +138,31 @@ def initialize_zenapi(
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
+    host, port, token, context = _connection_settings(
+        str(config_path), config_path.stat().st_mtime_ns)
+    return Channel(host=host, port=port, ssl=context), [("control-token", token)]
+
+
+@functools.lru_cache(maxsize=8)
+def _connection_settings(config_path: str, mtime_ns: int):
+    """Parse config.ini and build the TLS context: ``(host, port, token, context)``.
+
+    Cached: every wrapper call opens its own channel (a poll loop does so twice
+    a second), and the file and the CA certificate do not change in between.
+    ``mtime_ns`` is part of the cache key only, so an edited config.ini is read
+    again. A changed certificate FILE at the same path needs a new process.
+    """
     config = configparser.ConfigParser()
     config.read(config_path)
+    api = config["api"]
 
-    # Build a TLS client context that trusts the ZEN-API gateway's CA cert.
+    # A TLS client context that trusts the ZEN-API gateway's CA cert.
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
     # Resolve cert_file relative to the config file when it is a relative path.
-    cert_file = Path(config["api"]["cert_file"])
+    cert_file = Path(api["cert_file"])
     if not cert_file.is_absolute():
-        cert_file = (config_path.parent / cert_file).resolve()
+        cert_file = (Path(config_path).parent / cert_file).resolve()
 
     context.load_verify_locations(cafile=str(cert_file))
     context.verify_mode = ssl.CERT_REQUIRED
@@ -154,11 +170,7 @@ def initialize_zenapi(
     # ZEN-API speaks HTTP/2 (h2) over TLS.
     context.set_alpn_protocols(["h2"])
 
-    channel = Channel(
-        host=config["api"]["host"], port=int(config["api"]["port"]), ssl=context
-    )
-    metadata = [("control-token", config["api"]["control-token"])]
-    return channel, metadata
+    return api["host"], int(api["port"]), api["control-token"], context
 
 
 @asynccontextmanager

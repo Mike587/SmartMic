@@ -1102,6 +1102,93 @@ Design choices worth knowing:
 
 ---
 
+## Code review round (2026-11-10)
+
+A review of the tracked library found 52 items (the local `fableTodo.MD`).
+Items 1, 2, 7, 8, 15 and most of 16 to 42 are done. The offline suite passes
+(397 tests). None of it is tested on the scope yet. The PoC was not changed
+(it is outdated; an update is planned).
+
+### Where the code is now (old name → new name)
+
+Old entries in this file use the old names. Do not rewrite them; use this table.
+
+| Old | New |
+|-----|-----|
+| `MS_Helper_function.setup_run_logger`, `write_run_info`, `append_jsonl`, `read_jsonl`, `DEFAULT_EXPERIMENT_OUTPUT_FOLDER` | `MS_run_log` |
+| `MS_Helper_function.load_positions_from_czexp`, `get_sample_carrier_from_czi` / `_czexp`, `check_sample_carrier`, `get_focus_position_from_czi`, `get_zstack_z_range`, `get_stage_position_from_czi`, `get_xy_position_from_czi` | `MS_metadata` |
+| `MS_Helper_function.compute_focus_score`, `signal_level_from_czi`, `is_czi_effectively_empty` | `MS_image_metrics` |
+| `zeiss_paths.zen_app_version`, `zen_df_bottom`, `zen_auto_immersion_settings`, `format_auto_immersion_settings`, `zen_user_options_path`, `zen_service_immersion_options` | `MS_zen_logs` |
+| `MS_zenapi_experiment_methods.check_experiment_api` | `MS_zenapi_experiment_smoke` |
+| `ms.run_experiment(..., do_snap_and_live=True)` | removed; call the smoke test directly |
+
+The old names still work: `MS_Helper_function` re-exports its three modules, and
+`zeiss_paths.<name>` resolves the names of `MS_zen_logs`. The exception is
+`check_experiment_api`: import it from the new module.
+`zeiss_paths` keeps the path bootstrap, `zen_api_version`,
+`zen_api_gateway_version`, `smartmic_version` and `git_state`.
+
+### Changes of behaviour
+
+- **Messages go to the run log.** The LoA and the helper modules do not use
+  `print`. Objective-change timeouts and retries are now in `run_*.log`.
+- **The position checks refuse `NaN`, `±inf` and `bool`.** A comparison with `NaN`
+  is always false, so the old range test let `NaN` through to `MoveTo`.
+- **`load_positions_from_czexp` raises** for a used position with a missing or
+  unreadable `<X>` / `<Y>`. Before, the value became 0.0. A missing `<Z>` is
+  still 0.0.
+- **`set_stage_motion` raises** for a percent that is not in [0, 100].
+- **A bad argument is not a failed search.** `run_definite_focus_find_surface`
+  and `set_objective_set_optovar_sync` let `ValueError` / `TypeError` through.
+- **The czexp locators ignore an embedded autofocus experiment.**
+  `find_lsm_detector`, `find_tile_regions`, `find_stitch_regions`,
+  `find_processing_steps`, `is_stitching_configured`, `get_focus_strategy`,
+  `add_single_tile_region` and `clear_single_tile_regions` now use `_iter_own`.
+  In 405 local `.czexp` files the first region, detector and focus set-up were
+  the same with the old and the new locator. `is_stitching_configured` was the
+  exception: in 70 files of the ZEN experiment folder it read the processing
+  set-up of the embedded SWAF experiment.
+- **`set_tile_region_center` raises** if `z_m` is given and the region has no
+  `<Z>`. No local file has such a region (995 regions examined).
+- **`fit_lsm_crop` reports** `frame_clamped`, `frame_size_requested` and
+  `fov_exceeds_max`. It does not refuse: what ZEN does with a field larger than
+  `ScaledMaxImageSize` is not known.
+- **`save_czexp` writes to `<name>.tmp`, then moves it** into place.
+- **`compute_focus_score` uses interior pixels only.** `np.roll` compared the
+  first row with the last row. Scores change a little: do not compare a new score
+  with a score from before 2026-11-10.
+- **`get_current_objective_and_optovar` sends two RPCs, not four.** It does not
+  read the inventory.
+- **`config.ini` and the TLS context are cached** for each file and modification
+  time (`MS_zenapi_helpers._connection_settings`). A new channel is still opened
+  for each call.
+- **`SMARTMIC_OUTPUT_ROOT`** overrides `DEFAULT_EXPERIMENT_OUTPUT_FOLDER`.
+  `SMARTMIC_ZEN_EXPERIMENT_FOLDER` overrides the experiment folder of the smoke
+  test.
+
+### Rule for new code: a failure raises (proposal, Mike to confirm)
+
+The library reports a failure in four ways today: an exception (moves), a
+`(False, message, attempts)` tuple (DF), `None` (RecallFocus, SWAF) and `False`
+(optics, `preflight`). A caller that does not examine the result continues with
+no error. New functions must raise. Do not change the old functions without the
+projects that call them.
+
+### Not done, and why
+
+- **Units of return values (item 19).** `run_swaf` and `run_definite_focus_recall`
+  return µm; the moves and the tracker use metres. A change breaks the projects.
+  Do it together with them.
+- **Loaded experiments stay in ZEN (item 27).** This needs a measurement on a
+  long run.
+- **Region id (item 41).** `add_single_tile_region` makes a region only if the
+  experiment has none, so the fixed id cannot collide in one file.
+- **Names (item 42).** This is a decision, not a fix.
+- **`get_focus_position_from_czi` (item 28)** still scans the first 8 MB. It now
+  also reads exponent notation.
+
+---
+
 ## Code review fixes (2026-07-15)
 
 A full-codebase review (8 finder angles, each verified against the actual

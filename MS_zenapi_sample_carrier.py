@@ -44,6 +44,8 @@ DEV_NOTES.md "Multi-slide carriers".
 import asyncio
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+from grpclib.const import Status
+from grpclib.exceptions import GRPCError
 from MS_zenapi_helpers import set_logging, open_zen_channel
 import MS_zenapi_focus
 import MS_zenapi_stage_LM
@@ -73,12 +75,15 @@ async def get_sample_carrier_info() -> dict:
             rows             (int):   Number of rows in the carrier.
             columns          (int):   Number of columns in the carrier.
             material         (str):   Bottom material of the carrier.
-            thickness        (float): Bottom thickness. NOTE: the ZEN proto
-                             annotates this as metres, but the device returns
-                             micrometre-scale values (e.g. 195.0 for a 195 µm
-                             plate bottom). Treat the unit as µm until verified.
-            skirt            (float): Skirt / bottom offset, same unit caveat
-                             as ``thickness`` (observed µm-scale, e.g. 2891.0).
+            thickness        (float): Bottom thickness in µm. The ZEN proto
+                             says metres, but the device returns µm. Confirmed
+                             2026-11-09: 176.18 over the API is 176179 nm in the
+                             DF log (DEV_NOTES "Dry objectives: DF finds the
+                             plate UNDERSIDE"). When the thickness was measured
+                             at load, this is the measured value.
+            skirt            (float): Skirt / bottom offset. Same scale as
+                             ``thickness`` (e.g. 2891.0), so µm is expected;
+                             not confirmed against a second source.
             refractive_index (float): Refractive index of the bottom material.
     """
     logger = set_logging()
@@ -109,9 +114,6 @@ async def get_current_container():
     Returns None when ZEN reports the stage is in no container (gRPC NOT_FOUND:
     "Stage is not positioned in any of the containers"). Read-only.
     """
-    from grpclib.const import Status
-    from grpclib.exceptions import GRPCError
-
     async with open_zen_channel(config_path) as (channel, metadata):
         service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
         try:

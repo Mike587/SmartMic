@@ -64,41 +64,26 @@ def test_df_find_surface_exception_caught(monkeypatch):
 # --------------------------------------------------------------------------
 # run_experiment routing
 # --------------------------------------------------------------------------
-def test_run_experiment_routes_by_name(monkeypatch):
+def test_run_experiment_runs_by_name(monkeypatch):
     calls = {}
 
     async def by_name(**k):
-        calls["by_name"] = k
+        calls.update(k)
         return {"exp_result_path": "x"}
 
-    async def check(**k):
-        calls["check"] = k
-        return {}
-
     monkeypatch.setattr(MS_zenapi_experiment_methods, "run_experiment_by_name", by_name)
-    monkeypatch.setattr(MS_zenapi_experiment_methods, "check_experiment_api", check)
 
-    res = ms.run_experiment("EXP", custom_folder=None, custom_filename="f", do_snap_and_live=False)
-    assert "by_name" in calls and "check" not in calls
+    res = ms.run_experiment("EXP", custom_folder=None, custom_filename="f")
     assert res == {"exp_result_path": "x"}
+    assert calls["experiment_name"] == "EXP" and calls["custom_filename"] == "f"
+    assert calls["custom_image_folder"] == ms.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
 
 
-def test_run_experiment_routes_snap_and_live(monkeypatch):
-    calls = {}
-
-    async def by_name(**k):
-        calls["by_name"] = k
-        return {}
-
-    async def check(**k):
-        calls["check"] = k
-        return {"snap_path": None}
-
-    monkeypatch.setattr(MS_zenapi_experiment_methods, "run_experiment_by_name", by_name)
-    monkeypatch.setattr(MS_zenapi_experiment_methods, "check_experiment_api", check)
-
-    ms.run_experiment("EXP", do_snap_and_live=True)
-    assert "check" in calls and "by_name" not in calls
+def test_run_experiment_has_no_smoke_test_switch():
+    # The smoke test is MS_zenapi_experiment_smoke.check_experiment_api; the
+    # acquisition wrapper must not be able to start it.
+    with pytest.raises(TypeError):
+        ms.run_experiment("EXP", do_snap_and_live=True)
 
 
 def test_run_experiment_empty_name_raises():
@@ -248,7 +233,7 @@ def _no_live_scan_rpc(monkeypatch):
     monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: {
         "name": "PLATE", "rows": 2, "columns": 3, "material": "Glass", "thickness": 170.0,
         "skirt": 1044.0, "refractive_index": 1.52})
-    monkeypatch.setattr(ms.zeiss_paths, "zen_df_bottom", lambda: None)
+    monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: None)
 
 
 def test_preflight_happy_sets_stage_motion(monkeypatch):
@@ -332,7 +317,7 @@ def test_preflight_passes_when_immersion_settings_unreadable(monkeypatch):
     def boom():
         raise RuntimeError("log locked")
 
-    monkeypatch.setattr(ms.zeiss_paths, "zen_auto_immersion_settings", boom)
+    monkeypatch.setattr(ms.MS_zen_logs, "zen_auto_immersion_settings", boom)
     monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
     monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
     monkeypatch.setattr(ms, "set_stage_motion_sync",

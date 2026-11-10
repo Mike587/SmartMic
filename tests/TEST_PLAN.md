@@ -143,8 +143,9 @@ Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a
   `get_current_objective_and_optovar`. (The retry loop and the immersion
   timeout selection inside `_set_and_wait` are not exercised by this file —
   a coverage gap, not a passing test.)
-- `run_experiment`: `do_snap_and_live=False` routes to `run_experiment_by_name`,
-  `True` routes to `check_experiment_api` (assert which mock was called).
+- `run_experiment`: calls `run_experiment_by_name` with the default output
+  folder; it has no `do_snap_and_live` switch (removed 2026-11-10; the smoke
+  test is `MS_zenapi_experiment_smoke.check_experiment_api`).
 - `move_focus_to_new_z_position` / `move_stage_to_new_xy_position`: raise on invalid
   input *before* any async call (assert the async mock is never awaited).
 - `preflight`: happy path sets stage motion and logs no errors; wrong carrier /

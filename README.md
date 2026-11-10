@@ -25,12 +25,17 @@ pipelines that consume it live under `projects/`, one folder each.
 | `MS_zenapi_stage_LM.py` | XY-stage control |
 | `MS_zenapi_sample_carrier.py` | Sample-carrier info query; container (slide position) moves |
 | `MS_zenapi_live_scan.py` | Tray load / eject (LiveScanService) RPCs and the read-only prescan configuration; run it directly to print the configuration. Use the guarded `eject_tray` / `load_tray_and_prescan` in `MS_CD7_API_LoA.py` |
-| `MS_zenapi_experiment_methods.py` | Experiment load / clone / run / status; run by name, path, or XML |
+| `MS_zenapi_experiment_methods.py` | Run an experiment by name, path, or XML and collect the result; status of a running experiment |
+| `MS_zenapi_experiment_smoke.py` | Smoke test of the whole ExperimentService (clone / save / export / import / delete, snap, live, continuous). Not an acquisition path |
 | `MS_czexp_editor.py` | Read/modify ZEN `.czexp` files (position, z-stack, scan crop); checks that refuse unrunnable or unsafe files before a run |
-| `MS_Helper_function.py` | Logging, per-run version record (`write_run_info`), JSONL run records, position loading, CZI readers (incl. sample carrier from `.czi`/`.czexp`), focus scoring |
+| `MS_run_log.py` | Run log, per-run version record (`write_run_info`), JSONL run records, default output folder |
+| `MS_metadata.py` | Read `.czexp` / `.czi` metadata: positions, sample carrier, focus and stage position |
+| `MS_image_metrics.py` | Focus score and signal level of a `.czi` |
+| `MS_Helper_function.py` | Compatibility module: re-exports the three modules above under the old name |
+| `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files: ZEN version, auto-immersion settings, the carrier bottom DF uses |
 | `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init, logging, objective lookups) |
 | `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env); result-JSON read-back |
-| `zeiss_paths.py` | Path bootstrap — see below |
+| `zeiss_paths.py` | Path bootstrap, and the version of the code and stubs in use — see below |
 
 ### Projects (`projects/`)
 

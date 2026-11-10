@@ -83,7 +83,7 @@ def test_zen_df_bottom_searches_rotated_logs(tmp_path, monkeypatch):
 def carrier(monkeypatch):
     def install(api=None, df=None, measure=True):
         monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: api or _carrier())
-        monkeypatch.setattr(ms.zeiss_paths, "zen_df_bottom", lambda: df)
+        monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: df)
         monkeypatch.setattr(ms, "get_live_scan_configuration",
                             lambda: {"measure_bottom_thickness": measure})
     return install
@@ -216,7 +216,7 @@ def _sequence(monkeypatch, api_values, df_values):
     api = iter(api_values)
     df = iter(df_values)
     monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: next(api))
-    monkeypatch.setattr(ms.zeiss_paths, "zen_df_bottom", lambda: next(df))
+    monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: next(df))
     monkeypatch.setattr(ms.time, "sleep", lambda s: None)
 
 
@@ -239,7 +239,7 @@ def test_wait_keeps_waiting_while_df_has_zero(monkeypatch):
 def test_wait_times_out(monkeypatch):
     zero = _carrier(thickness=0.0)
     monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: zero)
-    monkeypatch.setattr(ms.zeiss_paths, "zen_df_bottom", lambda: None)
+    monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: None)
     monkeypatch.setattr(ms.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError):
         ms.wait_for_df_bottom(timeout_s=0, poll_s=0)

@@ -96,6 +96,28 @@ def _require_optovar(optovars, position, context):
                      optovars, position, context, "optovar")
 
 
+def _services(channel, metadata):
+    """The (objective changer, optovar) service stubs on one open channel."""
+    return (ObjectiveChangerServiceStub(channel=channel, metadata=metadata),
+            OptovarServiceStub(channel=channel, metadata=metadata))
+
+
+async def _read_inventory(objchanger_service, optovar_service):
+    """The full (objectives, optovars) inventory responses."""
+    objectives = await objchanger_service.get_objectives(
+        ObjectiveChangerServiceGetObjectivesRequest()
+    )
+    optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+    return objectives, optovars
+
+
+async def _read_positions(objchanger_service, optovar_service):
+    """The current (objective, optovar) position indices."""
+    pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
+    pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
+    return pos_obj.value, pos_optovar.value
+
+
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int):
     """Move the objective changer and optovar to the requested positions.
 
@@ -114,14 +136,10 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
-        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+        objchanger_service, optovar_service = _services(channel, metadata)
 
         # Fetch the full hardware inventory so we can resolve names from positions.
-        objectives = await objchanger_service.get_objectives(
-            ObjectiveChangerServiceGetObjectivesRequest()
-        )
-        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+        objectives, optovars = await _read_inventory(objchanger_service, optovar_service)
 
         logger.info("-------- Available objectives and Optovars  ----------------------------")
 
@@ -166,37 +184,22 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
         )
         current_optovar = _require_optovar(optovars, opt_new_position, "New optovar")
         logger.info(
-            f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
+            f"New Optovar: {current_optovar.name} Position: {current_optovar.position}"
         )
 
 
 async def get_current_objective_and_optovar():
     """Return the current position indices of the objective changer and optovar.
 
-    Args:
-        None
+    Two RPCs only (the two positions): this is called by every move guard and
+    in the poll loop of an objective change.
 
     Returns:
         Tuple ``(obj_position, opt_position)`` — both are integer position
         indices as reported by the hardware.
     """
-    logger = set_logging()
-
     async with open_zen_channel(config_path) as (channel, metadata):
-        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
-
-        objectives = await objchanger_service.get_objectives(
-            ObjectiveChangerServiceGetObjectivesRequest()
-        )
-        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
-
-        pos_obj = await objchanger_service.get_position(
-            ObjectiveChangerServiceGetPositionRequest()
-        )
-        pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
-
-        return pos_obj.value, pos_optovar.value
+        return await _read_positions(*_services(channel, metadata))
 
 
 async def list_objectives_and_optovars():
@@ -211,13 +214,7 @@ async def list_objectives_and_optovars():
         ``(name, position)`` tuples.
     """
     async with open_zen_channel(config_path) as (channel, metadata):
-        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
-
-        objectives = await objchanger_service.get_objectives(
-            ObjectiveChangerServiceGetObjectivesRequest()
-        )
-        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
+        objectives, optovars = await _read_inventory(*_services(channel, metadata))
 
     obj_list = [(o.name, o.position) for o in objectives.objectives]
     opt_list = [(o.name, o.position) for o in optovars.optovars]
@@ -234,24 +231,17 @@ async def get_current_objective_and_optovar_names():
 
     Returns:
         Tuple ``((obj_name, obj_position), (opt_name, opt_position))``.
+
+    Raises:
+        ValueError: A current position is not in the reported inventory.
     """
     async with open_zen_channel(config_path) as (channel, metadata):
-        objchanger_service = ObjectiveChangerServiceStub(channel=channel, metadata=metadata)
-        optovar_service = OptovarServiceStub(channel=channel, metadata=metadata)
+        services = _services(channel, metadata)
+        objectives, optovars = await _read_inventory(*services)
+        obj_position, opt_position = await _read_positions(*services)
 
-        objectives = await objchanger_service.get_objectives(
-            ObjectiveChangerServiceGetObjectivesRequest()
-        )
-        optovars = await optovar_service.get_optovars(OptovarServiceGetOptovarsRequest())
-
-        pos_obj = await objchanger_service.get_position(
-            ObjectiveChangerServiceGetPositionRequest()
-        )
-        pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
-
-        current_objective = _require_objective(objectives, pos_obj.value, "Current objective")
-        current_optovar = _require_optovar(optovars, pos_optovar.value, "Current optovar")
-
+    current_objective = _require_objective(objectives, obj_position, "Current objective")
+    current_optovar = _require_optovar(optovars, opt_position, "Current optovar")
     return (
         (current_objective.name, current_objective.position),
         (current_optovar.name, current_optovar.position),

@@ -20,7 +20,7 @@ from pathlib import Path
 
 # This file lives at the SmartMic repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import zeiss_paths  # noqa: F401 — extends sys.path so zen_api / zen_api_utils resolve
+import zeiss_paths  # noqa: F401 — extends sys.path so zen_api resolves
 
 _ok = True
 
@@ -47,6 +47,9 @@ def _import_all():
     import MS_image_analysis         # noqa: F401
     import MS_czexp_editor           # noqa: F401
     import MS_zenapi_helpers         # noqa: F401
+    import MS_zenapi_experiment_smoke  # noqa: F401
+    import MS_Helper_function        # noqa: F401  (re-exports run_log / metadata / image_metrics)
+    import MS_zen_logs               # noqa: F401
     import zen_api                   # noqa: F401
     return "all SmartMic + zen_api modules imported"
 

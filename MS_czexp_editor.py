@@ -68,6 +68,7 @@ CLI:
 """
 
 import codecs
+import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -101,13 +102,19 @@ def load_czexp(path):
 
 
 def save_czexp(tree, path):
-    """Write a .czexp file as UTF-8 with BOM + XML declaration (ZEN style)."""
+    """Write a .czexp file as UTF-8 with BOM + XML declaration (ZEN style).
+
+    The file is written to ``<name>.tmp`` and then moved into place, so a crash
+    during the write never leaves half an experiment under the final name.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     xml_bytes = ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True)
-    with open(path, "wb") as f:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
         f.write(codecs.BOM_UTF8)
         f.write(xml_bytes)
+    os.replace(tmp, path)
     return path
 
 
@@ -153,8 +160,12 @@ def _iter_own(root, tag):
 
 
 def find_lsm_detector(root):
-    """Return the <Detector Id='MTBLSMImagingDevice'> element."""
-    for det in root.iter("Detector"):
+    """Return the experiment's own <Detector Id='MTBLSMImagingDevice'> element.
+
+    All locators in this section ignore the copy inside a software-autofocus
+    sub-experiment (see _iter_own).
+    """
+    for det in _iter_own(root, "Detector"):
         if det.get("Id") == LSM_DETECTOR_ID:
             return det
     raise ValueError(f"LSM detector '{LSM_DETECTOR_ID}' not found")
@@ -162,7 +173,7 @@ def find_lsm_detector(root):
 
 def find_tile_regions(root):
     """Return all <SingleTileRegion> elements (single-position acquisitions)."""
-    return list(root.iter("SingleTileRegion"))
+    return _iter_own(root, "SingleTileRegion")
 
 
 def find_stitch_regions(root):
@@ -171,7 +182,7 @@ def find_stitch_regions(root):
     A stitch region is positioned by its <CenterPosition> (µm) and sized by
     <ContourSize> / <Columns> / <Rows>, unlike a SingleTileRegion (<X>/<Y>).
     """
-    return list(root.iter("TileRegion"))
+    return _iter_own(root, "TileRegion")
 
 
 def find_zstack_setup(root):
@@ -187,7 +198,7 @@ def find_zstack_setup(root):
 
 def find_processing_steps(root):
     """Return all <ProcessingStep> elements (remote-processing / stitching steps)."""
-    return list(root.iter("ProcessingStep"))
+    return _iter_own(root, "ProcessingStep")
 
 
 def is_stitching_configured(root):
@@ -202,7 +213,7 @@ def is_stitching_configured(root):
       * a real step (Id != "NULL", or with an Algorithm/FunctionParameters
         child) is present.
     """
-    setup = next(iter(root.iter("ExperimentRemoteProcessingSetup")), None)
+    setup = next(iter(_iter_own(root, "ExperimentRemoteProcessingSetup")), None)
     if setup is None:
         return True
     if (setup.get("IsActivated") or "true").lower() == "false":
@@ -227,7 +238,7 @@ def get_focus_strategy(root):
     configured, else None.  See has_focus_strategy for the "what counts as a
     strategy" rules.
     """
-    setup = next(iter(root.iter("FocusSetup")), None)
+    setup = next(iter(_iter_own(root, "FocusSetup")), None)
     if setup is None or (setup.get("IsActivated") or "true").lower() == "false":
         return None
     fs = setup.find("FocusStrategy")
@@ -313,7 +324,7 @@ def require_runnable_tiles(root, path=None):
     """
     if not tiles_activated(root):
         return
-    if _iter_own(root, "TileRegion") or _iter_own(root, "SingleTileRegion"):
+    if find_stitch_regions(root) or find_tile_regions(root):
         return
     where = f"{path}: " if path is not None else ""
     raise ValueError(
@@ -402,6 +413,28 @@ def is_zstack_center_mode(root):
     return flag is not None and (flag.text or "").strip().lower() == "true"
 
 
+def _used_stitch_regions(root):
+    """[(name, <TileRegion>)] of the multi-tile regions used for acquisition.
+
+    File order. IsUsedForAcquisition=false is skipped; a missing flag counts as
+    used (as in load_positions_from_czexp).
+
+    Raises:
+        ValueError: A used region without a Name, or two with the same Name.
+    """
+    used = {}
+    for tr in find_stitch_regions(root):
+        if (tr.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
+            continue
+        name = tr.get("Name")
+        if not name:
+            raise ValueError("<TileRegion> without a Name attribute")
+        if name in used:
+            raise ValueError(f"two used <TileRegion>s are named {name!r}")
+        used[name] = tr
+    return list(used.items())
+
+
 def get_tile_region_centers(root):
     """{region name: (x_m, y_m)} of the multi-tile regions used for acquisition.
 
@@ -415,14 +448,7 @@ def get_tile_region_centers(root):
             regions with the same Name.
     """
     centers = {}
-    for tr in find_stitch_regions(root):
-        if (tr.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
-            continue
-        name = tr.get("Name")
-        if not name:
-            raise ValueError("<TileRegion> without a Name attribute")
-        if name in centers:
-            raise ValueError(f"two used <TileRegion>s are named {name!r}")
+    for name, tr in _used_stitch_regions(root):
         x_um, y_um = _parse_pair(_require(tr, "CenterPosition").text)
         centers[name] = (x_um * 1e-6, y_um * 1e-6)
     return centers
@@ -446,14 +472,7 @@ def get_tile_region_shape_ids(root):
         ValueError: A used region without a Name, or two with the same Name.
     """
     ids = {}
-    for tr in find_stitch_regions(root):
-        if (tr.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
-            continue
-        name = tr.get("Name")
-        if not name:
-            raise ValueError("<TileRegion> without a Name attribute")
-        if name in ids:
-            raise ValueError(f"two used <TileRegion>s are named {name!r}")
+    for name, tr in _used_stitch_regions(root):
         text = tr.findtext("TemplateShapeId")
         ids[name] = text.strip() if text and text.strip() else None
     return ids
@@ -535,10 +554,9 @@ def add_single_tile_region(root, x_m, y_m, z_m=None, name="P1",
     focus); with FixedZ the stack is absolute and <Z> does not move it (see
     set_position).  Leave z_m=None to write 0.
     """
-    existing = list(root.iter("SingleTileRegion"))
-    if existing:
+    if find_tile_regions(root):
         return set_position(root, x_m, y_m, z_m=z_m)
-    containers = list(root.iter("SingleTileRegions"))
+    containers = _iter_own(root, "SingleTileRegions")
     if not containers:
         raise ValueError("no <SingleTileRegions> container to add a region to")
     st = ET.SubElement(containers[0], "SingleTileRegion")
@@ -558,16 +576,20 @@ def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
     Used to re-aim a stitch experiment (e.g. the OV) at a new well centre.
     Optionally sets the region <Z>; leave z_m=None if the experiment runs its
     own autofocus.
+
+    Raises:
+        ValueError: No stitch region, no <CenterPosition>, or z_m is given and
+            the region has no <Z> (nothing is written then).
     """
     regions = find_stitch_regions(root)
     if not regions:
         raise ValueError("no TileRegion (stitch region) to set centre on")
     r = regions[region_index]
-    _require(r, "CenterPosition").text = f"{_fmt_float(x_m * 1e6)},{_fmt_float(y_m * 1e6)}"
-    if z_m is not None:
-        z_el = r.find("Z")
-        if z_el is not None:
-            z_el.text = _fmt_float(z_m * 1e6)
+    center = _require(r, "CenterPosition")
+    z_el = _require(r, "Z") if z_m is not None else None
+    center.text = f"{_fmt_float(x_m * 1e6)},{_fmt_float(y_m * 1e6)}"
+    if z_el is not None:
+        z_el.text = _fmt_float(z_m * 1e6)
     return x_m * 1e6, y_m * 1e6
 
 
@@ -625,7 +647,7 @@ def clear_single_tile_regions(root):
     """
     removed = 0
     for container_tag in ("SingleTileRegions", "SingleTileRegionArrays"):
-        for container in root.iter(container_tag):
+        for container in _iter_own(root, container_tag):
             for child in list(container):
                 container.remove(child)
                 removed += 1
@@ -671,7 +693,13 @@ def fit_lsm_crop(root, target_fov_um, frame_size_override=None):
                                   fast 512² preview that is NOT Nyquist-sampled.
 
     Sets Zoom, FrameSize and the dependent FOV / Frame / ImageFrame fields,
-    re-centred.  Returns a dict of applied values.
+    re-centred.  Returns a dict of applied values. Two keys flag a result that
+    is not what was asked for (nothing is refused; check them):
+      frame_clamped   → the frame was limited to FRAME_SIZE_MIN…FRAME_SIZE_MAX
+                        (frame_size_requested is the value before the limit);
+      fov_exceeds_max → target_fov_um is larger than ScaledMaxImageSize, the
+                        largest field the scanner has. What ZEN then does is
+                        not known: do not trust actual_fov_um.
 
     Raises:
         ValueError: If ``target_fov_um`` is not positive (e.g. a degenerate
@@ -694,10 +722,10 @@ def fit_lsm_crop(root, target_fov_um, frame_size_override=None):
     nyquist_frame = target_fov_um / base_pixel_um
 
     if frame_size_override is not None:
-        new_frame = int(frame_size_override)
+        requested_frame = int(frame_size_override)
     else:
-        new_frame = int(round(nyquist_frame))
-    new_frame = max(FRAME_SIZE_MIN, min(FRAME_SIZE_MAX, new_frame))
+        requested_frame = int(round(nyquist_frame))
+    new_frame = max(FRAME_SIZE_MIN, min(FRAME_SIZE_MAX, requested_frame))
 
     # In ZEN the frame size is DERIVED from FOV × Sampling and is re-computed on
     # load — so to make a frame size stick we must set Sampling to match it.
@@ -749,6 +777,9 @@ def fit_lsm_crop(root, target_fov_um, frame_size_override=None):
         "target_fov_um": target_fov_um,
         "actual_fov_um": target_fov_um,
         "frame_size": new_frame,
+        "frame_size_requested": requested_frame,
+        "frame_clamped": new_frame != requested_frame,
+        "fov_exceeds_max": target_fov_um > scaled_max_x,
         "zoom": new_zoom,
         "sampling": new_sampling,
         "sampling_mode": sampling_mode,
@@ -864,7 +895,7 @@ def fit_lsm_stack_to_box(base_path, out_path, center_m, size_m, *, expect_mode,
                                 else None)
     require_focus_z_stack_mode(root, expect_mode, base_path)
 
-    regions = _iter_own(root, "SingleTileRegion")
+    regions = find_tile_regions(root)
     if regions:
         r = regions[0]
         _require(r, "X").text = _fmt_float(cx * 1e6)

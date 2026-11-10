@@ -126,7 +126,7 @@ def test_setup_run_logger(tmp_path):
 @pytest.fixture
 def fake_versions(monkeypatch):
     import zeiss_paths as zp
-    monkeypatch.setattr(zp, "zen_app_version", lambda: "3.13.1")
+    monkeypatch.setattr("MS_zen_logs.zen_app_version", lambda: "3.13.1")
     monkeypatch.setattr(zp, "zen_api_gateway_version", lambda: "1.2.3.4")
     monkeypatch.setattr(zp, "zen_api_version", lambda: ("2025.10.1", "C:/zen_api"))
     monkeypatch.setattr(zp, "smartmic_version", lambda: "abc1234-dirty")

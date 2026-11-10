@@ -718,3 +718,101 @@ def test_fit_box_real_fixture(lsm_path, tmp_path):
     assert (res["z_reference"], res["positioned_by_region"]) == ("region_z", True)
     assert _zstack_value(root, "First") == pytest.approx(-40e-6)
     assert res["actual_fov_um"] == pytest.approx(140.0)
+
+
+# --------------------------------------------------------------------------
+# Locators ignore an embedded software-autofocus experiment
+# --------------------------------------------------------------------------
+EMBEDDED_SWAF = """<HardwareExperiment>
+  <FocusSetup><SoftwareAutofocus><Extensions><Extension><Experiment>
+    <FocusSetup><FocusStrategy><Method>FollowAction</Method>
+      <SearchAction>SoftwareAutofocus</SearchAction><SurfaceMode>None</SurfaceMode>
+    </FocusStrategy></FocusSetup>
+    <SingleTileRegions><SingleTileRegion Name="AF"><X>9</X><Y>9</Y><Z>9</Z></SingleTileRegion></SingleTileRegions>
+    <TileRegion Name="AF_T"><CenterPosition>9,9</CenterPosition><Z>9</Z></TileRegion>
+    <Detector Id="MTBLSMImagingDevice"><FrameSize>64,64</FrameSize></Detector>
+    <ExperimentRemoteProcessingSetup IsActivated="true"><ProcessingStep Id="NULL"/></ExperimentRemoteProcessingSetup>
+  </Experiment></Extension></Extensions></SoftwareAutofocus></FocusSetup>
+  <SingleTileRegions/>
+  <Detector Id="MTBLSMImagingDevice"><FrameSize>1024,1024</FrameSize></Detector>
+</HardwareExperiment>"""
+
+
+def test_locators_ignore_embedded_autofocus_experiment():
+    root = ET.fromstring(EMBEDDED_SWAF)
+    assert cz.find_tile_regions(root) == []
+    assert cz.find_stitch_regions(root) == []
+    assert cz.find_processing_steps(root) == []
+    assert cz.find_lsm_detector(root).findtext("FrameSize") == "1024,1024"
+    # The unconfigured step belongs to the autofocus run, not to this experiment.
+    assert cz.is_stitching_configured(root) is True
+    # The outer FocusSetup has no strategy of its own.
+    assert cz.get_focus_strategy(root) is None
+
+
+def test_writers_do_not_touch_embedded_autofocus_regions():
+    root = ET.fromstring(EMBEDDED_SWAF)
+    with pytest.raises(ValueError):
+        cz.set_position(root, 1e-3, 2e-3)
+    assert cz.clear_single_tile_regions(root) == 0
+    cz.add_single_tile_region(root, 1e-3, 2e-3, z_m=3e-3)
+    assert [r.get("Name") for r in cz.find_tile_regions(root)] == ["P1"]
+    embedded = [r for r in root.iter("SingleTileRegion") if r.get("Name") == "AF"]
+    assert embedded[0].findtext("X") == "9"
+
+
+def test_real_swaf_fixture_embedded_blocks_are_ignored(czexp_dir):
+    _, root = cz.load_czexp(czexp_dir / "swaf_coarse_20x.czexp")
+    assert len(list(root.iter("Detector"))) > len(cz._iter_own(root, "Detector"))
+
+
+# --------------------------------------------------------------------------
+# save_czexp is atomic; set_tile_region_center never drops Z; crop flags
+# --------------------------------------------------------------------------
+def test_save_czexp_leaves_no_temp_file_and_replaces(lsm_path, tmp_path):
+    tree, _ = cz.load_czexp(lsm_path)
+    out = tmp_path / "out.czexp"
+    out.write_text("old", encoding="utf-8")
+    cz.save_czexp(tree, out)
+    assert [p.name for p in tmp_path.iterdir()] == ["out.czexp"]
+    assert cz.load_czexp(out)[1].tag == "HardwareExperiment"
+
+
+def test_save_czexp_failure_keeps_the_old_file(lsm_path, tmp_path, monkeypatch):
+    tree, _ = cz.load_czexp(lsm_path)
+    out = tmp_path / "out.czexp"
+    out.write_text("old", encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cz.os, "replace", boom)
+    with pytest.raises(OSError):
+        cz.save_czexp(tree, out)
+    assert out.read_text(encoding="utf-8") == "old"
+
+
+def test_set_tile_region_center_without_z_raises_and_writes_nothing():
+    root = ET.fromstring('<E><TileRegion Name="T"><CenterPosition>1,2</CenterPosition>'
+                         '</TileRegion></E>')
+    with pytest.raises(ValueError):
+        cz.set_tile_region_center(root, 5e-3, 6e-3, z_m=1e-3)
+    assert root.find("TileRegion").findtext("CenterPosition") == "1,2"
+    cz.set_tile_region_center(root, 5e-3, 6e-3)          # no Z asked: fine
+    assert root.find("TileRegion").findtext("CenterPosition") == "5000.0,6000.0"
+
+
+def test_fit_lsm_crop_flags(synth_root):
+    ok = cz.fit_lsm_crop(synth_root, 207.36)
+    assert ok["frame_clamped"] is False and ok["fov_exceeds_max"] is False
+    assert ok["frame_size_requested"] == ok["frame_size"]
+
+
+def test_fit_lsm_crop_flags_a_clamped_frame(synth_root):
+    out = cz.fit_lsm_crop(synth_root, 100.0, frame_size_override=8)
+    assert out["frame_clamped"] is True
+    assert out["frame_size"] == cz.FRAME_SIZE_MIN and out["frame_size_requested"] == 8
+
+
+def test_fit_lsm_crop_flags_an_fov_larger_than_the_scan_field(synth_root):
+    assert cz.fit_lsm_crop(synth_root, 500.0)["fov_exceeds_max"] is True

@@ -16,7 +16,7 @@
 #################################################################
 
 """
-Live-scan (tray load / eject) configuration probe for ZEN via gRPC.
+Live-scan helpers for ZEN via gRPC: tray load / eject and the prescan configuration.
 
 ``LiveScanService`` (zen_api.lm.live_scan.v1) has four RPCs:
 ``LoadTrayAndPrescan``, ``EjectTray``, ``GetConfiguration`` and
@@ -49,7 +49,10 @@ import asyncio
 import time
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+from grpclib.exceptions import GRPCError
+from MS_metadata import strip_czsht
 from MS_zenapi_helpers import set_logging, open_zen_channel
+from zeiss_paths import CONFIG_PATH as config_path  # config.ini at the repo root
 
 # Auto-generated gRPC stubs for the live-scan service.
 from zen_api.lm.live_scan.v1 import (
@@ -64,9 +67,6 @@ from zen_api.lm.live_scan.v1 import (
 # measurement, barcodes or carrier detection make the load longer.
 EJECT_TIMEOUT_S = 120.0
 LOAD_TIMEOUT_S = 600.0
-
-# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
-from zeiss_paths import CONFIG_PATH as config_path
 
 # Field names of LiveScanServiceConfiguration, in proto order. Kept explicit so
 # callers get a plain dict with stable keys, as in get_sample_carrier_info.
@@ -125,12 +125,6 @@ PRESCAN_FLAGS = tuple(
     if f not in ("sample_holder_template", "refractive_index", "material")
 )
 
-# Suffix ZEN puts on a carrier template file name (seen on the CD7 2026-11-09:
-# template 'Multiwell 6 - 250um.czsht' while SampleCarrierService reported
-# 'Multiwell 6 - 250um'; DEV_NOTES "Tray load / eject").
-TEMPLATE_SUFFIX = ".czsht"
-
-
 def format_live_scan_configuration(cfg: dict, carrier=None) -> str:
     """One log line for a ``get_live_scan_configuration()`` dict.
 
@@ -138,6 +132,10 @@ def format_live_scan_configuration(cfg: dict, carrier=None) -> str:
     SampleCarrierService name) is given and the template, without its
     ``.czsht`` suffix, is a different name, the line ends with a MISMATCH note.
     Formatting only — never raises on a missing key.
+
+    The suffix: seen on the CD7 2026-11-09, template 'Multiwell 6 - 250um.czsht'
+    while SampleCarrierService reported 'Multiwell 6 - 250um' (DEV_NOTES "Tray
+    load / eject").
     """
     template = cfg.get("sample_holder_template")
     on = [f for f in PRESCAN_FLAGS if cfg.get(f) is True]
@@ -146,8 +144,7 @@ def format_live_scan_configuration(cfg: dict, carrier=None) -> str:
             f"material {cfg.get('material')}, RI {cfg.get('refractive_index')}  |  "
             f"prescan on: {', '.join(on) or 'none'}  |  off: {', '.join(off) or 'none'}")
     if carrier is not None and isinstance(template, str):
-        name = template[:-len(TEMPLATE_SUFFIX)] if template.endswith(TEMPLATE_SUFFIX) else template
-        if name != carrier:
+        if strip_czsht(template) != carrier:
             line += f"  |  MISMATCH: ZEN carrier is '{carrier}'"
     return line
 
@@ -161,7 +158,7 @@ async def eject_tray(timeout_s: float = EJECT_TIMEOUT_S) -> list:
     Returns:
         list[str]: The notifications ZEN returns.
     """
-    return await _timed_rpc("EjectTray", LiveScanServiceEjectTrayRequest(), timeout_s)
+    return await _timed_rpc("eject_tray", LiveScanServiceEjectTrayRequest(), timeout_s)
 
 
 async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> list:
@@ -174,14 +171,14 @@ async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> list:
     Returns:
         list[str]: The notifications ZEN returns.
     """
-    return await _timed_rpc("LoadTrayAndPrescan", LiveScanServiceLoadTrayAndPrescanRequest(),
-                            timeout_s)
+    return await _timed_rpc("load_tray_and_prescan",
+                            LiveScanServiceLoadTrayAndPrescanRequest(), timeout_s)
 
 
-async def _timed_rpc(name: str, request, timeout_s: float) -> list:
-    """Send one tray RPC with a timeout, log its duration and notifications."""
+async def _timed_rpc(method: str, request, timeout_s: float) -> list:
+    """Send one tray RPC (stub method name) with a timeout; log duration and notifications."""
     logger = set_logging()
-    method = {"EjectTray": "eject_tray", "LoadTrayAndPrescan": "load_tray_and_prescan"}[name]
+    name = method
     logger.info(f"LiveScanService.{name}: sent (timeout {timeout_s:.0f} s).")
     t0 = time.monotonic()
     async with open_zen_channel(config_path) as (channel, metadata):
@@ -195,8 +192,6 @@ async def _timed_rpc(name: str, request, timeout_s: float) -> list:
 
 def _main():
     """Print the configuration, or the gRPC status if the gateway refuses."""
-    from grpclib.exceptions import GRPCError
-
     try:
         cfg = asyncio.run(get_live_scan_configuration())
     except GRPCError as e:

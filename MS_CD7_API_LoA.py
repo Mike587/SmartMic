@@ -27,7 +27,8 @@ import MS_zenapi_stage_LM
 import MS_zenapi_swaf
 import MS_zenapi_sample_carrier
 import MS_zenapi_live_scan
-import MS_Helper_function
+import MS_run_log
+import MS_zen_logs
 from MS_zenapi_helpers import set_logging
 
 
@@ -63,9 +64,9 @@ X_STAGE_MAX = 0.12      # meters
 Y_STAGE_MIN = 0.0       # meters
 Y_STAGE_MAX = 0.09      # meters
 
-# Default experiment output folder — single-sourced from MS_Helper_function
+# Default experiment output folder — single-sourced from MS_run_log
 # so the literal path lives in exactly one place.
-DEFAULT_EXPERIMENT_OUTPUT_FOLDER = MS_Helper_function.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
+DEFAULT_EXPERIMENT_OUTPUT_FOLDER = MS_run_log.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
 
 # NOTE: All functions in this module wrap async hardware API calls in synchronous
 # helpers. Each call creates its own event loop — do not mix with top-level async code.
@@ -87,6 +88,10 @@ def run_definite_focus_find_surface(max_retries: int = 3,
 
     Returns:
         Tuple[bool, str, int]: (success, message, attempts_used)
+
+    Raises:
+        ValueError, TypeError: For a bad argument (e.g. max_retries < 1). Only
+            a failed search gives (False, message, attempts).
     """
     kwargs = {"max_retries": max_retries}
     if start_z_m is not None:
@@ -101,6 +106,10 @@ def run_definite_focus_find_surface(max_retries: int = 3,
             MS_zenapi_focus.definite_focus_find_surface(**kwargs)
         )
         return True, "Definite focus successful", attempts
+    except (ValueError, TypeError):
+        # A bad argument is a programming error, not a failed search: the
+        # tracker must not count it as a DF failure and carry on.
+        raise
     except Exception as e:
         attempts_used = getattr(e, "attempts_used", max_retries)
         return False, f"Definite focus failed with exception: {e}", attempts_used
@@ -136,8 +145,7 @@ def get_current_z_position() -> float:
     Returns:
         float: Current Z position in meters
     """
-    current_z_position = asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
-    return current_z_position
+    return asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
 
 
 class DefiniteFocusFault(RuntimeError):
@@ -182,6 +190,14 @@ def _carrier_difference(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[str]:
     if a.get("name") != b.get("name"):
         diffs.append(f"carrier '{a.get('name')}' → '{b.get('name')}'")
     return ", ".join(diffs) or None
+
+
+def _df_bottom_as_carrier(df: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """A zen_df_bottom() dict in the shape of carrier_bottom(), for _carrier_difference.
+
+    The DF log event has no carrier name, so the name of the API carrier is used.
+    """
+    return {"name": name, "material": df["material"], "thickness_um": df["thickness_um"]}
 
 
 def check_carrier_for_df(log, expected_material: Optional[str] = None,
@@ -229,20 +245,18 @@ def check_carrier_for_df(log, expected_material: Optional[str] = None,
                       f"or correct the carrier template.")
             return None
     try:
-        df = zeiss_paths.zen_df_bottom()
+        df = MS_zen_logs.zen_df_bottom()
     except Exception as e:
         df = None
         log.info(f"DF carrier: could not read the ZEN log ({e}).")
     if df is None:
         log.info(f"{text}. The DF value is not in the ZEN logs (rotated): API value only.")
     else:
-        df_view = {"name": api["name"], "material": df["material"],
-                   "thickness_um": df["thickness_um"]}
         if df["thickness_um"] <= 0:
             log.error(f"{text} — but DF has thickness 0 (ZEN log {df['timestamp']}): a tray "
                       f"load runs. Do not use DF.")
             return None
-        diff = _carrier_difference(api, df_view)
+        diff = _carrier_difference(api, _df_bottom_as_carrier(df, api["name"]))
         if diff:
             log.error(f"{text} — DF has a different value (ZEN log {df['timestamp']}: {diff}).")
             return None
@@ -483,6 +497,13 @@ def _validate_range(value, lo, hi, label: str, type_check, type_name: str,
     return True, f"Valid {label.lower()}"
 
 
+def _require_valid(check: Tuple[bool, str], what: str) -> None:
+    """Raise ValueError for a failed validate_* result (its (ok, message) tuple)."""
+    ok, message = check
+    if not ok:
+        raise ValueError(f"Invalid {what}: {message}")
+
+
 def validate_objective_number(objective_nr: int) -> Tuple[bool, str]:
     """
     Validate objective number is within valid range.
@@ -574,15 +595,10 @@ def move_focus_to_new_z_position(new_z_pos: float,
             internally via validate_z_position — no need to call it yourself),
             or tolerance_m is invalid.
     """
-    # Validate input
-    is_valid, message = validate_z_position(new_z_pos)
-    if not is_valid:
-        error_msg = f"Invalid Z position: {message}"
-        print(f"[ERROR] {error_msg}")
-        raise ValueError(error_msg)
+    _require_valid(validate_z_position(new_z_pos), "Z position")
     _validate_tolerance(tolerance_m)
 
-    print(f"[INFO] Moving focus to Z = {new_z_pos}m")
+    set_logging().info(f"Moving focus to Z = {new_z_pos * 1e6:.3f} µm")
     _move_with_tolerance(
         lambda: asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(new_z_pos)),
         lambda: abs(asyncio.run(MS_zenapi_focus.get_current_z_focus_position()) - new_z_pos),
@@ -596,8 +612,7 @@ def get_current_xy_stage_position() -> List[float]:
     Returns:
         List[float]: [x, y] coordinates in meters
     """
-    xy = asyncio.run(MS_zenapi_stage_LM.get_current_xy_stage_coordinates())
-    return xy
+    return asyncio.run(MS_zenapi_stage_LM.get_current_xy_stage_coordinates())
 
 
 def move_stage_to_new_xy_position(new_x: float, new_y: float,
@@ -630,19 +645,14 @@ def move_stage_to_new_xy_position(new_x: float, new_y: float,
             positioned .czexp run by ZEN instead (see
             MS_zenapi_stage_LM.move_stage_to_new_xy_position / DEV_NOTES.md).
     """
-    # Validate inputs using hardware-specific limits
-    is_valid, message = validate_xy_position(new_x, new_y)
-    if not is_valid:
-        error_msg = f"Invalid XY coordinates: {message}"
-        print(f"[ERROR] {error_msg}")
-        raise ValueError(error_msg)
+    _require_valid(validate_xy_position(new_x, new_y), "XY coordinates")
     _validate_tolerance(tolerance_m)
 
     def distance_to_target():
         x, y = asyncio.run(MS_zenapi_stage_LM.get_current_xy_stage_coordinates())
         return math.hypot(x - new_x, y - new_y)
 
-    print(f"[INFO] Moving stage to X = {new_x}m, Y = {new_y}m")
+    set_logging().info(f"Moving stage to X = {new_x * 1e6:.2f} µm, Y = {new_y * 1e6:.2f} µm")
     _move_with_tolerance(
         lambda: asyncio.run(MS_zenapi_stage_LM.move_stage_to_new_xy_position(new_x, new_y)),
         distance_to_target, tolerance_m,
@@ -676,27 +686,20 @@ def set_stage_motion_sync(speed_percent: Optional[float] = None,
     )
 
 
-def run_experiment(experiment_name: str, 
-                   custom_folder: Optional[Path] = None, 
-                   custom_filename: Optional[str] = None, 
-                   do_snap_and_live: bool = False) -> Dict[str, Any]:
+def run_experiment(experiment_name: str,
+                   custom_folder: Optional[Path] = None,
+                   custom_filename: Optional[str] = None) -> Dict[str, Any]:
     """
-    Run an experiment by name with the specified parameters.
+    Run an experiment by name (from ZEN's experiment library).
 
-    By default this uses the lean acquisition path
-    (``run_experiment_by_name``): load the named experiment, run it, collect the
-    result. When ``do_snap_and_live=True`` it instead routes to
-    ``check_experiment_api`` — the full API smoke test that also exercises
-    clone/export/import/delete and snap/live/continuous. Normal pipeline
-    acquisitions should leave ``do_snap_and_live=False``.
+    Load the named experiment, run it, collect the result. The API smoke test
+    that this function could also start (``do_snap_and_live=True``, removed
+    2026-11-10) is ``MS_zenapi_experiment_smoke.check_experiment_api``.
 
     Args:
         experiment_name (str): Name of the experiment to run
         custom_folder (Path, optional): Custom output folder. Uses DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
         custom_filename (str, optional): Custom filename for output
-        do_snap_and_live (bool): When True, run the full smoke-test path
-            (snap + live + continuous + serialization round-trip) instead of a
-            plain acquisition.
 
     Returns:
         Dict[str, Any]: Experiment results ({exp_result_path, snap_path,
@@ -705,33 +708,15 @@ def run_experiment(experiment_name: str,
     Raises:
         ValueError: If experiment_name is empty or invalid
     """
-    # Validate experiment name
     if not experiment_name or not isinstance(experiment_name, str):
         raise ValueError(f"Invalid experiment name: {experiment_name}")
 
-    # If custom_folder is not provided, use the global default
-    if custom_folder is None:
-        custom_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
-
-    # Ensure custom_folder is a Path object
-    custom_folder = Path(custom_folder)
-
-    if do_snap_and_live:
-        # Full API exercise incl. snap/live/continuous + serialization round-trip.
-        result = asyncio.run(MS_zenapi_experiment_methods.check_experiment_api(
-            experiment_name=experiment_name,
-            custom_image_folder=custom_folder,
-            custom_filename=custom_filename,
-            do_snap_and_live=True,
-        ))
-    else:
-        # Lean production acquisition: load by name -> run -> collect.
-        result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_by_name(
-            experiment_name=experiment_name,
-            custom_image_folder=custom_folder,
-            custom_filename=custom_filename,
-        ))
-    print(f"Experiment results: {result}")
+    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_by_name(
+        experiment_name=experiment_name,
+        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
+        custom_filename=custom_filename,
+    ))
+    set_logging().info(f"Experiment results: {result}")
     return result
 
 
@@ -764,16 +749,12 @@ def run_experiment_from_path(czexp_path: Union[str, Path],
     if not czexp_path.exists():
         raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
 
-    if custom_folder is None:
-        custom_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
-    custom_folder = Path(custom_folder)
-
     result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_path(
         czexp_path=czexp_path,
-        custom_image_folder=custom_folder,
+        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
         custom_filename=custom_filename,
     ))
-    print(f"Experiment results: {result}")
+    set_logging().info(f"Experiment results: {result}")
     return result
 
 
@@ -797,16 +778,12 @@ def run_experiment_from_xml(xml: str,
     Returns:
         Dict[str, Any]: {exp_result_path, snap_path, experiment_id}
     """
-    if custom_folder is None:
-        custom_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
-    custom_folder = Path(custom_folder)
-
     result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_xml(
         xml=xml,
-        custom_image_folder=custom_folder,
+        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
         custom_filename=custom_filename,
     ))
-    print(f"Experiment results: {result}")
+    set_logging().info(f"Experiment results: {result}")
     return result
 
 
@@ -865,15 +842,10 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
         ValueError: If objective_nr or optovar_nr are invalid, or the changer
             reports a position that is not in its inventory (not retried).
     """
-    # Validate inputs
-    obj_valid, obj_msg = validate_objective_number(objective_nr)
-    if not obj_valid:
-        raise ValueError(f"Invalid objective number: {obj_msg}")
-    
-    opt_valid, opt_msg = validate_optovar_number(optovar_nr)
-    if not opt_valid:
-        raise ValueError(f"Invalid optovar number: {opt_msg}")
-    
+    _require_valid(validate_objective_number(objective_nr), "objective number")
+    _require_valid(validate_optovar_number(optovar_nr), "optovar number")
+    log = set_logging()
+
     async def _set_and_wait():
         # See DEV_NOTES.md "Optics map (this CD7)" for the objective/optovar
         # position -> lens/tubelens mapping (not repeated here to avoid a
@@ -893,7 +865,7 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
         if is_from_immersion or is_to_immersion:
             # Much longer timeout for immersion operations
             adjusted_timeout = max(timeout_seconds, IMMERSION_OBJECTIVE_TIMEOUT)
-            print(f"[INFO] Immersion objective operation detected - using extended timeout: {adjusted_timeout}s")
+            log.info(f"Immersion objective operation detected - using extended timeout: {adjusted_timeout}s")
         else:
             adjusted_timeout = timeout_seconds
         
@@ -918,7 +890,8 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
                     await asyncio.sleep(poll_interval)
                 
                 # Timeout reached
-                print(f"[WARN] Timeout after {adjusted_timeout}s, retry {retry_count + 1}/{max_retries}")
+                log.warning(f"Objective change: timeout after {adjusted_timeout}s, "
+                            f"retry {retry_count + 1}/{max_retries}")
                 retry_count += 1
 
             except (ValueError, TypeError):
@@ -927,15 +900,15 @@ def set_objective_set_optovar_sync(objective_nr, optovar_nr, timeout_seconds=30.
                 # fix a configuration mismatch, and a False return would hide it.
                 raise
             except Exception as e:
-                print(f"[WARN] Exception during objective change: {e}")
-                print(f"[INFO] Retry {retry_count + 1}/{max_retries}")
+                log.warning(f"Exception during objective change: {e} — "
+                            f"retry {retry_count + 1}/{max_retries}")
                 
                 # Special handling for the "has not been set" error ZEN raises
                 # transiently when moving from immersion (hardware needs time
                 # to complete the immersion-removal process).
                 if "has not been set" in str(e) and is_from_immersion:
-                    print("[INFO] This is expected when moving from 50x immersion - hardware needs time")
-                    print("[INFO] Waiting for immersion removal process...")
+                    log.info("This is expected when moving from 50x immersion - hardware "
+                             "needs time. Waiting for immersion removal process...")
                     await asyncio.sleep(IMMERSION_RETRY_DELAY)  # Wait for immersion removal
                 
                 retry_count += 1
@@ -1159,11 +1132,10 @@ def wait_for_df_bottom(timeout_s: float = LOAD_SETTLE_TIMEOUT_S,
         now = carrier_bottom()
         ok = now["thickness_um"] > 0
         if ok:
-            df = zeiss_paths.zen_df_bottom()
+            df = MS_zen_logs.zen_df_bottom()
             if df is not None:
                 ok = df["thickness_um"] > 0 and _carrier_difference(
-                    now, {"name": now["name"], "material": df["material"],
-                          "thickness_um": df["thickness_um"]}) is None
+                    now, _df_bottom_as_carrier(df, now["name"])) is None
         if ok and previous is not None and _carrier_difference(previous, now) is None:
             log.info(f"DF carrier set: '{now['name']}', {now['material']}, "
                      f"{now['thickness_um']:.1f} µm.")
@@ -1326,13 +1298,13 @@ def preflight(expected_carrier: str, log,
     """
     # 0. Record version identity: none of this is available over the gRPC API
     # itself (no version/about service), so each piece is recovered out-of-band
-    # (see zeiss_paths.zen_app_version / zen_api_gateway_version / zen_api_version /
+    # (see MS_zen_logs.zen_app_version, zeiss_paths.zen_api_gateway_version / zen_api_version /
     # smartmic_version) and logged together so a support question ("what were you
     # running?") has a complete answer: the ZEN application, the gateway service it
     # talks to, the Python-side stubs generated against it, AND the exact SmartMic
     # commit driving the run.
     sm_ver = zeiss_paths.smartmic_version()
-    zen_ver = zeiss_paths.zen_app_version()
+    zen_ver = MS_zen_logs.zen_app_version()
     gw_ver = zeiss_paths.zen_api_gateway_version()
     api_ver, api_path = zeiss_paths.zen_api_version()
     log.info(f"SmartMic: {sm_ver or 'unknown (not a git checkout?)'}  |  "
@@ -1345,8 +1317,8 @@ def preflight(expected_carrier: str, log,
     # user's Options.config and the ZENService log (zeiss_paths, DEV_NOTES
     # "The re-immersion settings are NOT reachable through the ZEN-API").
     try:
-        log.info(zeiss_paths.format_auto_immersion_settings(
-            zeiss_paths.zen_auto_immersion_settings()))
+        log.info(MS_zen_logs.format_auto_immersion_settings(
+            MS_zen_logs.zen_auto_immersion_settings()))
     except Exception as e:
         log.info(f"Auto-immersion refill settings: could not read ({e})")
 
@@ -1426,13 +1398,3 @@ def preflight(expected_carrier: str, log,
                       f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%")
     log.info(f"Preflight OK: gateway responsive, microscope idle, carrier '{carrier}', {motion_str}.")
     return True
-
-
-
-
-
-
-
-
-
-

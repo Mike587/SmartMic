@@ -50,6 +50,12 @@ DF_REPEAT_TOL_M = 9e-6
 # --------------------------------------------------------------------------
 # CLI options / gating
 # --------------------------------------------------------------------------
+def _default_out_dir() -> Path:
+    """<default output folder>/test_output (the folder follows SMARTMIC_OUTPUT_ROOT)."""
+    from MS_run_log import DEFAULT_EXPERIMENT_OUTPUT_FOLDER
+    return DEFAULT_EXPERIMENT_OUTPUT_FOLDER / "test_output"
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-hardware",
@@ -73,7 +79,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--out-dir",
         action="store",
-        default=r"F:\UserData\mike\api\test_output",
+        default=str(_default_out_dir()),
         help="Persistent folder for CZIs acquired by the hardware tests "
         "(kept for inspection). On the same drive as ZEN's default output so the "
         "post-acquisition move stays fast. Ignored when --clean-images is given.",
@@ -227,14 +233,22 @@ def scope(request, hw):
 
 
 def _restore_scope(ms, snap):
-    """Best-effort restore of optics → XY → Z; never raise (don't mask results)."""
-    try:
-        obj, opt = snap["optics"]
-        ms.set_objective_set_optovar_sync(obj, opt)
-        ms.move_stage_to_new_xy_position(snap["xy"][0], snap["xy"][1])
-        ms.move_focus_to_new_z_position(snap["z"])
-    except Exception as e:
-        print(f"[conftest] WARNING: could not fully restore scope state: {e}")
+    """Best-effort restore of optics → XY → Z; never raise (don't mask results).
+
+    Each step has its own try: a refused XY move (e.g. the snapshot objective
+    is the immersion objective) must not also skip the Z restore.
+    """
+    obj, opt = snap["optics"]
+    steps = (
+        ("optics", lambda: ms.set_objective_set_optovar_sync(obj, opt)),
+        ("XY", lambda: ms.move_stage_to_new_xy_position(snap["xy"][0], snap["xy"][1])),
+        ("Z", lambda: ms.move_focus_to_new_z_position(snap["z"])),
+    )
+    for name, restore in steps:
+        try:
+            restore()
+        except Exception as e:
+            print(f"[conftest] WARNING: could not restore {name}: {e}")
 
 
 @pytest.fixture
