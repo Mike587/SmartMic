@@ -545,3 +545,21 @@ isn't lost:
 - Decide where the PoC's canonical `.czexp` files should live if/when migrated
   (repo vs. machine-local). --> in a subfolder of the PoC
 - check the 'demo' part of the code. what is it for? 
+
+## Added 2026-11-10 (safety round)
+
+- `tests/conftest.py`: autouse `_offline_objective_inventory` (a dry objective
+  in slot 2, slot 4 the only immersion slot) and the `fake_objective` factory.
+  The immersion guard reads the inventory; no unit test reads a gateway.
+- `test_stage_guard.py`: immersion by API type in another slot, the known slot
+  with a wrong `AIR` entry, `UNSPECIFIED`; range refusal in the async XY and Z
+  moves before any RPC.
+- `test_czexp_editor.py`: the writers refuse a bad position and write nothing.
+- `test_zenapi_helpers.py`: `default_rpc_timeout` for each kind of route,
+  `ZenChannel`, the message of a timeout.
+- `test_experiment_methods.py`: output folder = ZEN default folder is refused;
+  `stop_running_experiment`.
+- `test_loa_wrappers.py`: `check_immersion_guard`, the long timeout for an API
+  immersion slot, `stop_experiment`.
+- `test_validation.py`: `MS_limits.require_*`.
+- Hardware tests to add: Stop during a run; the guard on the 50x (refusal only).

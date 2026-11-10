@@ -6,10 +6,6 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Wraps the ZEN gRPC SampleCarrierService (lm.hardware.v1) to read
-# information about the currently loaded sample carrier (well plate,
-# slide, dish, ...).
-#
 # Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
 #
 # Permission is granted to use, modify and distribute this code,
@@ -42,6 +38,7 @@ DEV_NOTES.md "Multi-slide carriers".
 """
 
 import asyncio
+from typing import Any, Dict, Optional, Tuple
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from grpclib.const import Status
@@ -62,7 +59,7 @@ from zen_api.lm.hardware.v1 import (
 from zeiss_paths import CONFIG_PATH as config_path
 
 
-async def get_sample_carrier_info() -> dict:
+async def get_sample_carrier_info() -> Dict[str, Any]:
     """Return information about the currently configured sample carrier.
 
     Calls ``SampleCarrierService.GetInfo`` and returns the response as a
@@ -84,7 +81,7 @@ async def get_sample_carrier_info() -> dict:
             skirt            (float): Skirt / bottom offset. Same scale as
                              ``thickness`` (e.g. 2891.0), so µm is expected;
                              not confirmed against a second source.
-            refractive_index (float): Refractive index of the bottom material.
+            refractive_index: Refractive index of the bottom material.
     """
     logger = set_logging()
 
@@ -108,7 +105,7 @@ async def get_sample_carrier_info() -> dict:
     }
 
 
-async def get_current_container():
+async def get_current_container() -> Optional[Tuple[int, int]]:
     """(row_index, column_index) of the container the stage is positioned in.
 
     Returns None when ZEN reports the stage is in no container (gRPC NOT_FOUND:
@@ -125,7 +122,7 @@ async def get_current_container():
     return c.row_index, c.column_index
 
 
-async def move_to_container(row_index: int, column_index: int):
+async def move_to_container(row_index: int, column_index: int) -> None:
     """Move the stage to a container of the sample carrier (indices from 0).
 
     Same safety pattern as ``MS_zenapi_stage_LM.move_stage_to_new_xy_position``.

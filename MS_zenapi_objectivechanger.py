@@ -36,9 +36,14 @@ Public functions
 ----------------
 set_objective_set_optovar         -- Move both objective and optovar to new positions
 get_current_objective_and_optovar -- Query the current position indices of both devices
+get_active_objective              -- The inventory entry (name, NA, immersion type) of the active objective
+get_immersion_objective_positions -- Changer positions that hold an immersion objective
+is_immersion_objective            -- True unless the API says the objective is dry (AIR)
 get_current_objective_and_optovar_names -- Same, resolved to human-readable names
 list_objectives_and_optovars      -- Read-only (name, position) inventory of both devices
 """
+
+from typing import Any, Callable, List, Tuple
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import (
@@ -56,6 +61,7 @@ from zen_api.lm.hardware.v2 import (
     ObjectiveChangerServiceGetPositionRequest,
     ObjectiveChangerServiceMoveToRequest,
     ObjectiveChangerServiceGetObjectivesRequest,
+    ObjectiveChangerImmersionTypes,
     OptovarServiceStub,
     OptovarServiceGetPositionRequest,
     OptovarServiceMoveToRequest,
@@ -66,7 +72,9 @@ from zen_api.lm.hardware.v2 import (
 from zeiss_paths import CONFIG_PATH as config_path
 
 
-def _require(lookup_fn, used_positions_fn, inventory, position, context, kind):
+def _require(lookup_fn: Callable[[Any, int], Any],
+             used_positions_fn: Callable[[Any], List[int]],
+             inventory: Any, position: int, context: str, kind: str) -> Any:
     """Return ``lookup_fn(inventory, position)``, or raise a clear error if unknown.
 
     lookup_fn returns None for a position not present in the reported
@@ -84,25 +92,27 @@ def _require(lookup_fn, used_positions_fn, inventory, position, context, kind):
     return item
 
 
-def _require_objective(objectives, position, context):
+def _require_objective(objectives: Any, position: int, context: str) -> Any:
     """Return the objective at *position*, or raise a clear error if unknown."""
     return _require(get_objective_by_position, get_used_objective_positions,
                      objectives, position, context, "objective")
 
 
-def _require_optovar(optovars, position, context):
+def _require_optovar(optovars: Any, position: int, context: str) -> Any:
     """Return the optovar at *position*, or raise a clear error if unknown."""
     return _require(get_optovar_by_position, get_used_optovar_positions,
                      optovars, position, context, "optovar")
 
 
-def _services(channel, metadata):
+def _services(channel: Any, metadata: Any,
+              ) -> Tuple[ObjectiveChangerServiceStub, OptovarServiceStub]:
     """The (objective changer, optovar) service stubs on one open channel."""
     return (ObjectiveChangerServiceStub(channel=channel, metadata=metadata),
             OptovarServiceStub(channel=channel, metadata=metadata))
 
 
-async def _read_inventory(objchanger_service, optovar_service):
+async def _read_inventory(objchanger_service: ObjectiveChangerServiceStub,
+                          optovar_service: OptovarServiceStub) -> Tuple[Any, Any]:
     """The full (objectives, optovars) inventory responses."""
     objectives = await objchanger_service.get_objectives(
         ObjectiveChangerServiceGetObjectivesRequest()
@@ -111,14 +121,59 @@ async def _read_inventory(objchanger_service, optovar_service):
     return objectives, optovars
 
 
-async def _read_positions(objchanger_service, optovar_service):
+async def _read_positions(objchanger_service: ObjectiveChangerServiceStub,
+                          optovar_service: OptovarServiceStub) -> Tuple[int, int]:
     """The current (objective, optovar) position indices."""
     pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
     pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
     return pos_obj.value, pos_optovar.value
 
 
-async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int):
+def is_immersion_objective(objective: Any) -> bool:
+    """True unless the API says the objective is a dry objective.
+
+    ``objective`` is an inventory entry (``ObjectiveData``). Only
+    ``immersion_type == AIR`` counts as dry: WATER, OIL, GLYCERINE, SILICONE and
+    also UNSPECIFIED count as immersion, so an objective that ZEN does not
+    describe is treated the safe way (the Z=0 lower is refused).
+    On this CD7 (read 2026-11-10): 5x, 20x/0.7, 20x/0.95 = AIR, 50x/1.2 = WATER.
+    """
+    return objective.immersion_type != ObjectiveChangerImmersionTypes.AIR
+
+
+async def get_active_objective() -> Any:
+    """Return the inventory entry of the objective that is in the beam path.
+
+    Returns:
+        The ``ObjectiveData`` of the active objective: ``name``, ``position``,
+        ``na``, ``magnification``, ``immersion_type``.
+
+    Raises:
+        ValueError: The changer reports a position that is not in its inventory.
+    """
+    async with open_zen_channel(config_path) as (channel, metadata):
+        objchanger_service, _ = _services(channel, metadata)
+        objectives = await objchanger_service.get_objectives(
+            ObjectiveChangerServiceGetObjectivesRequest()
+        )
+        pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
+        return _require_objective(objectives, pos_obj.value, "Current objective")
+
+
+async def get_immersion_objective_positions() -> List[int]:
+    """Return the changer positions that hold an immersion objective (sorted).
+
+    Read from the inventory (``is_immersion_objective``), not from a constant.
+    """
+    async with open_zen_channel(config_path) as (channel, metadata):
+        objchanger_service, _ = _services(channel, metadata)
+        objectives = await objchanger_service.get_objectives(
+            ObjectiveChangerServiceGetObjectivesRequest()
+        )
+        return sorted(o.position for o in objectives.objectives if is_immersion_objective(o))
+
+
+async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int) -> None:
     """Move the objective changer and optovar to the requested positions.
 
     Logs all available objectives and optovars, the initial positions, and the
@@ -129,9 +184,6 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
             the revolving nosepiece.
         opt_new_position: 1-based position index of the target optovar
             setting.
-
-    Returns:
-        None
     """
     logger = set_logging()
 
@@ -166,9 +218,10 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
         await objchanger_service.move_to(
             ObjectiveChangerServiceMoveToRequest(position_index=obj_new_position)
         )
-        current_objective = _require_objective(objectives, obj_new_position, "New objective")
+        requested_objective = _require_objective(objectives, obj_new_position, "New objective")
         logger.info(
-            f"New Objective: {current_objective.name} Position: {current_objective.position}"
+            f"Requested Objective: {requested_objective.name} "
+            f"Position: {requested_objective.position} (not a read-back)"
         )
 
         logger.info("------------------ Move Optovars -----------------------")
@@ -182,13 +235,14 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
         await optovar_service.move_to(
             OptovarServiceMoveToRequest(position_index=opt_new_position)
         )
-        current_optovar = _require_optovar(optovars, opt_new_position, "New optovar")
+        requested_optovar = _require_optovar(optovars, opt_new_position, "New optovar")
         logger.info(
-            f"New Optovar: {current_optovar.name} Position: {current_optovar.position}"
+            f"Requested Optovar: {requested_optovar.name} "
+            f"Position: {requested_optovar.position} (not a read-back)"
         )
 
 
-async def get_current_objective_and_optovar():
+async def get_current_objective_and_optovar() -> Tuple[int, int]:
     """Return the current position indices of the objective changer and optovar.
 
     Two RPCs only (the two positions): this is called by every move guard and
@@ -202,7 +256,8 @@ async def get_current_objective_and_optovar():
         return await _read_positions(*_services(channel, metadata))
 
 
-async def list_objectives_and_optovars():
+async def list_objectives_and_optovars(
+) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
     """Return the full objective and optovar inventory as ``(name, position)`` lists.
 
     Read-only — does not move any hardware.  Useful for discovering which
@@ -221,7 +276,8 @@ async def list_objectives_and_optovars():
     return obj_list, opt_list
 
 
-async def get_current_objective_and_optovar_names():
+async def get_current_objective_and_optovar_names(
+) -> Tuple[Tuple[str, int], Tuple[str, int]]:
     """Return the current objective and optovar as ``(name, position)`` pairs.
 
     Unlike :func:`get_current_objective_and_optovar`, which returns only the

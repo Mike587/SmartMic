@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+
+#################################################################
+# File        : verify_zen_api.py
+# Author      : Michael Stebler
+# Institution : ETH Zurich | ScopeM
+#               ScopeM Imaging Facility (scopem.ethz.ch)
+#
+# Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
+#
+# Permission is granted to use, modify and distribute this code,
+# as long as this copyright notice remains part of the code.
+#################################################################
+
 """
 verify_zen_api.py — smoke-test SmartMic against the resolved zen_api.
 
@@ -47,6 +61,7 @@ def _import_all():
     import MS_image_analysis         # noqa: F401
     import MS_czexp_editor           # noqa: F401
     import MS_zenapi_helpers         # noqa: F401
+    import MS_limits                 # noqa: F401
     import MS_zenapi_experiment_smoke  # noqa: F401
     import MS_Helper_function        # noqa: F401  (re-exports run_log / metadata / image_metrics)
     import MS_zen_logs               # noqa: F401

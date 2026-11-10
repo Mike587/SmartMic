@@ -98,3 +98,38 @@ def test_non_finite_moves_raise_before_any_rpc(monkeypatch, bad):
         ms.move_focus_to_new_z_position(bad)
     with pytest.raises(ValueError):
         ms.move_stage_to_new_xy_position(bad, 0.01)
+
+
+# --------------------------------------------------------------------------
+# MS_limits: one module for all layers
+# --------------------------------------------------------------------------
+def test_the_loa_uses_the_checks_of_ms_limits():
+    import MS_limits
+    assert ms.validate_z_position is MS_limits.validate_z_position
+    assert ms.validate_xy_position is MS_limits.validate_xy_position
+    assert (ms.Z_POSITION_MIN, ms.Z_POSITION_MAX) == (MS_limits.Z_POSITION_MIN,
+                                                     MS_limits.Z_POSITION_MAX)
+
+
+@pytest.mark.parametrize("call, args", [
+    ("require_z_position", (float("nan"),)),
+    ("require_z_position", (1.0,)),
+    ("require_xy_position", (0.01, float("inf"))),
+    ("require_xy_position", (-1.0, 0.01)),
+    ("require_objective_number", (0,)),
+    ("require_objective_number", (True,)),
+    ("require_optovar_number", (99,)),
+])
+def test_require_functions_raise(call, args):
+    import MS_limits
+    with pytest.raises(ValueError, match="Invalid"):
+        getattr(MS_limits, call)(*args)
+
+
+def test_require_functions_pass_a_valid_value():
+    import MS_limits
+    MS_limits.require_z_position(0)
+    MS_limits.require_z_position(-0.0003)
+    MS_limits.require_xy_position(0.05, 0.04)
+    MS_limits.require_objective_number(MS_limits.OBJECTIVE_MAX)
+    MS_limits.require_optovar_number(MS_limits.OPTOVAR_MIN)

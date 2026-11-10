@@ -44,7 +44,10 @@ in ``MS_zenapi_experiment_methods``.
 """
 
 import asyncio
+import logging
 from pathlib import Path
+from typing import Optional, Tuple, Union
+
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
 from grpclib import GRPCError
@@ -66,13 +69,13 @@ from zeiss_paths import CONFIG_PATH as config_path
 
 
 async def _find_auto_focus_with_retry(
-    swaf_service,
+    swaf_service: ExperimentSwAutofocusServiceStub,
     experiment_id: str,
     label: str,
     timeout: int,
     max_retries: int,
-    logger,
-) -> tuple:
+    logger: logging.Logger,
+) -> Tuple[Optional[float], int]:
     """Run SWAF FindAutoFocus on an already-loaded experiment id, with retries.
 
     Shared tail of both public run_* functions: they differ only in HOW the
@@ -125,10 +128,10 @@ async def _find_auto_focus_with_retry(
 
 
 async def run_software_autofocus_from_path(
-    czexp_path,
+    czexp_path: Union[str, Path],
     timeout: int = 30,
     max_retries: int = 2,
-) -> tuple:
+) -> Tuple[Optional[float], int]:
     """Load a SWAF experiment BY PATH and run it; return the focus position in µm.
 
     The portable counterpart to :func:`run_software_autofocus`: instead of a
@@ -180,7 +183,7 @@ async def run_software_autofocus(
     experiment_name: str,
     timeout: int = 30,
     max_retries: int = 2,
-) -> tuple:
+) -> Tuple[Optional[float], int]:
     """Run SWAF using the named experiment and return the focus position in µm.
 
     Opens its own gRPC channel (same pattern as the other MS_zenapi_* modules)

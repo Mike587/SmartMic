@@ -15,7 +15,7 @@
 """
 MS_czexp_editor.py  —  read and modify ZEN .czexp experiment files.
 
-Pure stdlib (xml.etree) — no ZEN API, no extra dependency.  Generic helpers for
+Pure stdlib (xml.etree) plus ``MS_limits`` — no ZEN API, no extra dependency.  Generic helpers for
 any project that needs to customise an experiment per target (position, z-stack,
 scan crop) and then run the result via the LoA's run_experiment_from_path.
 
@@ -72,6 +72,12 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import MS_limits
+
+PathLike = Union[str, Path]
+XYZ = Tuple[float, float, float]
 
 LSM_DETECTOR_ID = "MTBLSMImagingDevice"
 
@@ -94,14 +100,14 @@ FOCUS_Z_STACK_MODES = {
 # Load / save
 # ---------------------------------------------------------------------------
 
-def load_czexp(path):
+def load_czexp(path: PathLike) -> Tuple[ET.ElementTree, ET.Element]:
     """Parse a .czexp file and return (tree, root)."""
     path = Path(path)
     tree = ET.parse(path)
     return tree, tree.getroot()
 
 
-def save_czexp(tree, path):
+def save_czexp(tree: ET.ElementTree, path: PathLike) -> Path:
     """Write a .czexp file as UTF-8 with BOM + XML declaration (ZEN style).
 
     The file is written to ``<name>.tmp`` and then moved into place, so a crash
@@ -122,18 +128,18 @@ def save_czexp(tree, path):
 # Small parsing/formatting helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_float(v):
+def _fmt_float(v: float) -> str:
     """Shortest round-trippable float string (e.g. 0.00111297)."""
     return repr(float(v))
 
 
-def _parse_pair(text):
+def _parse_pair(text: str) -> Tuple[float, float]:
     """'1859,1859' -> (1859.0, 1859.0)."""
     a, b = text.split(",")[:2]
     return float(a), float(b)
 
 
-def _require(elem, tag):
+def _require(elem: ET.Element, tag: str) -> ET.Element:
     child = elem.find(tag)
     if child is None:
         raise ValueError(f"<{tag}> not found under <{elem.tag}>")
@@ -144,7 +150,7 @@ def _require(elem, tag):
 # Element locators
 # ---------------------------------------------------------------------------
 
-def _iter_own(root, tag):
+def _iter_own(root: ET.Element, tag: str) -> List[ET.Element]:
     """root.iter(tag), minus elements inside an embedded <Experiment>.
 
     A software-autofocus strategy carries its own complete experiment
@@ -159,7 +165,7 @@ def _iter_own(root, tag):
     return [e for e in root.iter(tag) if e not in embedded]
 
 
-def find_lsm_detector(root):
+def find_lsm_detector(root: ET.Element) -> ET.Element:
     """Return the experiment's own <Detector Id='MTBLSMImagingDevice'> element.
 
     All locators in this section ignore the copy inside a software-autofocus
@@ -171,12 +177,12 @@ def find_lsm_detector(root):
     raise ValueError(f"LSM detector '{LSM_DETECTOR_ID}' not found")
 
 
-def find_tile_regions(root):
+def find_tile_regions(root: ET.Element) -> List[ET.Element]:
     """Return all <SingleTileRegion> elements (single-position acquisitions)."""
     return _iter_own(root, "SingleTileRegion")
 
 
-def find_stitch_regions(root):
+def find_stitch_regions(root: ET.Element) -> List[ET.Element]:
     """Return all <TileRegion> elements (multi-tile / stitch regions).
 
     A stitch region is positioned by its <CenterPosition> (µm) and sized by
@@ -185,7 +191,7 @@ def find_stitch_regions(root):
     return _iter_own(root, "TileRegion")
 
 
-def find_zstack_setup(root):
+def find_zstack_setup(root: ET.Element) -> ET.Element:
     """Return the <ZStackSetup> element that defines First/Last/Interval.
 
     A software-autofocus sub-experiment's own ZStackSetup is never returned.
@@ -196,12 +202,12 @@ def find_zstack_setup(root):
     raise ValueError("ZStackSetup with First/Last not found")
 
 
-def find_processing_steps(root):
+def find_processing_steps(root: ET.Element) -> List[ET.Element]:
     """Return all <ProcessingStep> elements (remote-processing / stitching steps)."""
     return _iter_own(root, "ProcessingStep")
 
 
-def is_stitching_configured(root):
+def is_stitching_configured(root: ET.Element) -> bool:
     """False only if an ACTIVE remote-processing step is the empty placeholder.
 
     A stitch experiment saved with an active but unconfigured step
@@ -229,7 +235,7 @@ def is_stitching_configured(root):
     return False
 
 
-def get_focus_strategy(root):
+def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
     """Return the active focus strategy as a dict, or None if there is none.
 
     The strategy lives in <FocusSetup><FocusStrategy> as <Method>, <SearchAction>
@@ -253,7 +259,7 @@ def get_focus_strategy(root):
             "surface_mode": fields["SurfaceMode"]}
 
 
-def has_focus_strategy(root):
+def has_focus_strategy(root: ET.Element) -> bool:
     """True if an ACTIVE focus strategy is configured in the experiment.
 
     ZEN can silently (re)add a focus strategy when an experiment is re-opened or
@@ -272,7 +278,8 @@ def has_focus_strategy(root):
 # Run-safety checks (raise before a generated .czexp is run)
 # ---------------------------------------------------------------------------
 
-def require_no_focus_search(root, path=None, reason=None):
+def require_no_focus_search(root: ET.Element, path: Optional[PathLike] = None,
+                            reason: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Raise if the experiment's focus strategy runs a focus SEARCH.
 
     For runs that set Z themselves (e.g. Marc_SM_003: DefiniteFocus and SWAF
@@ -299,7 +306,7 @@ def require_no_focus_search(root, path=None, reason=None):
     return strategy
 
 
-def tiles_activated(root):
+def tiles_activated(root: ET.Element) -> bool:
     """True if the experiment's own <TilesSetup> is switched on (Tiles in ZEN).
 
     A software-autofocus sub-experiment's TilesSetup is ignored.
@@ -308,7 +315,7 @@ def tiles_activated(root):
     return tiles is not None and (tiles.get("IsActivated") or "false").lower() == "true"
 
 
-def require_runnable_tiles(root, path=None):
+def require_runnable_tiles(root: ET.Element, path: Optional[PathLike] = None) -> None:
     """Raise if Tiles is switched on but the experiment has no tile region.
 
     ZEN refuses to start such an experiment ("ABORTED: Failed to start
@@ -337,7 +344,7 @@ def require_runnable_tiles(root, path=None):
 # Readers
 # ---------------------------------------------------------------------------
 
-def get_lsm_pixel_size_um(root):
+def get_lsm_pixel_size_um(root: ET.Element) -> float:
     """Current LSM pixel size in µm = ScaledImageRectangleSize / FrameSize."""
     det = find_lsm_detector(root)
     rect_x, _ = _parse_pair(_require(det, "ScaledImageRectangleSize").text)
@@ -345,13 +352,13 @@ def get_lsm_pixel_size_um(root):
     return rect_x / frame_x
 
 
-def get_zstack_interval_m(root):
+def get_zstack_interval_m(root: ET.Element) -> float:
     """Current z-stack interval (step) in metres."""
     zs = find_zstack_setup(root)
     return float(_require(_require(zs, "Interval"), "Distance").find("Value").text)
 
 
-def get_focus_z_stack_mode(root):
+def get_focus_z_stack_mode(root: ET.Element) -> Optional[str]:
     """The experiment's <FocusZStackMode>: "CurrentZ", "FixedZ", or None.
 
     THIS decides how ZEN reads the z-stack First/Last, not <IsCenterMode>
@@ -377,7 +384,8 @@ def get_focus_z_stack_mode(root):
     return modes.pop() if modes else None
 
 
-def require_focus_z_stack_mode(root, expected, path=None):
+def require_focus_z_stack_mode(root: ET.Element, expected: str,
+                               path: Optional[PathLike] = None) -> str:
     """Raise unless the experiment's FocusZStackMode is ``expected``.
 
     expected: "CurrentZ" (First/Last relative) or "FixedZ" (absolute).
@@ -402,7 +410,7 @@ def require_focus_z_stack_mode(root, expected, path=None):
     return found
 
 
-def is_zstack_center_mode(root):
+def is_zstack_center_mode(root: ET.Element) -> bool:
     """True if the z-stack is in CENTER mode (<IsCenterMode>true</IsCenterMode>).
 
     Only says how the stack is set up in the ZEN UI (centre ± range vs
@@ -413,7 +421,7 @@ def is_zstack_center_mode(root):
     return flag is not None and (flag.text or "").strip().lower() == "true"
 
 
-def _used_stitch_regions(root):
+def _used_stitch_regions(root: ET.Element) -> List[Tuple[str, ET.Element]]:
     """[(name, <TileRegion>)] of the multi-tile regions used for acquisition.
 
     File order. IsUsedForAcquisition=false is skipped; a missing flag counts as
@@ -435,7 +443,7 @@ def _used_stitch_regions(root):
     return list(used.items())
 
 
-def get_tile_region_centers(root):
+def get_tile_region_centers(root: ET.Element) -> Dict[str, Tuple[float, float]]:
     """{region name: (x_m, y_m)} of the multi-tile regions used for acquisition.
 
     Reads each <TileRegion>'s <CenterPosition> (µm in the file) and returns
@@ -454,7 +462,7 @@ def get_tile_region_centers(root):
     return centers
 
 
-def get_tile_region_shape_ids(root):
+def get_tile_region_shape_ids(root: ET.Element) -> Dict[str, str]:
     """{region name: TemplateShapeId} of the multi-tile regions used for acquisition.
 
     <TemplateShapeId> is ZEN's link from a region to its sample-carrier
@@ -478,13 +486,13 @@ def get_tile_region_shape_ids(root):
     return ids
 
 
-def summarize(root):
+def summarize(root: ET.Element) -> Dict[str, Any]:
     """Return a dict of the current values this module can edit (for logging)."""
     det = find_lsm_detector(root)
     zs = find_zstack_setup(root)
     regions = find_tile_regions(root)
 
-    def zval(tag):
+    def zval(tag: str) -> float:
         return float(_require(_require(zs, tag), "Distance").find("Value").text)
 
     out = {
@@ -516,7 +524,19 @@ def summarize(root):
 # Writers
 # ---------------------------------------------------------------------------
 
-def set_position(root, x_m, y_m, z_m=None, region_index=0):
+def _require_position(x_m: float, y_m: float, z_m: Optional[float]) -> None:
+    """Raise ValueError unless X/Y (and Z, if given) are finite and in range.
+
+    ZEN drives the stage to what is in the file, so a position gets the same
+    check here as a direct move (``MS_limits``). Call it before the first write.
+    """
+    MS_limits.require_xy_position(x_m, y_m)
+    if z_m is not None:
+        MS_limits.require_z_position(z_m)
+
+
+def set_position(root: ET.Element, x_m: float, y_m: float, z_m: Optional[float] = None,
+                 region_index: int = 0) -> Tuple[float, float, Optional[float]]:
     """Set a tile region's stage position.  X/Y/Z are written in µm (× 1e6).
 
     What the region <Z> does to a z-stack depends on <FocusZStackMode>
@@ -526,7 +546,12 @@ def set_position(root, x_m, y_m, z_m=None, region_index=0):
                  placeholder);
       FixedZ   → First/Last are absolute Z; <Z> does not move the stack —
                  write the absolute range with set_zstack_range.
+
+    Raises:
+        ValueError: No region, or a position that is not finite or not within
+            the limits of ``MS_limits`` (nothing is written then).
     """
+    _require_position(x_m, y_m, z_m)
     regions = find_tile_regions(root)
     if not regions:
         raise ValueError("no SingleTileRegion to set position on")
@@ -538,8 +563,10 @@ def set_position(root, x_m, y_m, z_m=None, region_index=0):
     return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
 
 
-def add_single_tile_region(root, x_m, y_m, z_m=None, name="P1",
-                           region_id="639171104957762277"):
+def add_single_tile_region(root: ET.Element, x_m: float, y_m: float,
+                           z_m: Optional[float] = None, name: str = "P1",
+                           region_id: str = "639171104957762277",
+                           ) -> Tuple[float, float, Optional[float]]:
     """Ensure a positioned <SingleTileRegion> exists; set its X/Y/Z (µm).
 
     For an experiment whose <SingleTileRegions> container is empty (e.g. a FAZ
@@ -553,7 +580,12 @@ def add_single_tile_region(root, x_m, y_m, z_m=None, name="P1",
     First/Last are added to, so pass the target centre Z (e.g. the overview
     focus); with FixedZ the stack is absolute and <Z> does not move it (see
     set_position).  Leave z_m=None to write 0.
+
+    Raises:
+        ValueError: No container, or a position that is not finite or not
+            within the limits of ``MS_limits`` (nothing is written then).
     """
+    _require_position(x_m, y_m, z_m)
     if find_tile_regions(root):
         return set_position(root, x_m, y_m, z_m=z_m)
     containers = _iter_own(root, "SingleTileRegions")
@@ -570,7 +602,9 @@ def add_single_tile_region(root, x_m, y_m, z_m=None, name="P1",
     return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
 
 
-def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
+def set_tile_region_center(root: ET.Element, x_m: float, y_m: float,
+                           z_m: Optional[float] = None,
+                           region_index: int = 0) -> Tuple[float, float]:
     """Set a multi-tile (stitch) TileRegion's CenterPosition (written in µm).
 
     Used to re-aim a stitch experiment (e.g. the OV) at a new well centre.
@@ -578,9 +612,11 @@ def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
     own autofocus.
 
     Raises:
-        ValueError: No stitch region, no <CenterPosition>, or z_m is given and
-            the region has no <Z> (nothing is written then).
+        ValueError: No stitch region, no <CenterPosition>, z_m is given and the
+            region has no <Z>, or a position that is not finite or not within
+            the limits of ``MS_limits`` (nothing is written then).
     """
+    _require_position(x_m, y_m, z_m)
     regions = find_stitch_regions(root)
     if not regions:
         raise ValueError("no TileRegion (stitch region) to set centre on")
@@ -593,7 +629,9 @@ def set_tile_region_center(root, x_m, y_m, z_m=None, region_index=0):
     return x_m * 1e6, y_m * 1e6
 
 
-def retarget_tile_region(root, name, x_m, y_m, z_m=None, shape_id=None, region_index=0):
+def retarget_tile_region(root: ET.Element, name: str, x_m: float, y_m: float,
+                         z_m: Optional[float] = None, shape_id: Optional[str] = None,
+                         region_index: int = 0) -> Dict[str, Optional[str]]:
     """Re-aim a tile region authored for one well at another well.
 
     A region is tied to its well three ways, and all three are rewritten:
@@ -636,7 +674,7 @@ def retarget_tile_region(root, name, x_m, y_m, z_m=None, shape_id=None, region_i
     return authored
 
 
-def clear_single_tile_regions(root):
+def clear_single_tile_regions(root: ET.Element) -> int:
     """Remove standalone single-tile regions, leaving only <TileRegion> stitches.
 
     A stitch experiment (e.g. the OV) may also carry stray <SingleTileRegion> /
@@ -654,7 +692,9 @@ def clear_single_tile_regions(root):
     return removed
 
 
-def set_zstack_range(root, first_m, last_m, interval_m=None, expect_mode=None):
+def set_zstack_range(root: ET.Element, first_m: float, last_m: float,
+                     interval_m: Optional[float] = None,
+                     expect_mode: Optional[str] = None) -> Tuple[float, float]:
     """Set the z-stack First/Last (metres); optionally the Interval (step).
 
     How ZEN reads First/Last is decided by the file's <FocusZStackMode>
@@ -673,7 +713,7 @@ def set_zstack_range(root, first_m, last_m, interval_m=None, expect_mode=None):
         require_focus_z_stack_mode(root, expect_mode)
     zs = find_zstack_setup(root)
 
-    def set_val(tag, value_m):
+    def set_val(tag: str, value_m: float) -> None:
         _require(_require(zs, tag), "Distance").find("Value").text = _fmt_float(value_m)
 
     set_val("First", first_m)
@@ -683,7 +723,8 @@ def set_zstack_range(root, first_m, last_m, interval_m=None, expect_mode=None):
     return first_m, last_m
 
 
-def fit_lsm_crop(root, target_fov_um, frame_size_override=None):
+def fit_lsm_crop(root: ET.Element, target_fov_um: float,
+                 frame_size_override: Optional[int] = None) -> Dict[str, Any]:
     """Resize the LSM scan field to target_fov_um (set via Zoom).
 
     Zoom sets the field of view; the frame size sets the sampling within it:
@@ -786,7 +827,7 @@ def fit_lsm_crop(root, target_fov_um, frame_size_override=None):
     }
 
 
-def set_run_mode_lock(root):
+def set_run_mode_lock(root: ET.Element) -> Optional[str]:
     """Remove perform-time optimize/validate flags from <RunMode>.
 
     The base experiment runs with OptimizeBeforePerformEnabled and
@@ -804,7 +845,7 @@ def set_run_mode_lock(root):
     return rm.text
 
 
-def set_lsm_scan_speed_max(root):
+def set_lsm_scan_speed_max(root: ET.Element) -> bool:
     """Use the maximum LSM scan speed (fastest scan, lowest frame time).
 
     Sets IsMaxScanSpeedSet=true so ZEN clamps to the hardware max on load.
@@ -817,7 +858,7 @@ def set_lsm_scan_speed_max(root):
     return False
 
 
-def set_lsm_sampling_mode_user(root):
+def set_lsm_sampling_mode_user(root: ET.Element) -> Optional[str]:
     """Force SamplingMode=User on the LSM detector so the authored frame survives.
 
     With SamplingMode=SR, ZEN auto-derives the XY frame to Nyquist on load/run and
@@ -838,10 +879,14 @@ def set_lsm_sampling_mode_user(root):
 # Builder: an LSM z-stack fitted to one object
 # ---------------------------------------------------------------------------
 
-def fit_lsm_stack_to_box(base_path, out_path, center_m, size_m, *, expect_mode,
-                         xy_margin_m, z_margin_m, z_step_m=None, frame_size=None,
-                         sampling_mode_user=True, max_scan_speed=False,
-                         lock_run_mode=False, forbid_focus_search=False):
+def fit_lsm_stack_to_box(base_path: PathLike, out_path: PathLike, center_m: XYZ,
+                         size_m: XYZ, *, expect_mode: str,
+                         xy_margin_m: float, z_margin_m: float,
+                         z_step_m: Optional[float] = None,
+                         frame_size: Optional[int] = None,
+                         sampling_mode_user: bool = True, max_scan_speed: bool = False,
+                         lock_run_mode: bool = False,
+                         forbid_focus_search: Union[bool, str] = False) -> Dict[str, Any]:
     """Write a copy of an LSM z-stack experiment that images one object's box.
 
     center_m = (x, y, z), size_m = (sx, sy, sz): the object's box, metres.

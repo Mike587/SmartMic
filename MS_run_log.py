@@ -15,8 +15,7 @@
 """
 Run records: the per-run log file, the version record and JSONL records.
 
-No ZEN API here. Split out of ``MS_Helper_function`` on 2026-11-10; that
-module still re-exports every name.
+No ZEN API here. ``MS_Helper_function`` re-exports every name.
 
 Public functions
 ----------------
@@ -39,7 +38,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from MS_zenapi_helpers import (LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME,
                                ensure_utf8_stdout, set_logging)
@@ -111,7 +110,7 @@ def setup_run_logger(
 
 def write_run_info(log_file: Path, log: logging.Logger,
                    repos: Optional[Dict[str, Path]] = None,
-                   extra: Optional[dict] = None,
+                   extra: Optional[Dict[str, Any]] = None,
                    script: Optional[Path] = None) -> Path:
     """
     Write the run's version record, ``run_info_<ts>.json``, next to its run log.
@@ -180,7 +179,7 @@ def write_run_info(log_file: Path, log: logging.Logger,
     return path
 
 
-def append_jsonl(path: Path, record: dict) -> None:
+def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     """
     Append one record as a JSON line — the per-record log of a resumable run
     (e.g. one line per imaged cell, read back on resume with read_jsonl).
@@ -208,7 +207,7 @@ def append_jsonl(path: Path, record: dict) -> None:
         os.fsync(f.fileno())
 
 
-def read_jsonl(path: Path) -> List[dict]:
+def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     """
     Read the records written by append_jsonl.
 

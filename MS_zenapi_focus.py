@@ -43,8 +43,10 @@ and avoids shared-state issues when functions are called from a pipeline.
 """
 
 import asyncio
+from typing import Optional, Tuple
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+import MS_limits
 from MS_zenapi_helpers import set_logging, open_zen_channel
 
 # Auto-generated gRPC stubs for the Z-drive (FocusService)
@@ -73,14 +75,14 @@ DF_RETRY_BACKOFF_S = 2.0
 DF_RETRY_NUDGE_M = 50e-6
 
 
-async def _read_z_um(focus_service) -> float:
+async def _read_z_um(focus_service: FocusServiceStub) -> float:
     """Current Z-drive position in µm."""
     pos = await focus_service.get_position(FocusServiceGetPositionRequest())
     return pos.value * 1e6
 
 
 async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6,
-                                      store_focus: bool = False):
+                                      store_focus: bool = False) -> Tuple[bool, int]:
     """Run Definite Focus FindSurface with linear-backoff retry logic.
 
     Moves the Z-drive to *start_z_m* first so that DF always starts from a
@@ -201,7 +203,7 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         raise last_exception
 
 
-async def definite_focus_recall(max_retries: int = 3):
+async def definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], int]:
     """Go back to the stored distance from the reflex (DF RecallFocus).
 
     Uses ``recall_focus`` rather than a full ``find_surface`` sweep, so it is
@@ -246,14 +248,14 @@ async def definite_focus_recall(max_retries: int = 3):
                 last_exception = e
                 logger.error(f"RecallFocus failed (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    # Linear backoff: 2 s, 4 s, 6 s …
-                    await asyncio.sleep(2.0 * (attempt + 1))
+                    # Linear backoff: DF_RETRY_BACKOFF_S x 1, x 2, x 3 …
+                    await asyncio.sleep(DF_RETRY_BACKOFF_S * (attempt + 1))
 
         logger.error(f"RecallFocus failed after {max_retries} attempts")
         return None, max_retries
 
 
-async def move_focus_to_new_z_position(z: float):
+async def move_focus_to_new_z_position(z: float) -> None:
     """Move the Z-drive to an absolute position.
 
     Handles the edge case where *z* is at or very near 0 m: some hardware
@@ -265,10 +267,13 @@ async def move_focus_to_new_z_position(z: float):
         z: Target Z position in metres.
 
     Raises:
+        ValueError: ``z`` is not a finite number within the Z limits
+            (``MS_limits``). Nothing is moved.
         Exception: Re-raises the original move exception if neither the
             primary move nor the fallback alternative succeeds.
     """
     logger = set_logging()
+    MS_limits.require_z_position(z)
 
     async with open_zen_channel(config_path) as (channel, metadata):
         focus_service = FocusServiceStub(channel=channel, metadata=metadata)
@@ -281,9 +286,9 @@ async def move_focus_to_new_z_position(z: float):
         except Exception as e:
             logger.error(f"Error moving focus to z={z}: {e}")
 
-            # Only the read-back is guarded here. (The re-raises below used to sit
-            # inside this try, so every failed move was also logged as "Could not
-            # get current position: <the move error>" — misleading in run logs.)
+            # Only the read-back is in this try. The re-raises below are outside
+            # it: inside, each failed move is also logged as "Could not get
+            # current position: <the move error>".
             try:
                 current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
             except Exception as e2:
@@ -320,10 +325,6 @@ async def move_focus_to_new_z_position(z: float):
 
 async def get_current_z_focus_position() -> float:
     """Return the current absolute Z-drive position in metres.
-
-    Args:
-        None
-
     Returns:
         Current Z position in metres (not µm).
     """

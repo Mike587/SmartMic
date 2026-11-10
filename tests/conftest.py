@@ -175,6 +175,55 @@ def git_repo(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Offline default for the objective inventory
+# --------------------------------------------------------------------------
+@pytest.fixture
+def fake_objective():
+    """Factory for an inventory entry: ``fake_objective(position, immersion=False)``.
+
+    ``immersion=True`` gives immersion type WATER, else AIR.
+    """
+    import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
+    pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
+    from zen_api.lm.hardware.v2 import ObjectiveChangerImmersionTypes as T
+
+    def make(position, immersion=False, name=None):
+        return SimpleNamespace(
+            name=name or ("50x W" if immersion else "dry"), position=position,
+            immersion_type=T.WATER if immersion else T.AIR)
+    return make
+
+
+@pytest.fixture(autouse=True)
+def _offline_objective_inventory(request, monkeypatch):
+    """Unit tests never read the objective inventory from a gateway.
+
+    The immersion guard reads it (MS_zenapi_objectivechanger.get_active_objective
+    / get_immersion_objective_positions). Default here: a dry objective in slot
+    2 is active, and slot 4 is the only immersion slot. A test that needs
+    another state patches the same two functions again. Hardware tests are not
+    touched.
+    """
+    if "hardware" in request.keywords:
+        return
+    try:
+        import zeiss_paths  # noqa: F401
+        import MS_zenapi_objectivechanger as oc
+        from zen_api.lm.hardware.v2 import ObjectiveChangerImmersionTypes as T
+    except ImportError:
+        return
+
+    async def active():
+        return SimpleNamespace(name="dry", position=2, immersion_type=T.AIR)
+
+    async def immersion_positions():
+        return [4]
+
+    monkeypatch.setattr(oc, "get_active_objective", active)
+    monkeypatch.setattr(oc, "get_immersion_objective_positions", immersion_positions)
+
+
+# --------------------------------------------------------------------------
 # Hardware fixtures
 # --------------------------------------------------------------------------
 @pytest.fixture(scope="session")

@@ -6,9 +6,6 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Wraps the ZEN gRPC LiveScanService (lm.live_scan.v1): the tray load /
-# eject RPCs and the read-only prescan configuration.
-#
 # Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
 #
 # Permission is granted to use, modify and distribute this code,
@@ -47,6 +44,7 @@ load_tray_and_prescan          -- Raw LoadTrayAndPrescan RPC (moves the tray
 
 import asyncio
 import time
+from typing import Any, Dict, List, Optional
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from grpclib.exceptions import GRPCError
@@ -85,7 +83,7 @@ CONFIG_FIELDS = (
 )
 
 
-async def get_live_scan_configuration() -> dict:
+async def get_live_scan_configuration() -> Dict[str, Any]:
     """Return ZEN's live-scan (tray load / prescan) configuration. Read-only.
 
     Calls ``LiveScanService.GetConfiguration``. gRPC errors are NOT swallowed:
@@ -102,7 +100,7 @@ async def get_live_scan_configuration() -> dict:
             read_barcodes                   (bool):  Read barcodes.
             use_left_barcode                (bool):  Use the left barcode reader.
             use_right_barcode               (bool):  Use the right barcode reader.
-            automatic_live_scan_calibration (bool):  Automatic carrier calibration.
+            automatic_live_scan_calibration:  Automatic carrier calibration.
             refractive_index                (float): Bottom-material refractive index.
             material                        (str):   Bottom material name.
     """
@@ -125,7 +123,8 @@ PRESCAN_FLAGS = tuple(
     if f not in ("sample_holder_template", "refractive_index", "material")
 )
 
-def format_live_scan_configuration(cfg: dict, carrier=None) -> str:
+def format_live_scan_configuration(cfg: Dict[str, Any],
+                                   carrier: Optional[str] = None) -> str:
     """One log line for a ``get_live_scan_configuration()`` dict.
 
     Lists the prescan steps that are on and off. If ``carrier`` (the
@@ -149,7 +148,7 @@ def format_live_scan_configuration(cfg: dict, carrier=None) -> str:
     return line
 
 
-async def eject_tray(timeout_s: float = EJECT_TIMEOUT_S) -> list:
+async def eject_tray(timeout_s: float = EJECT_TIMEOUT_S) -> List[str]:
     """Raw ``LiveScanService.EjectTray``: move the tray out. NO guards.
 
     Use ``MS_CD7_API_LoA.eject_tray`` instead. Logs how long the RPC took (still
@@ -161,7 +160,7 @@ async def eject_tray(timeout_s: float = EJECT_TIMEOUT_S) -> list:
     return await _timed_rpc("eject_tray", LiveScanServiceEjectTrayRequest(), timeout_s)
 
 
-async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> list:
+async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> List[str]:
     """Raw ``LiveScanService.LoadTrayAndPrescan``: move the tray in and run the
     prescan with the current configuration. NO guards.
 
@@ -175,7 +174,7 @@ async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> list:
                             LiveScanServiceLoadTrayAndPrescanRequest(), timeout_s)
 
 
-async def _timed_rpc(method: str, request, timeout_s: float) -> list:
+async def _timed_rpc(method: str, request: Any, timeout_s: float) -> List[str]:
     """Send one tray RPC (stub method name) with a timeout; log duration and notifications."""
     logger = set_logging()
     name = method
@@ -190,7 +189,7 @@ async def _timed_rpc(method: str, request, timeout_s: float) -> list:
     return notifications
 
 
-def _main():
+def _main() -> None:
     """Print the configuration, or the gRPC status if the gateway refuses."""
     try:
         cfg = asyncio.run(get_live_scan_configuration())

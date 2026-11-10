@@ -16,8 +16,7 @@
 Image metrics on a ``.czi``: focus score and signal level.
 
 Read-only, no ZEN API. Needs ``pylibCZIrw`` and ``numpy`` (imported when
-called). Split out of ``MS_Helper_function`` on 2026-11-10; that module still
-re-exports every name.
+called). ``MS_Helper_function`` re-exports every name.
 
 Public functions
 ----------------
@@ -47,7 +46,7 @@ def compute_focus_score(czi_path: Path) -> Optional[float]:
     no extra dependencies beyond what the smartmic env already has.
 
     Returns:
-        float: best Laplacian variance (always ≥ 0), or None if the file
+        Best Laplacian variance (always ≥ 0), or None if the file
                cannot be read.
     """
     try:

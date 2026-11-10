@@ -203,6 +203,8 @@ def loa(monkeypatch):
 
     monkeypatch.setattr(ms, "is_microscope_busy", lambda: state["busy"])
     monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: state["optics"])
+    monkeypatch.setattr(ms, "_immersion_objective_active",
+                        lambda: state["optics"][0] == IMMERSION)
     monkeypatch.setattr(ms, "set_optics_verified", fake_optics)
     monkeypatch.setattr(ms, "get_current_z_position", lambda: 7e-6)
     monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")

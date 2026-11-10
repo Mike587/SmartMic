@@ -18,8 +18,8 @@ Read facts from ZEN's own log and options files that the ZEN-API does not give.
 Read-only and best-effort: every reader returns None (or a dict with None
 entries) when its source is missing, rotated out or unreadable. Nothing here
 talks to the gateway or changes a ZEN setting. The files are in
-``zeiss_paths.ZEN_LOGGING_DIR``. Split out of ``zeiss_paths`` on 2026-11-10;
-``zeiss_paths.<name>`` still resolves every name here.
+``zeiss_paths.ZEN_LOGGING_DIR``. ``zeiss_paths.<name>`` also resolves every
+name here.
 
 Public functions
 ----------------
@@ -34,15 +34,26 @@ zen_df_bottom                  -- Carrier bottom (material, thickness) DF last r
 import os
 import re
 from pathlib import Path, PureWindowsPath
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict, TypeVar, Union
 
 import zeiss_paths
+
+T = TypeVar("T")
+Options = Dict[str, Any]
+
+
+class DfBottom(TypedDict):
+    """The carrier bottom DefiniteFocus last received (``zen_df_bottom``)."""
+    timestamp: str
+    material: str
+    thickness_um: float
 
 
 _SOFTWARE_VERSION_RE = re.compile(r'name="SoftwareVersion"\s+value="([^"]+)"')
 _ZEN_LOG_TAIL_BYTES = 65536
 
 
-def zen_app_version():
+def zen_app_version() -> Optional[str]:
     """Best-effort version of the running ZEN APPLICATION itself, for logging.
 
     Confirmed unavailable over the gRPC API (see ``zeiss_paths.zen_api_version``): none
@@ -66,7 +77,7 @@ def zen_app_version():
     return _last_software_version(text)
 
 
-def _tail(path, n_bytes):
+def _tail(path: Path, n_bytes: int) -> str:
     """Return the last ``n_bytes`` bytes of ``path``, decoded as UTF-8 (lossy).
 
     Seeks from the end instead of reading the whole file, since the ZEN logs
@@ -81,7 +92,7 @@ def _tail(path, n_bytes):
     return data.decode("utf-8", errors="ignore")
 
 
-def _last_software_version(text):
+def _last_software_version(text: str) -> Optional[str]:
     """Pure text parse: the last ``SoftwareVersion="..."`` attribute in ``text``.
 
     Split out from ``zen_app_version`` so the parsing logic is unit-testable
@@ -138,7 +149,7 @@ _PAYLOAD_ENTRY_RE = re.compile(r"<(\w+)>([^<]*)</\1>")
 _OPTION_ENTRY_RE = re.compile(r'<OptionEntry\s+Name="([^"]+)"\s+Value="([^"]*)"')
 
 
-def _coerce_option_value(text):
+def _coerce_option_value(text: str) -> Any:
     """'true'/'True' -> bool, '120' -> int, '0.5' -> float, else the string."""
     low = text.strip().lower()
     if low in ("true", "false"):
@@ -151,7 +162,7 @@ def _coerce_option_value(text):
     return text
 
 
-def _immersion_options_from_options_config(text):
+def _immersion_options_from_options_config(text: str) -> Options:
     """Pure parse: the AUTO_IMMERSION_KEYS present in Options.config text.
 
     Options.config is ``<Options><OptionEntry Name=".." Value=".." />...``.
@@ -162,7 +173,7 @@ def _immersion_options_from_options_config(text):
     return {k: found[k] for k in AUTO_IMMERSION_KEYS if k in found}
 
 
-def _user_options_path_from_zen_log(text):
+def _user_options_path_from_zen_log(text: str) -> Optional[str]:
     """Pure parse: the last USER Options.config path named in ZEN.log.xml text.
 
     Skips the workgroup file (``...\\ZEN\\Options.config``) and the installation
@@ -176,7 +187,7 @@ def _user_options_path_from_zen_log(text):
     return paths[-1] if paths else None
 
 
-def _last_service_immersion_options(text):
+def _last_service_immersion_options(text: str) -> Tuple[Optional[Options], Optional[str]]:
     """Pure parse: the last SetServiceOptions payload that carries immersion keys.
 
     ZEN sends several SetServiceOptions requests at startup; only one has the
@@ -191,7 +202,7 @@ def _last_service_immersion_options(text):
     return None, None
 
 
-def _zen_logs_newest_first(stem):
+def _zen_logs_newest_first(stem: str) -> List[Path]:
     """``ZEN_LOGGING_DIR/<stem>`` and its rotations (``<stem>.N``), newest first."""
     try:
         files = [f for f in zeiss_paths.ZEN_LOGGING_DIR.glob(f"{stem}*")
@@ -199,7 +210,7 @@ def _zen_logs_newest_first(stem):
     except OSError:
         return []
 
-    def mtime(f):
+    def mtime(f: Path) -> float:
         try:
             return f.stat().st_mtime
         except OSError:
@@ -208,7 +219,7 @@ def _zen_logs_newest_first(stem):
     return sorted(files, key=mtime, reverse=True)[:_ZEN_LOG_MAX_FILES]
 
 
-def _search_zen_logs(stem, marker, parse):
+def _search_zen_logs(stem: str, marker: bytes, parse: Callable[[str], T]) -> Optional[T]:
     """Newest-first scan: ``parse(text)`` of the first log file containing ``marker``.
 
     A cheap byte search picks the file, so only that one is decoded and parsed.
@@ -224,7 +235,7 @@ def _search_zen_logs(stem, marker, parse):
     return None
 
 
-def zen_user_options_path():
+def zen_user_options_path() -> Optional[Path]:
     """Best-effort path of the logged-in ZEN user's Options.config, or None.
 
     Read from ZEN.log.xml: ZEN names the file when it starts and whenever it
@@ -235,7 +246,7 @@ def zen_user_options_path():
     return Path(found) if found else None
 
 
-def zen_service_immersion_options():
+def zen_service_immersion_options() -> Tuple[Optional[Options], Optional[str]]:
     """Best-effort auto-immersion settings ZENService is actually using.
 
     Taken from the last ``SetServiceOptions`` request in the ZENService log
@@ -265,7 +276,7 @@ _DF_BOTTOM_RE = re.compile(
 )
 
 
-def _last_df_bottom(text):
+def _last_df_bottom(text: str) -> Optional[DfBottom]:
     """Pure parse: the last DF bottom event in ZENService log text, or None.
 
     Returns ``{"timestamp": str, "material": str, "thickness_um": float}``.
@@ -278,7 +289,7 @@ def _last_df_bottom(text):
             "thickness_um": int(nm) / 1000.0}
 
 
-def zen_df_bottom():
+def zen_df_bottom() -> Optional[DfBottom]:
     """Best-effort: the carrier bottom (material, thickness) DF last received.
 
     Read from the newest ZENService log that contains the event. Returns the
@@ -290,7 +301,7 @@ def zen_df_bottom():
                             _last_df_bottom)
 
 
-def zen_auto_immersion_settings():
+def zen_auto_immersion_settings() -> Dict[str, Any]:
     """Best-effort snapshot of the CD7 auto-immersion settings, for logging.
 
     Returns a dict:
@@ -317,7 +328,7 @@ def zen_auto_immersion_settings():
     return info
 
 
-def _format_refill(opts):
+def _format_refill(opts: Optional[Options]) -> str:
     """Short summary of one options dict, e.g. 'every 120 min / 200 mm'."""
     if not opts:
         return "unknown"
@@ -336,7 +347,7 @@ def _format_refill(opts):
     return text
 
 
-def _zen_user_from_options_path(path):
+def _zen_user_from_options_path(path: Union[str, Path]) -> str:
     """'mike' from ``...\\ZEN\\Users\\mike\\<workspace...>\\Options.config``."""
     parts = PureWindowsPath(path).parts
     for i, part in enumerate(parts[:-1]):
@@ -345,7 +356,7 @@ def _zen_user_from_options_path(path):
     return "DefaultUser" if "DefaultUser" in parts else "?"
 
 
-def format_auto_immersion_settings(info):
+def format_auto_immersion_settings(info: Dict[str, Any]) -> str:
     """One log line for ``zen_auto_immersion_settings()``; flags a mismatch."""
     path = info.get("user_options_path")
     user = _zen_user_from_options_path(path) if path is not None else "?"

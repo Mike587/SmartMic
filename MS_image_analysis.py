@@ -6,9 +6,6 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Reusable launcher for running external image-analysis scripts as
-# subprocesses in their own pixi environments.
-#
 # Copyright(c) 2026 ETH Zurich (ScopeM). All Rights Reserved.
 #
 # Permission is granted to use, modify and distribute this code,
@@ -37,7 +34,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 # run_analysis_json: a result file older than the launch by more than this is a
 # stale file from an earlier run. The slack covers coarse file timestamps.
@@ -49,8 +46,8 @@ def run_analysis(image_path: Path,
                  tag: str,
                  log: logging.Logger,
                  analysis_script: Path,
-                 analysis_script_dir: Path = None,
-                 extra_args=None) -> bool:
+                 analysis_script_dir: Optional[Path] = None,
+                 extra_args: Optional[List[str]] = None) -> bool:
     """
     Launch an external image-analysis script in its own pixi environment.
 
@@ -134,8 +131,8 @@ def run_analysis_json(image_path: Path,
                       log: logging.Logger,
                       analysis_script: Path,
                       suffix: str,
-                      analysis_script_dir: Path = None,
-                      extra_args=None) -> Optional[dict]:
+                      analysis_script_dir: Optional[Path] = None,
+                      extra_args: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """
     Run an analysis (see run_analysis) and read back its result JSON.
 

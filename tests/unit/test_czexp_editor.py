@@ -183,33 +183,67 @@ def test_summarize_keys(lsm_root):
 # Writers
 # --------------------------------------------------------------------------
 def test_set_position_writes_um(lsm_root):
-    cz.set_position(lsm_root, 0.05, 0.06, 0.07, region_index=0)
+    cz.set_position(lsm_root, 0.05, 0.06, 0.007, region_index=0)
     r = cz.find_tile_regions(lsm_root)[0]
     assert r.find("X").text == cz._fmt_float(50000.0)
     assert r.find("Y").text == cz._fmt_float(60000.0)
-    assert r.find("Z").text == cz._fmt_float(70000.0)
+    assert r.find("Z").text == cz._fmt_float(7000.0)
 
 
 def test_set_position_no_region_raises():
     with pytest.raises(ValueError):
-        cz.set_position(ET.fromstring("<HardwareExperiment/>"), 0.1, 0.1)
+        cz.set_position(ET.fromstring("<HardwareExperiment/>"), 0.05, 0.05)
 
 
 def test_add_single_tile_region_updates_existing(lsm_root):
     n = len(cz.find_tile_regions(lsm_root))
-    cz.add_single_tile_region(lsm_root, 0.01, 0.02, 0.03)
+    cz.add_single_tile_region(lsm_root, 0.01, 0.02, 0.003)
     assert len(cz.find_tile_regions(lsm_root)) == n  # updated in place, not added
 
 
 def test_add_single_tile_region_creates_when_empty():
     root = ET.fromstring("<HardwareExperiment><SingleTileRegions/></HardwareExperiment>")
     assert cz.find_tile_regions(root) == []
-    cz.add_single_tile_region(root, 0.01, 0.02, 0.03, name="P9")
+    cz.add_single_tile_region(root, 0.01, 0.02, 0.003, name="P9")
     regions = cz.find_tile_regions(root)
     assert len(regions) == 1
     assert regions[0].get("Name") == "P9"
     assert regions[0].find("X").text == cz._fmt_float(10000.0)
     assert regions[0].find("IsUsedForAcquisition").text == "true"
+
+
+# A position goes into a file that ZEN then drives: same check as a direct move.
+_BAD_POSITIONS = [
+    (float("nan"), 0.02, None), (0.01, float("inf"), None), (0.01, 0.02, float("nan")),
+    (50000.0, 0.02, None),      # µm given as metres
+    (0.01, 0.02, -300.0),       # µm given as metres
+    (-0.001, 0.02, None), (0.01, 0.02, True),
+]
+
+
+@pytest.mark.parametrize("x, y, z", _BAD_POSITIONS)
+def test_set_position_refuses_a_bad_position(lsm_root, x, y, z):
+    r = cz.find_tile_regions(lsm_root)[0]
+    before = [r.find(t).text for t in "XYZ"]
+    with pytest.raises(ValueError, match="XY coordinates|Z position"):
+        cz.set_position(lsm_root, x, y, z)
+    assert [r.find(t).text for t in "XYZ"] == before   # nothing written
+
+
+@pytest.mark.parametrize("x, y, z", _BAD_POSITIONS)
+def test_add_single_tile_region_refuses_a_bad_position(x, y, z):
+    root = ET.fromstring("<HardwareExperiment><SingleTileRegions/></HardwareExperiment>")
+    with pytest.raises(ValueError, match="XY coordinates|Z position"):
+        cz.add_single_tile_region(root, x, y, z)
+    assert cz.find_tile_regions(root) == []            # no region created
+
+
+@pytest.mark.parametrize("x, y, z", _BAD_POSITIONS)
+def test_set_tile_region_center_refuses_a_bad_position(stitch_root, x, y, z):
+    before = cz.find_stitch_regions(stitch_root)[0].find("CenterPosition").text
+    with pytest.raises(ValueError, match="XY coordinates|Z position"):
+        cz.set_tile_region_center(stitch_root, x, y, z)
+    assert cz.find_stitch_regions(stitch_root)[0].find("CenterPosition").text == before
 
 
 def test_set_tile_region_center(stitch_root):

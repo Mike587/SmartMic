@@ -380,3 +380,83 @@ def test_preflight_gateway_down_skips_live_scan(monkeypatch):
                         lambda: calls.append(1) or dict(_LIVE_SCAN_CFG))
     assert ms.preflight("PLATE", _Log()) is False
     assert calls == []
+
+
+# --------------------------------------------------------------------------
+# Immersion guard cross-check (preflight) and stop_experiment
+# --------------------------------------------------------------------------
+class _Log:
+    def __init__(self):
+        self.infos, self.errors = [], []
+
+    def info(self, m):
+        self.infos.append(m)
+
+    def error(self, m):
+        self.errors.append(m)
+
+    warning = info
+
+
+def _immersion_slots(monkeypatch, slots):
+    async def positions():
+        if isinstance(slots, Exception):
+            raise slots
+        return slots
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "get_immersion_objective_positions",
+                        positions)
+
+
+def test_check_immersion_guard_agrees(monkeypatch):
+    _immersion_slots(monkeypatch, [MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION])
+    log = _Log()
+    assert ms.check_immersion_guard(log) is True
+    assert log.errors == []
+
+
+@pytest.mark.parametrize("slots", [[], [1], [1, 4]])
+def test_check_immersion_guard_reports_a_difference(monkeypatch, slots):
+    _immersion_slots(monkeypatch, slots)
+    log = _Log()
+    assert ms.check_immersion_guard(log) is False
+    assert len(log.errors) == 1 and "IMMERSION_OBJECTIVE_POSITION" in log.errors[0]
+
+
+def test_check_immersion_guard_unreadable_inventory(monkeypatch):
+    _immersion_slots(monkeypatch, RuntimeError("gateway down"))
+    log = _Log()
+    assert ms.check_immersion_guard(log) is None
+    assert len(log.errors) == 1 and "gateway down" in log.errors[0]
+
+
+def test_set_optics_uses_the_long_timeout_for_an_api_immersion_slot(monkeypatch):
+    # The API reports an immersion objective in slot 1 (not the known slot):
+    # a change to it must get the immersion timeout too.
+    _immersion_slots(monkeypatch, [1])
+    state = {"pos": (2, 2), "polls": 0}
+
+    async def get_current():
+        state["polls"] += 1
+        return state["pos"]
+
+    async def set_oo(obj, opt):
+        return None            # the changer never arrives
+
+    clock = {"t": 0.0}
+
+    async def fake_sleep(s):
+        clock["t"] += s
+
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
+    monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
+    monkeypatch.setattr(ms.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(ms.time, "time", lambda: clock["t"])
+    assert ms.set_objective_set_optovar_sync(1, 2, timeout_seconds=1.0, max_retries=1) is False
+    assert clock["t"] >= ms.IMMERSION_OBJECTIVE_TIMEOUT
+
+
+def test_stop_experiment_wraps_the_async_stop(monkeypatch):
+    async def fake_stop():
+        return True
+    monkeypatch.setattr(MS_zenapi_experiment_methods, "stop_running_experiment", fake_stop)
+    assert ms.stop_experiment() is True

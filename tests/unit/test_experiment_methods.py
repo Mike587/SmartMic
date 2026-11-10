@@ -142,12 +142,78 @@ def test_other_czi_in_the_zen_default_folder_are_removed(zen):
     assert (default / "keep.txt").exists()
 
 
-def test_result_stays_when_the_custom_folder_is_the_default_folder(zen):
-    _, default, _ = zen
-    out = asyncio.run(em.run_experiment_by_name(
-        "EXP", custom_image_folder=default, custom_filename="shot"))
-    assert out["exp_result_path"] == default / "shot.czi"
-    assert (default / "shot.czi").exists()
+def test_output_folder_equal_to_the_zen_default_folder_is_refused(zen):
+    # The cleanup deletes every other .czi in ZEN's default folder: with the
+    # results there, each acquisition would delete all earlier ones.
+    rec, default, _ = zen
+    (default / "earlier_result.czi").write_bytes(b"keep me")
+    with pytest.raises(ValueError, match="ZEN's default image folder"):
+        asyncio.run(em.run_experiment_by_name(
+            "EXP", custom_image_folder=default, custom_filename="shot"))
+    assert rec["load"] == [] and rec["run"] == []          # nothing loaded or run
+    assert (default / "earlier_result.czi").exists()       # nothing deleted
+
+
+def test_same_folder_in_another_spelling_is_refused(zen):
+    rec, default, _ = zen
+    other_spelling = default.parent / "." / default.name.upper()
+    with pytest.raises(ValueError, match="ZEN's default image folder"):
+        asyncio.run(em.run_experiment_by_name("EXP", custom_image_folder=other_spelling))
+    assert rec["run"] == []
+
+
+# --------------------------------------------------------------------------
+# stop_running_experiment
+# --------------------------------------------------------------------------
+@pytest.fixture
+def stoppable(monkeypatch):
+    """Fake gateway with a status and a Stop RPC. Returns the state dict."""
+    from grpclib import GRPCError
+    from grpclib.const import Status
+
+    state = {"running": True, "stopped": []}
+
+    class _Stub:
+        def __init__(self, channel=None, metadata=None):
+            pass
+
+        async def get_status(self, req):
+            if not state["running"]:
+                raise GRPCError(Status.FAILED_PRECONDITION, "No experiment is running")
+            return _Resp(status=_Resp(
+                is_experiment_running=True, is_acquisition_running=True,
+                images_acquired_index=1, images_count=9, scenes_index=0, scenes_count=1))
+
+        async def stop(self, req):
+            state["stopped"].append(req.experiment_id)
+
+    monkeypatch.setattr(em, "open_zen_channel", _fake_channel)
+    monkeypatch.setattr(em, "ExperimentServiceStub", _Stub)
+    monkeypatch.setattr(em, "_last_started_experiment_id", None)
+    return state
+
+
+def test_stop_sends_stop_for_the_experiment_this_process_started(stoppable, monkeypatch):
+    monkeypatch.setattr(em, "_last_started_experiment_id", "loaded-id")
+    assert asyncio.run(em.stop_running_experiment()) is True
+    assert stoppable["stopped"] == ["loaded-id"]
+
+
+def test_stop_without_a_known_id_sends_no_id(stoppable):
+    assert asyncio.run(em.stop_running_experiment()) is True
+    assert stoppable["stopped"] == [""]
+
+
+def test_stop_sends_nothing_when_idle(stoppable):
+    stoppable["running"] = False
+    assert asyncio.run(em.stop_running_experiment()) is False
+    assert stoppable["stopped"] == []
+
+
+def test_a_run_records_its_experiment_id_for_stop(zen, monkeypatch):
+    monkeypatch.setattr(em, "_last_started_experiment_id", None)
+    asyncio.run(em.run_experiment_by_name("EXP", custom_filename="shot"))
+    assert em._last_started_experiment_id == "loaded-id"
 
 
 @pytest.mark.parametrize("xml,expected", [

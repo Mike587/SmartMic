@@ -32,7 +32,7 @@ serialization round-trip and leaves an imported experiment loaded in ZEN.
 
 The acquisition functions a pipeline uses are in
 ``MS_zenapi_experiment_methods`` (``run_experiment_by_name`` / ``_from_path`` /
-``_from_xml``).  Split out of that module on 2026-11-10.
+``_from_xml``).
 
 It moves hardware: the experiment is run, and with ``do_snap_and_live`` a snap,
 live and continuous acquisition are started.

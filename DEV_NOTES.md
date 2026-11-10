@@ -1102,6 +1102,97 @@ Design choices worth knowing:
 
 ---
 
+## Safety round (2026-11-10): immersion guard, limits, stop, timeouts
+
+Items 3, 11, 12, 13 and 14 of the review. The offline suite passes (478 tests).
+**Not tested on the scope**: when the work was finished the gateway refused the
+connection. Do the checks marked [check] before a long run.
+
+### The immersion guard reads the immersion type from the API
+
+- Before: the guard compared the changer position with
+  `IMMERSION_OBJECTIVE_POSITION = 4`. A changed turret switched it off with no
+  message.
+- Now: `MS_zenapi_stage_LM.immersion_objective_active()` reads the inventory
+  entry of the active objective (`MS_zenapi_objectivechanger.get_active_objective`).
+  It is "immersion" if `immersion_type` is not `AIR`, OR if it is in slot
+  `IMMERSION_OBJECTIVE_POSITION`. Either condition refuses the Z=0 lower.
+- Measured on this CD7 (2026-11-10, read-only): slot 1 20x/0.7 `AIR`, slot 2
+  5x/0.35 `AIR`, slot 3 20x/0.95 `AIR`, slot 4 50x/1.2 `WATER`.
+- `UNSPECIFIED` counts as immersion. An objective that ZEN does not describe is
+  refused; that is the safe direction.
+- The constant stays as the second condition. Do not remove it: a wrong
+  inventory entry must not switch the guard off.
+- The same source is used for the extended timeout of an objective change, the
+  5x change before a tray eject, and the DF tracker.
+- `preflight` calls `check_immersion_guard`: an error line if the API slots are
+  not exactly `[IMMERSION_OBJECTIVE_POSITION]`. It does not abort.
+- Cost: the guard sends two RPCs on one channel, as before.
+- Tests: `tests/conftest.py` gives every unit test a dry objective in slot 2
+  and slot 4 as the only immersion slot, so no unit test reads a gateway.
+
+### One module for the range checks: `MS_limits`
+
+- The limits and `validate_*` moved from the LoA to `MS_limits.py`. The LoA
+  re-exports them (`ms.Z_POSITION_MAX`, `ms.validate_xy_position`, ...).
+  To change a limit, set it in `MS_limits`: the LoA names are copies.
+- New callers: `MS_zenapi_stage_LM.move_stage_to_new_xy_position` and
+  `MS_zenapi_focus.move_focus_to_new_z_position` (first statement, before the
+  guard and before a channel opens), and the editor writers `set_position`,
+  `add_single_tile_region`, `set_tile_region_center` (before the first write).
+- A script that calls the async moves directly now gets the same `ValueError`
+  as an LoA caller. A `.czexp` writer refuses `NaN`, a µm value given as
+  metres, and a position outside the stage range.
+- All 36503 region positions in the 395 local `.czexp` files are within the
+  limits (X 2.25 to 105.75 mm, Y 6.25 to 73.75 mm, Z -7.99 to 3.94 mm).
+- The X/Y limits start at 0. The stage read (-0.1 mm in Y) with no scan
+  position selected, so a position near 0 on a slide insert can be refused.
+  This is the old LoA behaviour, now also in the lower layers.
+- Not included: `start_z_m` of FindSurface (review item 9) and
+  `set_zstack_range`.
+
+### `ms.stop_experiment()`
+
+- `MS_zenapi_experiment_methods.stop_running_experiment()` reads the status;
+  if an experiment is active it sends `ExperimentService.Stop`. It returns
+  False and sends nothing if the microscope is idle.
+- The id is the one of the experiment the latest `run_*` call of this process
+  started (`_last_started_experiment_id`). With none, the request has no id.
+- Stop ends the acquisition. It does not move the stage, Z or the objective.
+- Use it in the handler of a crash or of Ctrl-C (example in the docstring).
+- [check] on the scope: Stop during a running experiment (does `run_experiment`
+  return or raise?), and Stop with no id.
+
+### Default time limits for the gRPC calls
+
+- `MS_zenapi_helpers.ZenChannel` (returned by `initialize_zenapi`) gives a call
+  a limit if the caller gives none: `RPC_TIMEOUT_S` = 60 s, and
+  `MOVE_RPC_TIMEOUT_S` = 300 s for `MoveTo`, `MoveToContainer`, `FindSurface`,
+  `RecallFocus`, `LockFocus`.
+- No default: `RunExperiment`, `RunSnap`, `Start...`, `Register...` (an
+  acquisition has no upper bound), the tray RPCs (they have their own limit)
+  and SWAF (ZEN limits the search).
+- A timeout raises `TimeoutError`; `open_zen_channel` adds the name of the call
+  and the limit to the message.
+- **A timeout stops the wait, not the hardware.** ZEN can still complete the
+  move. Functions that retry after an exception (FindSurface, the objective
+  change) then send the request again.
+- The values are a guard against a hang, not measured. [check] the longest real
+  stage move (low acceleration, full travel) and objective change (to the 50x).
+
+### The output folder must not be ZEN's default image folder
+
+- `_acquire` raises `ValueError` before it loads the experiment if the two are
+  the same folder (`os.path.samefile`). The cleanup after each acquisition
+  deletes all other `.czi` files in ZEN's default folder, so each result would
+  delete the earlier ones.
+- On this PC: ZEN default `F:/UserData/mike/temp`, SmartMic default
+  `F:/UserData/mike/api`.
+- The cleanup is not changed (see "The cleanup deletes everything in ZEN's
+  default folder").
+
+---
+
 ## Code review round (2026-11-10)
 
 A review of the tracked library found 52 items (the local `fableTodo.MD`).
@@ -1165,6 +1256,22 @@ The old names still work: `MS_Helper_function` re-exports its three modules, and
 - **`SMARTMIC_OUTPUT_ROOT`** overrides `DEFAULT_EXPERIMENT_OUTPUT_FOLDER`.
   `SMARTMIC_ZEN_EXPERIMENT_FOLDER` overrides the experiment folder of the smoke
   test.
+
+### Hints, docstrings, headers (same day, items 43 to 48)
+
+- Every library function has type hints. The dicts that cross modules are
+  `TypedDict`s: `CarrierBottom` (LoA), `DfBottom` (`MS_zen_logs`),
+  `ExperimentResult` (`MS_zenapi_experiment_methods`), `Position`
+  (`MS_metadata`). They are plain dicts at run time. No type checker runs yet.
+- `MS_CD7_API_LoA.py` has a module docstring: the rules and the public
+  functions by group.
+- **Log text changed.** After an objective / optovar move the log says
+  "Requested Objective: ... (not a read-back)", not "New Objective: ...". A
+  script that searches the run log for the old text must change.
+- `definite_focus_recall` waits `DF_RETRY_BACKOFF_S` x n between attempts (the
+  value was a literal 2.0: no change of timing).
+- Comments say why the code is as it is. What the code did before is in git and
+  in this file.
 
 ### Rule for new code: a failure raises (proposal, Mike to confirm)
 

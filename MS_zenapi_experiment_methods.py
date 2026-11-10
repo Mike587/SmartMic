@@ -33,6 +33,7 @@ run_experiment_by_name        -- Load an experiment from ZEN's library and run i
 run_experiment_from_path      -- Load a ``.czexp`` file by path and run it
 run_experiment_from_xml       -- Import an experiment XML string and run it
 get_running_experiment_status -- Status of the active experiment, or None (idle)
+stop_running_experiment       -- Stop the active experiment (for a crash / Ctrl-C handler)
 
 The three ``run_*`` functions differ only in HOW they get a runnable experiment
 id; everything else is one shared sequence (``_acquire``).  The full API smoke
@@ -48,10 +49,12 @@ leftover ``.czi`` files in the default folder are cleaned up at the end
 (DEV_NOTES "The cleanup deletes everything in ZEN's default folder").
 """
 
+import logging
+import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, Optional, TypedDict, Union
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from grpclib import GRPCError
@@ -68,19 +71,29 @@ from zen_api.acquisition.v1beta import (
     ExperimentServiceImportRequest,
     ExperimentServiceLoadRequest,
     ExperimentServiceRunExperimentRequest,
+    ExperimentServiceStopRequest,
     ExperimentServiceStub,
 )
 
-# Result of a run_* function: exp_result_path (Path), snap_path (always None
-# here; kept for callers of the old smoke-test path), experiment_id (str).
-ExperimentResult = Dict[str, Union[str, Path, None]]
+class ExperimentResult(TypedDict):
+    """Result of a ``run_*`` function."""
+    exp_result_path: Path          # the acquired .czi, in its final folder
+    snap_path: Optional[Path]      # always None here; the smoke test fills it
+    experiment_id: str
+
+
+# Id of the experiment the latest run_* call of this process started (or None).
+# stop_running_experiment uses it: a handler for a crash or Ctrl-C does not
+# have the id.
+_last_started_experiment_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
 # Shared acquisition helpers
 # ---------------------------------------------------------------------------
 
-async def _get_default_image_folder(exp_service, logger) -> Path:
+async def _get_default_image_folder(exp_service: ExperimentServiceStub,
+                                    logger: logging.Logger) -> Path:
     """Query ZEN's read-only default image output folder.
 
     NOTE: this path (e.g. ``F:\\UserData\\mike\\temp``) is **owned by ZEN**, not
@@ -100,7 +113,8 @@ async def _get_default_image_folder(exp_service, logger) -> Path:
     return default_image_folder
 
 
-def _resolve_image_folder(custom_image_folder, logger) -> Path:
+def _resolve_image_folder(custom_image_folder: Union[str, Path, None],
+                          logger: logging.Logger) -> Path:
     """Resolve and create the target output folder (custom, or the default)."""
     if custom_image_folder is not None:
         image_folder = Path(custom_image_folder)
@@ -111,14 +125,40 @@ def _resolve_image_folder(custom_image_folder, logger) -> Path:
     return image_folder
 
 
-def _make_czi_basename(custom_filename) -> str:
+def _same_folder(a: Path, b: Path) -> bool:
+    """True if two paths name the same folder (case and form ignored on Windows)."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:      # one of them does not exist
+        return (os.path.normcase(os.path.abspath(a))
+                == os.path.normcase(os.path.abspath(b)))
+
+
+def _refuse_zen_default_folder(image_folder: Path, default_image_folder: Path) -> None:
+    """Raise ValueError if the output folder is ZEN's default image folder.
+
+    After each acquisition the cleanup deletes every other ``.czi`` in ZEN's
+    default folder (DEV_NOTES "The cleanup deletes everything in ZEN's default
+    folder"). With the results in that same folder, each acquisition would
+    delete the results of all earlier ones.
+    """
+    if _same_folder(image_folder, default_image_folder):
+        raise ValueError(
+            f"The output folder {image_folder} is ZEN's default image folder. The "
+            f"cleanup after each acquisition deletes all other .czi files there, "
+            f"so earlier results of this run would be lost. Give another folder "
+            f"(custom_image_folder / custom_folder)."
+        )
+
+
+def _make_czi_basename(custom_filename: Optional[str]) -> str:
     """Output base name (without .czi): custom_filename, or a UUID-based name."""
     if custom_filename is not None:
         return custom_filename[:-4] if custom_filename.endswith(".czi") else custom_filename
     return f"zenapi_{str(uuid.uuid4())[:8]}"
 
 
-def _unique_czi_name(image_folder, czi_name, logger) -> str:
+def _unique_czi_name(image_folder: Path, czi_name: str, logger: logging.Logger) -> str:
     """Append a running counter so an existing result file is never overwritten."""
     base_czi_name = czi_name
     counter = 1
@@ -130,7 +170,8 @@ def _unique_czi_name(image_folder, czi_name, logger) -> str:
     return czi_name
 
 
-def _move_result_and_cleanup(exp_result, default_image_folder, image_folder, logger) -> Path:
+def _move_result_and_cleanup(exp_result: Any, default_image_folder: Path,
+                             image_folder: Path, logger: logging.Logger) -> Path:
     """Move the acquired .czi to image_folder and clear leftover .czi files.
 
     Returns the final Path of the moved (or already in-place) result file.
@@ -171,14 +212,17 @@ def _move_result_and_cleanup(exp_result, default_image_folder, image_folder, log
 
 
 async def _run_experiment_and_collect(
-    exp_service, experiment_id, default_image_folder, image_folder, czi_name, logger
+    exp_service: ExperimentServiceStub, experiment_id: str, default_image_folder: Path,
+    image_folder: Path, czi_name: str, logger: logging.Logger,
 ) -> Path:
     """Run the experiment by id, log status, then move + clean up the result.
 
     Ensures a non-colliding output name, runs the experiment, logs its status,
     and relocates the result.  Returns the final result Path.
     """
+    global _last_started_experiment_id
     czi_name = _unique_czi_name(image_folder, czi_name, logger)
+    _last_started_experiment_id = experiment_id
     logger.info("Starting Experiment Execution ...")
     logger.info(f"Using output name: {czi_name}")
     exp_result = await exp_service.run_experiment(
@@ -217,6 +261,10 @@ async def _acquire(
 
     Returns:
         ``{"exp_result_path": Path, "snap_path": None, "experiment_id": str}``.
+
+    Raises:
+        ValueError: The output folder is ZEN's default image folder (nothing is
+            loaded or run then; see ``_refuse_zen_default_folder``).
     """
     logger = set_logging()
     async with open_zen_channel(configfile or config_path) as (channel, metadata):
@@ -224,6 +272,7 @@ async def _acquire(
 
         default_image_folder = await _get_default_image_folder(exp_service, logger)
         image_folder = _resolve_image_folder(custom_image_folder, logger)
+        _refuse_zen_default_folder(image_folder, default_image_folder)
         czi_name = _make_czi_basename(custom_filename)
 
         experiment_id = await get_experiment_id(exp_service, logger)
@@ -236,7 +285,7 @@ async def _acquire(
                 "experiment_id": experiment_id}
 
 
-async def _load_experiment(exp_service, name_or_path: str) -> str:
+async def _load_experiment(exp_service: ExperimentServiceStub, name_or_path: str) -> str:
     """``ExperimentService.Load`` → the id of a runnable experiment.
 
     ``name_or_path`` is a name in ZEN's experiment library, or a full path
@@ -281,7 +330,7 @@ async def run_experiment_by_name(
     Returns:
         ``{"exp_result_path", "snap_path" (None), "experiment_id"}``.
     """
-    async def load(exp_service, logger):
+    async def load(exp_service: ExperimentServiceStub, logger: logging.Logger) -> str:
         logger.info("Loading Experiment by name: " + experiment_name)
         return await _load_experiment(exp_service, experiment_name)
 
@@ -319,7 +368,7 @@ async def run_experiment_from_path(
     if not czexp_path.exists():
         raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
 
-    async def load(exp_service, logger):
+    async def load(exp_service: ExperimentServiceStub, logger: logging.Logger) -> str:
         load_arg = str(czexp_path.with_suffix(""))
         logger.info("Loading Experiment from path: " + load_arg)
         return await _load_experiment(exp_service, load_arg)
@@ -349,7 +398,7 @@ async def run_experiment_from_xml(
     """
     xml = _normalize_experiment_xml(xml)
 
-    async def import_xml(exp_service, logger):
+    async def import_xml(exp_service: ExperimentServiceStub, logger: logging.Logger) -> str:
         logger.info("Importing Experiment from XML string ...")
         imported = await exp_service.import_(ExperimentServiceImportRequest(xml))
         return imported.experiment_id
@@ -357,7 +406,7 @@ async def run_experiment_from_xml(
     return await _acquire(import_xml, configfile, custom_image_folder, custom_filename)
 
 
-async def get_running_experiment_status() -> Optional[Dict]:
+async def get_running_experiment_status() -> Optional[Dict[str, Any]]:
     """Query the status of the currently active experiment, if any.
 
     Calls ``ExperimentService.GetStatus`` with no experiment_id.  Per the ZEN
@@ -413,3 +462,37 @@ async def get_running_experiment_status() -> Optional[Dict]:
             "scenes_index": s.scenes_index,
             "scenes_count": s.scenes_count,
         }
+
+
+async def stop_running_experiment() -> bool:
+    """Stop the experiment that is active in ZEN, if there is one.
+
+    For the handler of a crash or of Ctrl-C: the pipeline stops, but ZEN
+    continues an acquisition that is already started. Sends
+    ``ExperimentService.Stop`` with the id of the experiment the latest
+    ``run_*`` call of this process started. If this process started none, the
+    request has no id (ZEN's ``GetStatus`` reads the active experiment that
+    way; that ``Stop`` does the same is NOT verified on the scope).
+
+    Stop ends the acquisition. It does not move the stage, Z or the objective.
+
+    Returns:
+        True if an experiment was active and the stop request was sent, False
+        if the microscope was idle (nothing is sent then).
+
+    Raises:
+        GRPCError: ZEN refused the status query or the stop request.
+    """
+    logger = set_logging()
+    if await get_running_experiment_status() is None:
+        logger.info("Stop experiment: no experiment is running.")
+        return False
+
+    experiment_id = _last_started_experiment_id or ""
+    async with open_zen_channel(config_path) as (channel, metadata):
+        svc = ExperimentServiceStub(channel=channel, metadata=metadata)
+        logger.warning(f"Stop experiment: sending Stop "
+                       f"(experiment id: {experiment_id or 'none - the active one'}).")
+        await svc.stop(ExperimentServiceStopRequest(experiment_id=experiment_id))
+    logger.warning("Stop experiment: ZEN accepted the stop request.")
+    return True

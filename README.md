@@ -33,7 +33,8 @@ pipelines that consume it live under `projects/`, one folder each.
 | `MS_image_metrics.py` | Focus score and signal level of a `.czi` |
 | `MS_Helper_function.py` | Compatibility module: re-exports the three modules above under the old name |
 | `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files: ZEN version, auto-immersion settings, the carrier bottom DF uses |
-| `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init, logging, objective lookups) |
+| `MS_limits.py` | Range checks for positions and changer numbers; used by the LoA, the async moves and the `.czexp` writers |
+| `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init with default call time limits, logging, objective lookups) |
 | `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env); result-JSON read-back |
 | `zeiss_paths.py` | Path bootstrap, and the version of the code and stubs in use — see below |
 

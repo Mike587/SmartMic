@@ -16,8 +16,8 @@
 Read acquisition metadata from ZEN files: ``.czexp`` experiments and ``.czi`` images.
 
 Read-only, no ZEN API. Lengths are µm in the files and metres in every return
-value, except where a name says ``_um``. Split out of ``MS_Helper_function``
-on 2026-11-10; that module still re-exports every name.
+value, except where a name says ``_um``. ``MS_Helper_function`` re-exports
+every name.
 
 Public functions
 ----------------
@@ -38,12 +38,22 @@ import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from MS_zenapi_helpers import set_logging
 
 
-def load_positions_from_czexp(file_path: Path) -> List[dict]:
+class Position(TypedDict):
+    """One used stage position of a position file (``load_positions_from_czexp``)."""
+    well: str            # e.g. "D3"
+    position_name: str   # e.g. "P1"
+    scene_index: int     # index in file order over ALL regions, used or not
+    x_m: float
+    y_m: float
+    z_m: float
+
+
+def load_positions_from_czexp(file_path: Path) -> List[Position]:
     """
     Load well-plate positions directly from a ZEN .czexp experiment file.
 
@@ -143,7 +153,7 @@ def strip_czsht(name: str) -> str:
     return name[:-len(".czsht")] if name.lower().endswith(".czsht") else name
 
 
-def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict]:
+def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict[str, Any]]:
     """
     Read the sample-carrier Template from parsed .czi metadata or .czexp XML.
 
@@ -217,7 +227,7 @@ def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict]:
     }
 
 
-def get_sample_carrier_from_czi(czi_path: Path) -> Optional[Dict]:
+def get_sample_carrier_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
     """
     Read the sample carrier a CZI was acquired with, from its embedded
     experiment metadata (``…/SampleHolder/Template``).
@@ -256,7 +266,7 @@ def get_sample_carrier_from_czi(czi_path: Path) -> Optional[Dict]:
     return _parse_sample_carrier(root, Path(czi_path).name)
 
 
-def get_sample_carrier_from_czexp(czexp_path: Path) -> Optional[Dict]:
+def get_sample_carrier_from_czexp(czexp_path: Path) -> Optional[Dict[str, Any]]:
     """
     Read the sample carrier a ZEN .czexp experiment is set up for
     (``SampleHolder/Template``). Same dict, and the same caution about
@@ -272,7 +282,7 @@ def get_sample_carrier_from_czexp(czexp_path: Path) -> Optional[Dict]:
     return _parse_sample_carrier(root, Path(czexp_path).name)
 
 
-def check_sample_carrier(carrier: Optional[Dict],
+def check_sample_carrier(carrier: Optional[Dict[str, Any]],
                          expected_carrier: Optional[str] = None,
                          expected_slide: Optional[str] = None,
                          ) -> Tuple[Optional[bool], str]:
@@ -353,7 +363,7 @@ def get_focus_position_from_czi(czi_path: Path) -> Optional[float]:
     return None
 
 
-def get_zstack_z_range(czi_path: Path) -> Optional[Dict]:
+def get_zstack_z_range(czi_path: Path) -> Optional[Dict[str, Any]]:
     """
     Return the absolute Z positions (µm) of the first, center, and last planes
     of a CZI z-stack, together with the number of planes and the step size.
@@ -416,7 +426,7 @@ def get_zstack_z_range(czi_path: Path) -> Optional[Dict]:
         return None
 
 
-def get_stage_position_from_czi(czi_path: Path) -> Optional[Dict]:
+def get_stage_position_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
     """
     Read the stage position (metres) a CZI was acquired at, from its embedded
     ZEN metadata.  Returns a dict (any field may be ``None``):

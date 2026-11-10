@@ -44,8 +44,11 @@ refuse_if_immersion_active         -- Immersion guard shared by the Z=0-lowering
 
 import asyncio
 import math
+from typing import Any, Dict, List, Optional
+
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from MS_zenapi_helpers import set_logging, open_zen_channel
+import MS_limits
 import MS_zenapi_focus
 import MS_zenapi_objectivechanger
 
@@ -77,14 +80,21 @@ STAGE_SETTLE_SECONDS = 1.0
 STAGE_TRAVEL_SPEED_PERCENT: float = 100.0
 STAGE_ACCELERATION_PERCENT: float = 100.0
 
-# Objective-changer position of the immersion objective (50x/1.2) — the only
-# immersion objective on this scope. A direct stage move lowers Z to 0, which on
-# this inverted CD7 retracts the objective and breaks the immersion water bridge,
-# so move_stage_to_new_xy_position REFUSES to run while it is active (raises). We
-# deliberately do not reimplement an immersion-safe move: choosing a safe non-zero
-# travel Z is delicate geometry ZEN already does inside an experiment. With the
-# immersion objective active, drive the stage via a positioned .czexp run by ZEN.
+# A direct stage move lowers Z to 0, which on this inverted CD7 retracts the
+# objective and breaks the immersion water bridge, so
+# move_stage_to_new_xy_position REFUSES to run while an immersion objective is
+# active (raises). We deliberately do not reimplement an immersion-safe move:
+# choosing a safe non-zero travel Z is delicate geometry ZEN already does inside
+# an experiment. With an immersion objective active, drive the stage via a
+# positioned .czexp run by ZEN.
 # See DEV_NOTES "inverted CD7 / Z=0 breaks the immersion bridge".
+#
+# Which objective is an immersion objective comes from the API
+# (ObjectiveData.immersion_type, see immersion_objective_active). This constant
+# is the known slot of the 50x/1.2 W on this CD7. It is a second, independent
+# condition: the guard refuses if EITHER says "immersion", so a wrong inventory
+# entry or a changed turret cannot switch the guard off. preflight reports a
+# difference between the two (MS_CD7_API_LoA.check_immersion_guard).
 IMMERSION_OBJECTIVE_POSITION = 4
 
 
@@ -96,8 +106,37 @@ class ImmersionObjectiveActive(RuntimeError):
     """
 
 
-async def refuse_if_immersion_active(action: str):
-    """Raise ImmersionObjectiveActive if the immersion objective is active.
+async def immersion_objective_positions() -> List[int]:
+    """Changer positions the guard treats as immersion (sorted).
+
+    The positions the API reports as immersion, plus
+    ``IMMERSION_OBJECTIVE_POSITION``.
+    """
+    api = await MS_zenapi_objectivechanger.get_immersion_objective_positions()
+    return sorted(set(api) | {IMMERSION_OBJECTIVE_POSITION})
+
+
+async def _active_immersion_objective() -> Optional[Any]:
+    """The active objective if the guard treats it as immersion, else None."""
+    objective = await MS_zenapi_objectivechanger.get_active_objective()
+    if (MS_zenapi_objectivechanger.is_immersion_objective(objective)
+            or objective.position == IMMERSION_OBJECTIVE_POSITION):
+        return objective
+    return None
+
+
+async def immersion_objective_active() -> bool:
+    """True if the active objective is an immersion objective.
+
+    True if the API gives it an immersion type other than AIR
+    (``MS_zenapi_objectivechanger.is_immersion_objective``), or if it is in
+    slot ``IMMERSION_OBJECTIVE_POSITION``.
+    """
+    return await _active_immersion_objective() is not None
+
+
+async def refuse_if_immersion_active(action: str) -> None:
+    """Raise ImmersionObjectiveActive if an immersion objective is active.
 
     Shared guard for every library move that first lowers Z to 0 (the XY move,
     the container move): on this inverted CD7 that retracts the objective and
@@ -106,23 +145,20 @@ async def refuse_if_immersion_active(action: str):
     Args:
         action: What is being refused, for the error message (e.g. "stage move").
     """
-    obj_position, _ = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
-    if obj_position == IMMERSION_OBJECTIVE_POSITION:
+    objective = await _active_immersion_objective()
+    if objective is not None:
         raise ImmersionObjectiveActive(
-            f"Refusing direct {action}: the immersion objective (changer "
-            f"position {IMMERSION_OBJECTIVE_POSITION}) is active. The {action} "
+            f"Refusing direct {action}: the immersion objective "
+            f"'{objective.name}' (changer position {objective.position}) is "
+            f"active. The {action} "
             f"lowers Z to 0, which breaks the immersion bridge on this inverted "
             f"CD7. Drive the stage by writing the target XY(Z) into a .czexp and "
             f"running it via ZEN instead."
         )
 
 
-async def get_current_xy_stage_coordinates():
+async def get_current_xy_stage_coordinates() -> List[float]:
     """Return the current XY stage position in metres.
-
-    Args:
-        None
-
     Returns:
         List ``[x, y]`` with both values in metres.
     """
@@ -138,7 +174,7 @@ async def get_current_xy_stage_coordinates():
         return [posXY.x, posXY.y]
 
 
-async def move_stage_to_new_xy_position(x: float, y: float):
+async def move_stage_to_new_xy_position(x: float, y: float) -> None:
     """Move the XY stage to an absolute position.
 
     Before moving, the Z-drive is lowered to 0 m so that the objective
@@ -148,13 +184,11 @@ async def move_stage_to_new_xy_position(x: float, y: float):
     Args:
         x: Target X position in metres.
         y: Target Y position in metres.
-
-    Returns:
-        None
-
     Raises:
-        ImmersionObjectiveActive (a RuntimeError): If the immersion objective
-            (changer position ``IMMERSION_OBJECTIVE_POSITION``) is active. The
+        ValueError: ``x`` or ``y`` is not a finite number within the stage
+            limits (``MS_limits``). Nothing is moved.
+        ImmersionObjectiveActive (a RuntimeError): If an immersion objective
+            (``immersion_objective_active``) is active. The
             Z=0 collision-safety lower would break the immersion bridge on this
             inverted CD7, so a direct move is refused — drive the stage via a
             positioned ``.czexp`` run by ZEN instead.
@@ -167,6 +201,7 @@ async def move_stage_to_new_xy_position(x: float, y: float):
         (e.g. via Definite Focus) before acquiring.
     """
     logger = set_logging()
+    MS_limits.require_xy_position(x, y)
 
     # Immersion guard — must run BEFORE the Z=0 lower below. With the immersion
     # objective active, lowering Z to 0 retracts the objective and breaks the
@@ -205,8 +240,9 @@ async def move_stage_to_new_xy_position(x: float, y: float):
         await asyncio.sleep(STAGE_SETTLE_SECONDS)
 
 
-async def set_stage_motion(speed_percent: float = None,
-                           acceleration_percent: float = None) -> dict:
+async def set_stage_motion(speed_percent: Optional[float] = None,
+                           acceleration_percent: Optional[float] = None,
+                           ) -> Dict[str, Optional[float]]:
     """Set the XY-stage travel speed and acceleration (percent of max, [0, 100]).
 
     Speed/acceleration are device state, NOT per-move parameters: ``MoveTo`` has

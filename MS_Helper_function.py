@@ -15,7 +15,7 @@
 """
 Compatibility module: the helper functions under their old home.
 
-The code moved on 2026-11-10 into three modules, by subject:
+The code is in three modules, by subject:
 
 * ``MS_run_log``       -- run log, version record, JSONL records, output folders
 * ``MS_metadata``      -- positions, sample carrier, focus / stage position from

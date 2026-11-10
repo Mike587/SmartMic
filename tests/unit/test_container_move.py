@@ -54,16 +54,16 @@ def events(monkeypatch):
     return ev
 
 
-def test_container_move_refused_with_immersion(monkeypatch, events):
-    monkeypatch.setattr(oc, "get_current_objective_and_optovar",
-                        _async_return((stage.IMMERSION_OBJECTIVE_POSITION, 2)))
+def test_container_move_refused_with_immersion(monkeypatch, events, fake_objective):
+    monkeypatch.setattr(oc, "get_active_objective", _async_return(
+        fake_objective(stage.IMMERSION_OBJECTIVE_POSITION, immersion=True)))
     with pytest.raises(stage.ImmersionObjectiveActive, match="immersion"):
         asyncio.run(sc.move_to_container(0, 1))
     assert events == []   # neither Z nor the stage moved
 
 
-def test_container_move_lowers_z_first(monkeypatch, events):
-    monkeypatch.setattr(oc, "get_current_objective_and_optovar", _async_return((3, 1)))
+def test_container_move_lowers_z_first(monkeypatch, events, fake_objective):
+    monkeypatch.setattr(oc, "get_active_objective", _async_return(fake_objective(3)))
     asyncio.run(sc.move_to_container(0, 2))
     assert events == [("z", 0), ("container", 0, 2)]
 

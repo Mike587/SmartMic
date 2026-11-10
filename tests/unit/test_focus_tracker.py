@@ -41,6 +41,8 @@ def df(monkeypatch):
         monkeypatch.setattr(ms, "run_definite_focus_find_surface", fake.find)
         monkeypatch.setattr(ms, "get_current_z_position", lambda: fake.surface)
         monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: (objective, 1))
+        monkeypatch.setattr(ms, "_immersion_objective_active",
+                            lambda: objective == stage.IMMERSION_OBJECTIVE_POSITION)
         # A constant carrier: the carrier check is tested in test_df_carrier.py.
         monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: {
             "name": "PLATE", "material": "Glass", "thickness": 170.0,
