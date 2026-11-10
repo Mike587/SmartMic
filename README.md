@@ -36,7 +36,7 @@ pipelines that consume it live under `projects/`, one folder each.
 
 | Folder | Role |
 |--------|------|
-| `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point) |
+| `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point). **Outdated (2026-11-10):** not maintained at the moment; an update is planned |
 
 Each project script resolves the repo root via the `SMARTMIC_ROOT` environment
 variable (defaulting to the standard checkout location) and adds it to

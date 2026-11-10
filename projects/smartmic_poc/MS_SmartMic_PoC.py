@@ -3,6 +3,11 @@ MS_SmartMic_PoC.py
 
 Proof-of-concept Smart Microscope automation pipeline.
 
+OUTDATED (2026-11-10): this pipeline is not maintained at the moment. It does
+not use the current library practice (for example ``set_optics_verified``,
+``run_analysis_json``, ``write_run_info``). Do not use it as a model for a new
+project, and examine it before you run it on the scope. An update is planned.
+
 High-level workflow
 -------------------
 For each well-plate position loaded from POSITIONS_FILE:
