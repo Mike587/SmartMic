@@ -7,7 +7,7 @@ the loaded plate). Skipped unless --run-hardware.
 """
 import pytest
 
-import MS_Helper_function as helper
+import MS_metadata as metadata
 
 pytestmark = pytest.mark.hardware
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.hardware
 @pytest.fixture
 def first_position(czexp_dir):
     """First used plate position (x_m, y_m) from the bundled positions file."""
-    positions = helper.load_positions_from_czexp(czexp_dir / "positions_384.czexp")
+    positions = metadata.load_positions_from_czexp(czexp_dir / "positions_384.czexp")
     if not positions:
         pytest.skip("no usable positions in positions_384.czexp")
     p = positions[0]

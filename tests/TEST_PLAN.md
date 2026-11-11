@@ -102,7 +102,7 @@ These are the bulk of the value. Grouped by module.
   unused regions skipped, missing flag = used, file order; duplicate used names
   and a region without Name/CenterPosition raise.
 
-### `tests/unit/test_helper.py` — `MS_Helper_function.py`
+### `tests/unit/test_run_log_metadata.py` — `MS_run_log`, `MS_metadata`, `MS_image_metrics`
 - `load_positions_from_czexp`: parse the positions fixture; assert well names,
   position counts, µm→m conversion, and the **`IsUsedForAcquisition` default-True**
   rule (a position with the tag missing is treated as used).

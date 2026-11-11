@@ -240,7 +240,6 @@ The repo root holds the reusable library; example pipelines live under
 | `MS_image_analysis.py` | Launches external image-analysis scripts; reads back their results |
 | `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files |
 | `MS_zenapi_helpers.py` | Vendored ZEN-API glue: channel setup with call time limits, logging, objective lookups |
-| `MS_Helper_function.py` | Compatibility module (old name) |
 | `zeiss_paths.py` | Path bootstrap and version identities (SmartMic, ZEN, gateway, `zen_api`) |
 | `verify_zen_api.py` | Read-only connection check |
 | `projects/smartmic_poc/` | Proof-of-concept pipeline (outdated) |

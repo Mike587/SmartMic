@@ -203,6 +203,24 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   Settings; default 120 min / 200 mm, 10 min minimum). The interval in the
   `.czexp` is ignored on the CD7. Analysis: `Marc_SM_002/SM_Output/New-03_focus_analysis/`.
 
+- **DF Oscillation on the Multichamber 384 (Polystyrene) at 20x/0.95** (2026-11-11,
+  hardware test `test_df_find_surface`). Carrier: 'Multichamber 384', Polystyrene,
+  196 µm, n = 1.594, **skirt 3015 µm** (earlier plates: about 1045 µm); API and DF
+  agree on the bottom. FindSurface from the default start (−300 µm) failed on all 3
+  attempts: gRPC `INTERNAL` with no text, ZENService log `WaitForActionCompletion():
+  action = Finding, result = Failed, error code = Oscillation`, with
+  `DefiniteFocusSignalQuality` 99 and `DefiniteFocusPosition` 3000.06 µm. The
+  pre-refactor code (tag `freeze-2026-11-11`) fails the same way, so it is the plate
+  or DF, not the library. **A start near the surface does not help:** from 2900 µm
+  (Mike: focus on this plate at 20x/0.95 is about 3133 µm) all 3 attempts failed the
+  same way (Oscillation, quality 99, DF position 2999.6 µm, ZEN adds
+  `DefiniteFocusErrorCategories = FallbackRunRecommended`). **Not** an underside
+  lock: locking onto the wrong surface is a 50x-only problem (Mike, 2026-11-11; "50x:
+  DF locks onto the plate UNDERSIDE"); on the dry objectives DF uses the underside
+  reflex plus the bottom-thickness offset by design ("Dry objectives: DF finds the
+  plate UNDERSIDE and adds an offset"). Cause still open (polystyrene bottom? TODO
+  "A real polystyrene plate"). The DF and SWAF hardware tests cannot run on this plate.
+
 - **With immersion, DF can lock onto the WRONG surface and still report
   quality 99.** Same run (New-03.czi, 50x/1.2 W, ibidi 96-well, 170 µm glass
   bottom). At C7 FindSurface found the **bottom of the plate** (water–glass,
@@ -239,7 +257,7 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
     experiment (not tested).
   - Idea, not implemented: after DF, take a short **widefield snap and score
     its sharpness/signal**; reject or redo the DF if it is flat. The existing
-    dark-stack check (`MS_Helper_function.is_czi_effectively_empty`) would
+    dark-stack check (`MS_image_metrics.is_czi_effectively_empty`) would
     also have caught it, but only after the full stack.
   The later failures from D1 on (DF lost after the 04:42 refill, then locked
   ~+135…+160 µm too HIGH, images still dark) are only partly explained, see
@@ -337,7 +355,7 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   dud ≈ 0.008–0.012, focused tissue ≈ 0.10–0.14 → threshold **0.04**. Implemented
   both analysis-side in `ia_NfS` (`measure_thickness` emits `low_signal`;
   `find_nuclei_bboxes` bails to 0 nuclei; gated in the pipeline) AND library-side as
-  `MS_Helper_function.signal_level_from_czi` / `is_czi_effectively_empty` (for
+  `MS_image_metrics.signal_level_from_czi` / `is_czi_effectively_empty` (for
   pipelines that need the check without the analysis repo). A near-black stack
   otherwise produces *spurious* segmentations (Otsu on noise gave 342 "nuclei"
   once) — hence the guard.
@@ -657,7 +675,7 @@ Positions**; the API calls them **containers** (`SampleCarrierService`,
 
 ## What a CZI / .czexp records about the sample carrier (2026-11-09)
 
-Read by `MS_Helper_function.get_sample_carrier_from_czi` / `_czexp`, checked
+Read by `MS_metadata.get_sample_carrier_from_czi` / `_czexp`, checked
 by `check_sample_carrier`. Surveyed on every `.czexp`/`.czi` on this machine
 (tests fixtures, all projects, Marc_SM_002 on `F:\UserData\mike`).
 
@@ -1043,7 +1061,7 @@ This machine's older checkout is unaffected. Not yet tested on the scope.
 
 **Per-run version record — promoted from Marc_SM_003 (2026-11-09):** the
 preflight line is for a human reading the log; a dataset also needs a
-machine-readable record of the exact code. `MS_Helper_function.write_run_info
+machine-readable record of the exact code. `MS_run_log.write_run_info
 (log_file, log, repos={...}, extra={...})` writes `run_info_<ts>.json` beside
 `setup_run_logger`'s `run_<ts>.log`: SmartMic's FULL commit + uncommitted files,
 the same for every repo passed in `repos` (the project's own repo, its ia
@@ -1070,7 +1088,7 @@ convenient (Marc_SM_002 only after its STZ run is finished).
 | LoA `DefiniteFocusTracker` + `DefiniteFocusFault` | Marc_SM_002 `FocusState`; the inline adaptive start in the PoC / HD_Nuclei |
 | `MS_czexp_editor.get_tile_region_centers` | Marc_SM_002 `ov_tile_regions`; Slide_Search's own parsing |
 | `MS_image_analysis.run_analysis_json` | Marc_SM_002 `analyse` and the same pattern in every project |
-| `MS_Helper_function.append_jsonl` / `read_jsonl` | Marc_SM_002's cells log + `read_cells_log` |
+| `MS_run_log.append_jsonl` / `read_jsonl` | Marc_SM_002's cells log + `read_cells_log` |
 
 Design choices worth knowing:
 - **Backward compatible.** New parameters default to the old behaviour, so
@@ -1210,16 +1228,16 @@ Old entries in this file use the old names. Do not rewrite them; use this table.
 
 | Old | New |
 |-----|-----|
-| `MS_Helper_function.setup_run_logger`, `write_run_info`, `append_jsonl`, `read_jsonl`, `DEFAULT_EXPERIMENT_OUTPUT_FOLDER` | `MS_run_log` |
-| `MS_Helper_function.load_positions_from_czexp`, `get_sample_carrier_from_czi` / `_czexp`, `check_sample_carrier`, `get_focus_position_from_czi`, `get_zstack_z_range`, `get_stage_position_from_czi`, `get_xy_position_from_czi` | `MS_metadata` |
-| `MS_Helper_function.compute_focus_score`, `signal_level_from_czi`, `is_czi_effectively_empty` | `MS_image_metrics` |
+| `MS_run_log.setup_run_logger`, `write_run_info`, `append_jsonl`, `read_jsonl`, `DEFAULT_EXPERIMENT_OUTPUT_FOLDER` | `MS_run_log` |
+| `MS_metadata.load_positions_from_czexp`, `get_sample_carrier_from_czi` / `_czexp`, `check_sample_carrier`, `get_focus_position_from_czi`, `get_zstack_z_range`, `get_stage_position_from_czi`, `get_xy_position_from_czi` | `MS_metadata` |
+| `MS_image_metrics.compute_focus_score`, `signal_level_from_czi`, `is_czi_effectively_empty` | `MS_image_metrics` |
 | `zeiss_paths.zen_app_version`, `zen_df_bottom`, `zen_auto_immersion_settings`, `format_auto_immersion_settings`, `zen_user_options_path`, `zen_service_immersion_options` | `MS_zen_logs` |
 | `MS_zenapi_experiment_methods.check_experiment_api` | `MS_zenapi_experiment_smoke` |
 | `ms.run_experiment(..., do_snap_and_live=True)` | removed; call the smoke test directly |
 
-The old names still work: `MS_Helper_function` re-exports its three modules, and
-`zeiss_paths.<name>` resolves the names of `MS_zen_logs`. The exception is
-`check_experiment_api`: import it from the new module.
+Since 2026-11-11 the old names are gone: `MS_Helper_function` and
+`MS_zenapi_experiment_smoke` were deleted; import from the owning module.
+`zeiss_paths.<name>` still resolves the names of `MS_zen_logs`.
 `zeiss_paths` keeps the path bootstrap, `zen_api_version`,
 `zen_api_gateway_version`, `smartmic_version` and `git_state`.
 
@@ -1483,8 +1501,9 @@ coordinate conventions, display helpers and the script/CLI contract of
 plan are in its own `TODO.md`.
 
 **SmartMic does NOT depend on ia_common.** It keeps its own small CZI readers
-in `MS_Helper_function` (stage/Z positions). They overlap with ia_common on
-purpose, so that the library needs no image-analysis env.
+in `MS_metadata` (stage/Z positions). They overlap with ia_common on
+purpose, so that the library needs no image-analysis env. (Revisit: TODO C2
+step 3 moves the CZI readers to ia_common once it is published.)
 
 ### Dependency history: the pixi environment slimmed (2026-11-11)
 

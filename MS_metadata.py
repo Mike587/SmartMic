@@ -16,8 +16,7 @@
 Read acquisition metadata from ZEN files: ``.czexp`` experiments and ``.czi`` images.
 
 Read-only, no ZEN API. Lengths are µm in the files and metres in every return
-value, except where a name says ``_um``. ``MS_Helper_function`` re-exports
-every name.
+value, except where a name says ``_um``.
 
 Public functions
 ----------------

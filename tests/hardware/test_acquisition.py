@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import MS_Helper_function as helper
+import MS_metadata as metadata
 
 pytestmark = pytest.mark.hardware
 
@@ -36,7 +36,7 @@ def test_zstack_from_path(scope, czexp_dir, out_dir, run_tag):
     result = scope.run_experiment_from_path(
         czexp_dir / "zstack_small.czexp", out_dir, f"test_zstack_{run_tag}")
     p = _assert_czi(result)
-    zr = helper.get_zstack_z_range(p)
+    zr = metadata.get_zstack_z_range(p)
     if zr is not None:                       # widefield z-stack metadata may vary
         assert zr["n_z"] > 1
         assert zr["step_um"] > 0

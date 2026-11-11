@@ -15,7 +15,7 @@
 """
 Run records: the per-run log file, the version record and JSONL records.
 
-No ZEN API here. ``MS_Helper_function`` re-exports every name.
+No ZEN API here.
 
 Public functions
 ----------------

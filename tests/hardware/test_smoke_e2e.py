@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import MS_Helper_function as helper
+import MS_metadata as metadata
 
 pytestmark = [pytest.mark.hardware, pytest.mark.slow]
 
@@ -21,7 +21,7 @@ def test_full_chain_one_position(restore_state, hw, czexp_dir, out_dir, run_tag)
     scope = restore_state
 
     # 1. Move to the first known plate position.
-    positions = helper.load_positions_from_czexp(czexp_dir / "positions_384.czexp")
+    positions = metadata.load_positions_from_czexp(czexp_dir / "positions_384.czexp")
     if not positions:
         pytest.skip("no usable positions in positions_384.czexp")
     p0 = positions[0]

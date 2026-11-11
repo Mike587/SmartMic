@@ -16,7 +16,7 @@
 Image metrics on a ``.czi``: focus score and signal level.
 
 Read-only, no ZEN API. Needs ``pylibCZIrw`` and ``numpy`` (imported when
-called). ``MS_Helper_function`` re-exports every name.
+called).
 
 Public functions
 ----------------

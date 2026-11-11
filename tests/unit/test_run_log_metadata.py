@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for MS_Helper_function — logging, position loading, focus scoring.
+"""Unit tests for MS_run_log, MS_metadata and MS_image_metrics.
 
 The focus-scoring tests read the bundled CZIs (need pylibCZIrw, present in the
 smartmic env); they importorskip so the suite still runs where it is absent.
@@ -8,7 +8,9 @@ import logging
 
 import pytest
 
-import MS_Helper_function as helper
+import MS_image_metrics as image_metrics
+import MS_metadata as metadata
+import MS_run_log as run_log
 
 
 # --------------------------------------------------------------------------
@@ -20,7 +22,7 @@ def positions_path(czexp_dir):
 
 
 def test_load_positions_shape(positions_path):
-    positions = helper.load_positions_from_czexp(positions_path)
+    positions = metadata.load_positions_from_czexp(positions_path)
     assert isinstance(positions, list)
     assert len(positions) > 0
     for p in positions:
@@ -34,7 +36,7 @@ def test_load_positions_shape(positions_path):
 
 def test_load_positions_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        helper.load_positions_from_czexp(tmp_path / "nope.czexp")
+        metadata.load_positions_from_czexp(tmp_path / "nope.czexp")
 
 
 # P1 has no flag (→ used by default); P2 is explicitly false (→ excluded);
@@ -58,7 +60,7 @@ POS_XML = """<HardwareExperiment>
 def test_load_positions_used_flag_defaults_true(tmp_path):
     f = tmp_path / "synthetic.czexp"
     f.write_text(POS_XML, encoding="utf-8")
-    positions = helper.load_positions_from_czexp(f)
+    positions = metadata.load_positions_from_czexp(f)
     assert len(positions) == 1
     p = positions[0]
     assert p["well"] == "A1"
@@ -88,13 +90,13 @@ def _positions_file(tmp_path, region_xml):
 def test_load_positions_bad_coordinate_raises(tmp_path, coords):
     f = _positions_file(tmp_path, f'<SingleTileRegion Name="P3">{coords}</SingleTileRegion>')
     with pytest.raises(ValueError, match="C7.*P3"):
-        helper.load_positions_from_czexp(f)
+        metadata.load_positions_from_czexp(f)
 
 
 def test_load_positions_missing_z_is_zero(tmp_path):
     f = _positions_file(tmp_path,
                         '<SingleTileRegion Name="P1"><X>1</X><Y>2</Y></SingleTileRegion>')
-    assert helper.load_positions_from_czexp(f)[0]["z_m"] == 0.0
+    assert metadata.load_positions_from_czexp(f)[0]["z_m"] == 0.0
 
 
 def test_load_positions_unused_position_is_not_checked(tmp_path):
@@ -103,19 +105,19 @@ def test_load_positions_unused_position_is_not_checked(tmp_path):
         '<SingleTileRegion Name="P1"><X>1</X><Y>2</Y><Z>3</Z></SingleTileRegion>'
         '<SingleTileRegion Name="P2"><X>abc</X>'
         '<IsUsedForAcquisition>false</IsUsedForAcquisition></SingleTileRegion>')
-    assert [p["position_name"] for p in helper.load_positions_from_czexp(f)] == ["P1"]
+    assert [p["position_name"] for p in metadata.load_positions_from_czexp(f)] == ["P1"]
 
 
 # --------------------------------------------------------------------------
 # setup_run_logger
 # --------------------------------------------------------------------------
 def test_setup_run_logger(tmp_path):
-    logger, log_file = helper.setup_run_logger(tmp_path, name="smartmic_test")
+    logger, log_file = run_log.setup_run_logger(tmp_path, name="smartmic_test")
     assert isinstance(logger, logging.Logger)
     assert logger.name == "smartmic_test"
     assert log_file.exists()
     n = len(logger.handlers)
-    logger2, _ = helper.setup_run_logger(tmp_path, name="smartmic_test")
+    logger2, _ = run_log.setup_run_logger(tmp_path, name="smartmic_test")
     assert logger2 is logger
     assert len(logger2.handlers) == n   # handlers.clear() prevents accumulation
 
@@ -141,7 +143,7 @@ def test_write_run_info_record(tmp_path, git_repo, fake_versions, caplog):
     log = logging.getLogger("smartmic_test_run_info")
 
     with caplog.at_level(logging.INFO, logger=log.name):
-        path = helper.write_run_info(log_file, log,
+        path = run_log.write_run_info(log_file, log,
                                      repos={"project": repo, "analysis": tmp_path / "not_a_repo"},
                                      extra={"plate": 4}, script=tmp_path / "MS_x.py")
 
@@ -165,7 +167,7 @@ def test_write_run_info_record(tmp_path, git_repo, fake_versions, caplog):
 
 
 def test_write_run_info_other_log_name(tmp_path, fake_versions):
-    path = helper.write_run_info(tmp_path / "probe.log", logging.getLogger("smartmic_test_run_info"))
+    path = run_log.write_run_info(tmp_path / "probe.log", logging.getLogger("smartmic_test_run_info"))
     assert path.name == "probe_run_info.json" and path.exists()
 
 
@@ -189,28 +191,28 @@ def zstack_czi(czi_dir):
 
 def test_compute_focus_score_sharp_gt_blurry(sharp, blurry):
     pytest.importorskip("pylibCZIrw")
-    s = helper.compute_focus_score(sharp)
-    b = helper.compute_focus_score(blurry)
+    s = image_metrics.compute_focus_score(sharp)
+    b = image_metrics.compute_focus_score(blurry)
     assert s is not None and b is not None
     assert s > b
 
 
 def test_compute_focus_score_bad_path_returns_none(tmp_path):
-    assert helper.compute_focus_score(tmp_path / "nope.czi") is None
+    assert image_metrics.compute_focus_score(tmp_path / "nope.czi") is None
 
 
 def test_get_focus_position_from_czi(zstack_czi):
-    fp = helper.get_focus_position_from_czi(zstack_czi)
+    fp = metadata.get_focus_position_from_czi(zstack_czi)
     assert fp is None or isinstance(fp, float)
 
 
 def test_get_focus_position_missing_returns_none(tmp_path):
-    assert helper.get_focus_position_from_czi(tmp_path / "nope.czi") is None
+    assert metadata.get_focus_position_from_czi(tmp_path / "nope.czi") is None
 
 
 def test_get_zstack_z_range(zstack_czi):
     pytest.importorskip("pylibCZIrw")
-    zr = helper.get_zstack_z_range(zstack_czi)
+    zr = metadata.get_zstack_z_range(zstack_czi)
     assert zr is not None
     assert set(zr) == {"first_um", "center_um", "last_um", "n_z", "step_um"}
     assert zr["n_z"] > 1
@@ -220,7 +222,7 @@ def test_get_zstack_z_range(zstack_czi):
 
 def test_get_zstack_z_range_single_plane_is_none(sharp):
     pytest.importorskip("pylibCZIrw")
-    assert helper.get_zstack_z_range(sharp) is None
+    assert metadata.get_zstack_z_range(sharp) is None
 
 
 # --------------------------------------------------------------------------
@@ -228,7 +230,7 @@ def test_get_zstack_z_range_single_plane_is_none(sharp):
 # --------------------------------------------------------------------------
 def test_get_stage_position_from_czi_shape(zstack_czi):
     pytest.importorskip("pylibCZIrw")
-    info = helper.get_stage_position_from_czi(zstack_czi)
+    info = metadata.get_stage_position_from_czi(zstack_czi)
     assert info is not None
     assert set(info) == {"actual_x_m", "actual_y_m",
                          "planned_x_m", "planned_y_m", "z_m"}
@@ -240,25 +242,25 @@ def test_get_stage_position_from_czi_shape(zstack_czi):
 
 
 def test_get_stage_position_from_czi_missing_returns_none(tmp_path):
-    assert helper.get_stage_position_from_czi(tmp_path / "nope.czi") is None
+    assert metadata.get_stage_position_from_czi(tmp_path / "nope.czi") is None
 
 
 def test_get_xy_position_prefers_planned_vs_actual(zstack_czi):
     pytest.importorskip("pylibCZIrw")
-    info = helper.get_stage_position_from_czi(zstack_czi)
+    info = metadata.get_stage_position_from_czi(zstack_czi)
     # planned (scene CenterPosition) is the reliable "where imaged" field and the
     # default; actual (MTBStageAxis encoder) is the parked position. In this
     # fixture the two differ, so each prefer-mode must return its own pair.
-    assert helper.get_xy_position_from_czi(zstack_czi) == (
+    assert metadata.get_xy_position_from_czi(zstack_czi) == (
         info["planned_x_m"], info["planned_y_m"])
-    assert helper.get_xy_position_from_czi(zstack_czi, prefer="planned") == (
+    assert metadata.get_xy_position_from_czi(zstack_czi, prefer="planned") == (
         info["planned_x_m"], info["planned_y_m"])
-    assert helper.get_xy_position_from_czi(zstack_czi, prefer="actual") == (
+    assert metadata.get_xy_position_from_czi(zstack_czi, prefer="actual") == (
         info["actual_x_m"], info["actual_y_m"])
 
 
 def test_get_xy_position_from_czi_missing_returns_none(tmp_path):
-    assert helper.get_xy_position_from_czi(tmp_path / "nope.czi") is None
+    assert metadata.get_xy_position_from_czi(tmp_path / "nope.czi") is None
 
 
 # --------------------------------------------------------------------------
@@ -266,31 +268,31 @@ def test_get_xy_position_from_czi_missing_returns_none(tmp_path):
 # --------------------------------------------------------------------------
 def test_signal_level_from_czi_real_image(sharp):
     pytest.importorskip("pylibCZIrw")
-    level = helper.signal_level_from_czi(sharp)
+    level = image_metrics.signal_level_from_czi(sharp)
     # A real (non-empty) image: signal well above the empty threshold, ≤ 1.
     assert level is not None
-    assert helper.EMPTY_STACK_SIGNAL_FRAC < level <= 1.0
+    assert image_metrics.EMPTY_STACK_SIGNAL_FRAC < level <= 1.0
 
 
 def test_signal_level_from_czi_missing_returns_none(tmp_path):
-    assert helper.signal_level_from_czi(tmp_path / "nope.czi") is None
+    assert image_metrics.signal_level_from_czi(tmp_path / "nope.czi") is None
 
 
 def test_is_czi_effectively_empty_false_for_real_image(sharp):
     pytest.importorskip("pylibCZIrw")
     # Default threshold: a real image is not empty.
-    assert helper.is_czi_effectively_empty(sharp) is False
+    assert image_metrics.is_czi_effectively_empty(sharp) is False
 
 
 def test_is_czi_effectively_empty_true_above_signal(sharp):
     pytest.importorskip("pylibCZIrw")
     # Force the empty branch with a frac above this image's signal level
     # (no all-black fixture available) — exercises the comparison.
-    assert helper.is_czi_effectively_empty(sharp, frac=1.0) is True
+    assert image_metrics.is_czi_effectively_empty(sharp, frac=1.0) is True
 
 
 def test_is_czi_effectively_empty_missing_returns_none(tmp_path):
-    assert helper.is_czi_effectively_empty(tmp_path / "nope.czi") is None
+    assert image_metrics.is_czi_effectively_empty(tmp_path / "nope.czi") is None
 
 
 # --------------------------------------------------------------------------
@@ -298,32 +300,32 @@ def test_is_czi_effectively_empty_missing_returns_none(tmp_path):
 # --------------------------------------------------------------------------
 def test_jsonl_roundtrip(tmp_path):
     log = tmp_path / "sub" / "cells.jsonl"           # folder created on demand
-    helper.append_jsonl(log, {"cell": 1, "status": "ok", "z_m": 1.35e-3})
-    helper.append_jsonl(log, {"cell": 2, "status": "no_midplane", "note": "µ"})
-    assert helper.read_jsonl(log) == [
+    run_log.append_jsonl(log, {"cell": 1, "status": "ok", "z_m": 1.35e-3})
+    run_log.append_jsonl(log, {"cell": 2, "status": "no_midplane", "note": "µ"})
+    assert run_log.read_jsonl(log) == [
         {"cell": 1, "status": "ok", "z_m": 1.35e-3},
         {"cell": 2, "status": "no_midplane", "note": "µ"}]
 
 
 def test_read_jsonl_missing_file_is_empty(tmp_path):
-    assert helper.read_jsonl(tmp_path / "nope.jsonl") == []
+    assert run_log.read_jsonl(tmp_path / "nope.jsonl") == []
 
 
 def test_jsonl_line_cut_off_by_a_crash(tmp_path):
     log = tmp_path / "cells.jsonl"
-    helper.append_jsonl(log, {"cell": 1})
+    run_log.append_jsonl(log, {"cell": 1})
     with open(log, "a", encoding="utf-8") as f:     # crash mid-write: no newline
         f.write('{"cell": 2, "sta')
-    assert helper.read_jsonl(log) == [{"cell": 1}]
+    assert run_log.read_jsonl(log) == [{"cell": 1}]
     # The next record must not be glued onto the fragment.
-    helper.append_jsonl(log, {"cell": 2})
-    assert helper.read_jsonl(log) == [{"cell": 1}, {"cell": 2}]
+    run_log.append_jsonl(log, {"cell": 2})
+    assert run_log.read_jsonl(log) == [{"cell": 1}, {"cell": 2}]
 
 
 def test_read_jsonl_skips_blank_lines(tmp_path):
     log = tmp_path / "cells.jsonl"
     log.write_text('{"a": 1}\n\n{"b": 2}\n', encoding="utf-8")
-    assert helper.read_jsonl(log) == [{"a": 1}, {"b": 2}]
+    assert run_log.read_jsonl(log) == [{"a": 1}, {"b": 2}]
 
 
 # --------------------------------------------------------------------------
@@ -331,7 +333,7 @@ def test_read_jsonl_skips_blank_lines(tmp_path):
 # --------------------------------------------------------------------------
 def test_sample_carrier_from_czi_plate(sharp):
     pytest.importorskip("pylibCZIrw")
-    c = helper.get_sample_carrier_from_czi(sharp)
+    c = metadata.get_sample_carrier_from_czi(sharp)
     assert c["name"] == "Multichamber 384"
     assert c["category"] == "Multichamber"
     assert (c["rows"], c["columns"]) == (16, 24)
@@ -344,7 +346,7 @@ def test_sample_carrier_from_czi_plate(sharp):
 
 
 def test_sample_carrier_from_czexp_96well(czexp_dir):
-    c = helper.get_sample_carrier_from_czexp(czexp_dir / "zstack_LSM.czexp")
+    c = metadata.get_sample_carrier_from_czexp(czexp_dir / "zstack_LSM.czexp")
     assert c["name"] == "Multiwell 96"
     assert (c["rows"], c["columns"]) == (8, 12)
     assert c["pitch_x_m"] == pytest.approx(9e-3)
@@ -355,7 +357,7 @@ def test_sample_carrier_ignores_czsht_copy(czexp_dir, caplog):
     # stitch_region also holds a "Multichamber 384.czsht" copy under
     # ScanAreaSampleHolderInfo, and nested SampleHolders without a Template.
     with caplog.at_level(logging.WARNING, logger="smartmic"):
-        c = helper.get_sample_carrier_from_czexp(czexp_dir / "stitch_region.czexp")
+        c = metadata.get_sample_carrier_from_czexp(czexp_dir / "stitch_region.czexp")
     assert c["name"] == "Multichamber 384"
     assert "more than one sample carrier" not in caplog.text
 
@@ -392,7 +394,7 @@ def _write(tmp_path, xml, name="synthetic.czexp"):
 
 
 def test_sample_carrier_insert_records_only_the_slide(tmp_path):
-    c = helper.get_sample_carrier_from_czexp(_write(tmp_path, INSERT_XML))
+    c = metadata.get_sample_carrier_from_czexp(_write(tmp_path, INSERT_XML))
     assert c["name"] == "Chamber Slide 8x - 76 x 26 mm - Vertical"
     assert (c["rows"], c["columns"]) == (4, 2)
     assert c["well_width_m"] == pytest.approx(9.5e-3)
@@ -407,7 +409,7 @@ def test_sample_carrier_falls_back_to_czsht_copy(tmp_path):
     xml = """<X><AdditionalSettings><ScanAreaSampleHolderInfo>
       <Template Name="Multiwell 96.czsht"><ShapeRows>8</ShapeRows></Template>
     </ScanAreaSampleHolderInfo></AdditionalSettings></X>"""
-    c = helper.get_sample_carrier_from_czexp(_write(tmp_path, xml))
+    c = metadata.get_sample_carrier_from_czexp(_write(tmp_path, xml))
     assert c["name"] == "Multiwell 96"
     assert c["rows"] == 8
     assert c["pitch_x_m"] is None           # missing tag → None
@@ -419,41 +421,41 @@ def test_sample_carrier_conflicting_names_warn(tmp_path, caplog):
       <ScanAreaSampleHolderInfo><Template Name="Multichamber 384.czsht" /></ScanAreaSampleHolderInfo>
     </X>"""
     with caplog.at_level(logging.WARNING, logger="smartmic"):
-        c = helper.get_sample_carrier_from_czexp(_write(tmp_path, xml))
+        c = metadata.get_sample_carrier_from_czexp(_write(tmp_path, xml))
     assert c["name"] == "Multiwell 96"      # the experiment's own SampleHolder wins
     assert "more than one sample carrier" in caplog.text
 
 
 def test_sample_carrier_none_without_template(tmp_path):
     xml = "<X><SampleHolder><Overlap>0.1</Overlap></SampleHolder></X>"
-    assert helper.get_sample_carrier_from_czexp(_write(tmp_path, xml)) is None
+    assert metadata.get_sample_carrier_from_czexp(_write(tmp_path, xml)) is None
 
 
 def test_sample_carrier_missing_files_return_none(tmp_path):
-    assert helper.get_sample_carrier_from_czexp(tmp_path / "nope.czexp") is None
-    assert helper.get_sample_carrier_from_czi(tmp_path / "nope.czi") is None
+    assert metadata.get_sample_carrier_from_czexp(tmp_path / "nope.czexp") is None
+    assert metadata.get_sample_carrier_from_czi(tmp_path / "nope.czi") is None
 
 
 def test_check_sample_carrier_plate():
     plate = {"name": "Marc_96W_U-Bottom", "is_part_of_insert": False}
-    assert helper.check_sample_carrier(plate, "Marc_96W_U-Bottom")[0] is True
-    assert helper.check_sample_carrier(plate, "Multiwell 96")[0] is False
-    assert helper.check_sample_carrier(plate)[0] is None
+    assert metadata.check_sample_carrier(plate, "Marc_96W_U-Bottom")[0] is True
+    assert metadata.check_sample_carrier(plate, "Multiwell 96")[0] is False
+    assert metadata.check_sample_carrier(plate)[0] is None
     # expected_slide is irrelevant for a plate
-    assert helper.check_sample_carrier(plate, "Marc_96W_U-Bottom", "x")[0] is True
+    assert metadata.check_sample_carrier(plate, "Marc_96W_U-Bottom", "x")[0] is True
 
 
 def test_check_sample_carrier_insert():
     slide = {"name": "Chamber Slide 8x - 76 x 26 mm - Vertical", "is_part_of_insert": True}
     insert = "Insert - 3x Slide - Chamber Slide 8x - 432332-9110-000"
     # The insert name is never in the file: can't check, never a false mismatch.
-    ok, msg = helper.check_sample_carrier(slide, insert)
+    ok, msg = metadata.check_sample_carrier(slide, insert)
     assert ok is None and "can't be checked" in msg
-    assert helper.check_sample_carrier(
+    assert metadata.check_sample_carrier(
         slide, insert, "Chamber Slide 8x - 76 x 26 mm - Vertical")[0] is True
-    assert helper.check_sample_carrier(
+    assert metadata.check_sample_carrier(
         slide, insert, "Slide 76 x 26 mm - Vertical")[0] is False
 
 
 def test_check_sample_carrier_no_carrier():
-    assert helper.check_sample_carrier(None, "Multiwell 96")[0] is None
+    assert metadata.check_sample_carrier(None, "Multiwell 96")[0] is None
