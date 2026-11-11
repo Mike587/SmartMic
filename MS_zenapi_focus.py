@@ -29,17 +29,9 @@
 # get_current_z_focus_position  -- Read the current Z-drive position
 #################################################################
 
-"""
-Focus and Definite Focus helpers for ZEN blue / ZEN core via gRPC.
+"""Z-drive (FocusService) and Definite Focus (DefiniteFocusService) helpers.
 
-This module wraps two ZEN gRPC services:
-
-* ``FocusService``         (zen_api.lm.hardware.v2)      -- raw Z-drive moves
-* ``DefiniteFocusService`` (zen_api.lm.acquisition.v1)   -- hardware autofocus
-
-Every public function opens its own gRPC channel, performs the requested
-operation, closes the channel, and returns.  This keeps the call-site simple
-and avoids shared-state issues when functions are called from a pipeline.
+Each function opens and closes its own gRPC channel.
 """
 
 import asyncio
@@ -49,14 +41,12 @@ import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 import MS_limits
 from MS_zenapi_helpers import set_logging, open_zen_channel
 
-# Auto-generated gRPC stubs for the Z-drive (FocusService)
 from zen_api.lm.hardware.v2 import (
     FocusServiceGetPositionRequest,
     FocusServiceMoveToRequest,
     FocusServiceStub,
 )
 
-# Auto-generated gRPC stubs for Definite Focus (hardware autofocus)
 from zen_api.lm.acquisition.v1 import (
     DefiniteFocusServiceStub,
     DefiniteFocusServiceFindSurfaceRequest,
@@ -64,7 +54,6 @@ from zen_api.lm.acquisition.v1 import (
     DefiniteFocusServiceRecallFocusRequest,
 )
 
-# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
 from zeiss_paths import CONFIG_PATH as config_path
 
 
@@ -83,47 +72,30 @@ async def _read_z_um(focus_service: FocusServiceStub) -> float:
 
 async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6,
                                       store_focus: bool = False) -> Tuple[bool, int]:
-    """Run Definite Focus FindSurface with linear-backoff retry logic.
+    """Move Z to *start_z_m*, then run DF FindSurface with linear-backoff retries.
 
-    Moves the Z-drive to *start_z_m* first so that DF always starts from a
-    known position, which makes the surface search more reliable and faster.
+    A result z < 0 is a failure (the surface is always at positive Z here; DF
+    found its own start). After failed attempt n: wait ``DF_RETRY_BACKOFF_S``
+    x n, restart ``DF_RETRY_NUDGE_M`` x n above *start_z_m*.
 
-    StoreFocus is optional (``store_focus``, default False). Measured on the
-    CD7 on 2026-11-09 (DEV_NOTES "What each DF RPC does"): StoreFocus is the
-    DF command ``InitOnCurrentPosition``. On the 20x and 50x objectives it
-    records the offset to the reflex (0.45 to 0.9 s). On the 5x objective it
-    does a full search sweep (+414 µm, 1.8 s) and records no offset. Set
-    ``store_focus=True`` only if you use ``definite_focus_recall`` later.
-    After a failed search nothing is stored: an offset recorded at a random Z
-    would send a later RecallFocus to an incorrect Z.
-
-    A result of z < 0 is treated as a failure because on this system the
-    sample surface is always at a positive Z coordinate; a negative return
-    value indicates that DF found its own starting position rather than the
-    actual surface.
-
-    After a failed attempt it waits ``DF_RETRY_BACKOFF_S`` x n and moves the
-    Z-drive ``DF_RETRY_NUDGE_M`` x n above *start_z_m* (n = failed attempts so
-    far) before trying again.
+    StoreFocus runs only on request, and never after a failed search (an offset
+    stored at a random Z sends a later RecallFocus to a wrong Z). On 5x it is a
+    full sweep that stores no offset (DEV_NOTES "What each DF RPC does").
 
     Args:
-        max_retries: Maximum number of attempts (default 3), at least 1.
-        start_z_m:   Absolute Z position in metres to move to before starting
-            the surface search (default −300 µm).  Pass a value close to the
-            expected surface Z (e.g. last_surface_z − 100 µm) to speed up DF.
-        store_focus: If True, do StoreFocus after a successful search, so that
-            ``definite_focus_recall`` can return to this surface. Default False.
+        max_retries: Maximum number of attempts, at least 1.
+        start_z_m: Start Z in metres (default -300 µm); near the expected
+            surface makes DF faster.
+        store_focus: StoreFocus after success, for a later
+            ``definite_focus_recall``.
 
     Returns:
-        Tuple ``(True, attempts_used)``.  It never returns ``(False, ...)``:
-        failure raises.
+        ``(True, attempts_used)``; failure raises.
 
     Raises:
         ValueError: If *max_retries* < 1.
-        Exception: The last attempt's exception once all attempts have failed,
-            with the real attempt count attached as ``.attempts_used`` (read by
-            ``MS_CD7_API_LoA.df_find_surface`` for accurate
-            retry telemetry).  Nothing is stored after a failure.
+        Exception: The last attempt's exception, with ``.attempts_used``
+            attached (read by ``MS_CD7_API_LoA.df_find_surface``).
     """
     if max_retries < 1:
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")
@@ -133,12 +105,8 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
         focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-        # The exact start does not need to be reached: DF FindSurface can search
-        # from wherever the drive actually lands.  In particular the default
-        # start (-300 µm) can be below the drive's reachable minimum on some
-        # configurations, where ZEN reports "Requested position was not reached".
-        # Treat that as non-fatal — land as close as the drive allows and let the
-        # surface search proceed, rather than aborting the whole find.
+        # Not reaching the start is non-fatal: -300 µm can be below the drive's
+        # minimum ("Requested position was not reached"); DF searches from there.
         try:
             await focus_service.move_to(FocusServiceMoveToRequest(value=start_z_m))
         except Exception as move_err:
@@ -153,15 +121,13 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
                 logger.warning(f"*** DF FindSurface RETRY {attempt - 1}/{max_retries - 1} ***")
 
             try:
-                # The returned zposition is in metres.
                 found = await definite_focus_service.find_surface(
                     DefiniteFocusServiceFindSurfaceRequest()
                 )
                 fs_z_um = found.zposition * 1e6
                 logger.info(f"Z-Position (FindSurface): {fs_z_um:.3f} [micron]")
 
-                # Sanity-check: DF returning a negative Z means it locked onto its
-                # own starting position rather than the actual sample surface.
+                # z < 0: DF locked onto its own start, not the surface.
                 if fs_z_um < 0:
                     raise RuntimeError(
                         f"FindSurface returned z={fs_z_um:.1f} µm — "
@@ -172,7 +138,6 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
                 logger.info(f"Z-Position (ZDrive) after FS: {z_um:.3f} [micron]")
 
                 if store_focus:
-                    # Only for a later recall_focus (see the docstring).
                     await definite_focus_service.store_focus(DefiniteFocusServiceStoreFocusRequest())
                     logger.info(f"Focus Position {z_um:.3f} [micron] stored.")
                 return True, attempt
@@ -197,33 +162,21 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
 
         logger.error(f"Definite Focus find_surface failed after {max_retries} attempts")
 
-        # Attach the real attempt count so a caller that only sees the exception
-        # can still report accurate retry telemetry instead of guessing.
         last_exception.attempts_used = max_retries
         raise last_exception
 
 
 async def definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], int]:
-    """Go back to the stored distance from the reflex (DF RecallFocus).
+    """Go back to the reflex plus the stored offset (DF RecallFocus).
 
-    Uses ``recall_focus`` rather than a full ``find_surface`` sweep, so it is
-    much faster.  Requires that ``store_focus`` has been called previously
-    (e.g. ``definite_focus_find_surface(store_focus=True)``).
-
-    Measured on the CD7 (2026-11-09): on the 20x and 50x objectives RecallFocus
-    goes back to the reflex plus the stored offset (±0.15 µm). On the 5x
-    objective it goes to the reflex and does not use the offset. After an
-    objective change it does a full FindSurface; on the 50x objective that is
-    a search without a seed (DEV_NOTES "50x: DF locks onto the plate
-    UNDERSIDE"). It does not return to a stored absolute Z.
-
-    Args:
-        max_retries: Maximum number of attempts (default 3).
+    Needs a previous StoreFocus (``definite_focus_find_surface(store_focus=True)``).
+    Not a stored absolute Z. 5x ignores the offset; after an objective change it
+    does a full FindSurface, on 50x without a seed (DEV_NOTES "What each DF RPC
+    does", "50x: DF locks onto the plate UNDERSIDE").
 
     Returns:
-        Tuple ``(z_um, attempts_used)`` where *z_um* is the ZDrive position
-        in µm after a successful recall, or ``None`` if all attempts failed.
-        *attempts_used* is the number of attempts that were made.
+        ``(z_um, attempts_used)``; *z_um* (ZDrive, µm) is ``None`` if all
+        attempts failed (does not raise).
     """
     logger = set_logging()
     async with open_zen_channel(config_path) as (channel, metadata):
@@ -248,7 +201,6 @@ async def definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], 
                 last_exception = e
                 logger.error(f"RecallFocus failed (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
-                    # Linear backoff: DF_RETRY_BACKOFF_S x 1, x 2, x 3 …
                     await asyncio.sleep(DF_RETRY_BACKOFF_S * (attempt + 1))
 
         logger.error(f"RecallFocus failed after {max_retries} attempts")
@@ -256,21 +208,14 @@ async def definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], 
 
 
 async def move_focus_to_new_z_position(z: float) -> None:
-    """Move the Z-drive to an absolute position.
+    """Move the Z-drive to *z* (metres, absolute). Z=0 breaks the immersion bridge.
 
-    Handles the edge case where *z* is at or very near 0 m: some hardware
-    configurations reject an exact move-to-zero command, so the function
-    checks whether the drive is already within 10 µm of zero and, if not,
-    retries with a small positive offset of 10 µm.
-
-    Args:
-        z: Target Z position in metres.
+    If a move to ~0 fails: accept a drive already within 10 µm of 0, else
+    retry at 10 µm.
 
     Raises:
-        ValueError: ``z`` is not a finite number within the Z limits
-            (``MS_limits``). Nothing is moved.
-        Exception: Re-raises the original move exception if neither the
-            primary move nor the fallback alternative succeeds.
+        ValueError: ``z`` not finite / outside ``MS_limits``. Nothing is moved.
+        Exception: The original move error if the fallback also fails.
     """
     logger = set_logging()
     MS_limits.require_z_position(z)
@@ -286,9 +231,7 @@ async def move_focus_to_new_z_position(z: float) -> None:
         except Exception as e:
             logger.error(f"Error moving focus to z={z}: {e}")
 
-            # Only the read-back is in this try. The re-raises below are outside
-            # it: inside, each failed move is also logged as "Could not get
-            # current position: <the move error>".
+            # Only the read-back is in this try (re-raises must stay outside).
             try:
                 current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
             except Exception as e2:
@@ -299,7 +242,6 @@ async def move_focus_to_new_z_position(z: float) -> None:
             if abs(z) >= 1e-6:
                 raise e
 
-            # Target is effectively zero — check if we are already close enough.
             tolerance = 10e-6  # 10 µm tolerance
             if abs(current_zpos.value) < tolerance:
                 logger.info(
@@ -308,7 +250,7 @@ async def move_focus_to_new_z_position(z: float) -> None:
                 )
                 return
 
-            # Hardware may not accept z=0 exactly; try 10 µm as a safe alternative.
+            # Hardware may reject z=0 exactly; try 10 µm.
             logger.info("Trying to move to z=10e-6 instead...")
             try:
                 await focus_service.move_to(FocusServiceMoveToRequest(value=10e-6))
@@ -324,10 +266,7 @@ async def move_focus_to_new_z_position(z: float) -> None:
 
 
 async def get_current_z_focus_position() -> float:
-    """Return the current absolute Z-drive position in metres.
-    Returns:
-        Current Z position in metres (not µm).
-    """
+    """Return the current absolute Z-drive position in metres (not µm)."""
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):

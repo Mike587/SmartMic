@@ -21,25 +21,13 @@
 # for reading and moving the XY stage on a light-microscopy system.
 #################################################################
 
-"""
-XY stage helpers for ZEN blue / ZEN core via gRPC.
+"""XY stage helpers (StageService) and the immersion guard.
 
-This module wraps the ZEN gRPC ``StageService`` (lm.hardware.v2) and
-integrates with :mod:`MS_zenapi_focus` to lower the objective before any XY
-move so that the objective cannot collide with the sample when traversing
-large distances.
-
-That Z=0 lower would break the immersion bridge on this inverted CD7, so
-``move_stage_to_new_xy_position`` refuses to run while the immersion objective
-(:data:`IMMERSION_OBJECTIVE_POSITION`) is active — drive the stage via a
-positioned ``.czexp`` run by ZEN in that case (see DEV_NOTES).
-
-Public functions
-----------------
-get_current_xy_stage_coordinates  -- Read the current XY position in metres
-move_stage_to_new_xy_position      -- Lower Z, move XY, then wait for settling
-set_stage_motion                   -- Set XY travel speed + acceleration (% [0,100])
-refuse_if_immersion_active         -- Immersion guard shared by the Z=0-lowering moves
+A direct XY move lowers Z to 0 first (collision safety). On this inverted CD7
+that breaks the immersion bridge, so ``move_stage_to_new_xy_position`` RAISES
+while an immersion objective is active: drive the stage via a positioned
+``.czexp`` run by ZEN instead (DEV_NOTES "inverted CD7 / Z=0 breaks the
+immersion bridge").
 """
 
 import asyncio
@@ -52,7 +40,6 @@ import MS_limits
 import MS_zenapi_focus
 import MS_zenapi_objectivechanger
 
-# Auto-generated gRPC stubs for the XY stage service.
 from zen_api.lm.hardware.v2 import (
     StageServiceStub,
     StageServiceGetPositionRequest,
@@ -63,55 +50,33 @@ from zen_api.lm.hardware.v2 import (
     StageServiceGetAccelerationRequest,
 )
 
-# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
 from zeiss_paths import CONFIG_PATH as config_path
 
-# Seconds to wait after an XY move so the stage settles mechanically before the
-# caller proceeds (e.g. to autofocus). 1 s is enough on this system.
+# Settle time after an XY move.
 STAGE_SETTLE_SECONDS = 1.0
 
-# Default XY-stage travel speed and acceleration, percent of max ([0, 100]).
-# Full speed/acceleration is the normal-project default (fast). These are the
-# single source of truth — the "global stage-speed control for a whole project"
-# knob: turn them DOWN for a sensitive/live sample. Set both together via
-# set_stage_motion(); for live samples it is the ACCELERATION (jerk at move
-# start/stop) that sloshes the medium, so a low speed paired with a high
-# acceleration would still disturb the sample.
+# Default XY speed / acceleration, percent of max [0, 100]. Lower for a live
+# sample; acceleration is what sloshes the medium (set via set_stage_motion).
 STAGE_TRAVEL_SPEED_PERCENT: float = 100.0
 STAGE_ACCELERATION_PERCENT: float = 100.0
 
-# A direct stage move lowers Z to 0, which on this inverted CD7 retracts the
-# objective and breaks the immersion water bridge, so
-# move_stage_to_new_xy_position REFUSES to run while an immersion objective is
-# active (raises). We deliberately do not reimplement an immersion-safe move:
-# choosing a safe non-zero travel Z is delicate geometry ZEN already does inside
-# an experiment. With an immersion objective active, drive the stage via a
-# positioned .czexp run by ZEN.
-# See DEV_NOTES "inverted CD7 / Z=0 breaks the immersion bridge".
-#
-# Which objective is an immersion objective comes from the API
-# (ObjectiveData.immersion_type, see immersion_objective_active). This constant
-# is the known slot of the 50x/1.2 W on this CD7. It is a second, independent
-# condition: the guard refuses if EITHER says "immersion", so a wrong inventory
-# entry or a changed turret cannot switch the guard off. preflight reports a
-# difference between the two (MS_CD7_API_LoA.check_immersion_guard).
+# Slot of the 50x/1.2 W on this CD7. Independent of the API immersion_type: the
+# guard refuses if EITHER says immersion, so a wrong inventory entry cannot
+# switch it off (preflight reports a mismatch: check_immersion_guard). Do not
+# replace the refusal with a move at a "safe" travel Z (DEV_NOTES "inverted
+# CD7 / Z=0 breaks the immersion bridge").
 IMMERSION_OBJECTIVE_POSITION = 4
 
 
 class ImmersionObjectiveActive(RuntimeError):
     """A direct move was refused because the immersion objective is active.
 
-    Its own type so callers that retry failed moves (e.g. the LoA's tolerant
-    moves) can tell a deliberate refusal from a hardware error and never retry it.
+    Its own type so retrying callers never retry a deliberate refusal.
     """
 
 
 async def immersion_objective_positions() -> List[int]:
-    """Changer positions the guard treats as immersion (sorted).
-
-    The positions the API reports as immersion, plus
-    ``IMMERSION_OBJECTIVE_POSITION``.
-    """
+    """Sorted changer positions the guard treats as immersion (API + slot constant)."""
     api = await MS_zenapi_objectivechanger.get_immersion_objective_positions()
     return sorted(set(api) | {IMMERSION_OBJECTIVE_POSITION})
 
@@ -126,24 +91,16 @@ async def _active_immersion_objective() -> Optional[Any]:
 
 
 async def immersion_objective_active() -> bool:
-    """True if the active objective is an immersion objective.
-
-    True if the API gives it an immersion type other than AIR
-    (``MS_zenapi_objectivechanger.is_immersion_objective``), or if it is in
-    slot ``IMMERSION_OBJECTIVE_POSITION``.
-    """
+    """True if the active objective has a non-AIR immersion type or is in
+    slot ``IMMERSION_OBJECTIVE_POSITION``."""
     return await _active_immersion_objective() is not None
 
 
 async def refuse_if_immersion_active(action: str) -> None:
     """Raise ImmersionObjectiveActive if an immersion objective is active.
 
-    Shared guard for every library move that first lowers Z to 0 (the XY move,
-    the container move): on this inverted CD7 that retracts the objective and
-    breaks the immersion water bridge. Run it BEFORE any Z move.
-
-    Args:
-        action: What is being refused, for the error message (e.g. "stage move").
+    Guard for every move that first lowers Z to 0 (breaks the immersion
+    bridge). Run it BEFORE any Z move. *action* names the move in the message.
     """
     objective = await _active_immersion_objective()
     if objective is not None:
@@ -158,16 +115,12 @@ async def refuse_if_immersion_active(action: str) -> None:
 
 
 async def get_current_xy_stage_coordinates() -> List[float]:
-    """Return the current XY stage position in metres.
-    Returns:
-        List ``[x, y]`` with both values in metres.
-    """
+    """Return the current stage position ``[x, y]`` in metres."""
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
         simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-        # StageService returns positions in metres; convert to µm for the log only.
         posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
         logger.info(f"Stage XY position: {posXY.x * 1e6:.2f} - {posXY.y * 1e6:.2f} [micron]")
 
@@ -175,48 +128,26 @@ async def get_current_xy_stage_coordinates() -> List[float]:
 
 
 async def move_stage_to_new_xy_position(x: float, y: float) -> None:
-    """Move the XY stage to an absolute position.
+    """Lower Z to 0, move XY to (*x*, *y*) in metres, wait ``STAGE_SETTLE_SECONDS``.
 
-    Before moving, the Z-drive is lowered to 0 m so that the objective
-    does not collide with the sample edge or well-plate walls during a
-    large lateral displacement.
+    Z is left at 0: the caller must re-focus (e.g. DF) before acquiring.
 
-    Args:
-        x: Target X position in metres.
-        y: Target Y position in metres.
     Raises:
-        ValueError: ``x`` or ``y`` is not a finite number within the stage
-            limits (``MS_limits``). Nothing is moved.
-        ImmersionObjectiveActive (a RuntimeError): If an immersion objective
-            (``immersion_objective_active``) is active. The
-            Z=0 collision-safety lower would break the immersion bridge on this
-            inverted CD7, so a direct move is refused — drive the stage via a
+        ValueError: ``x``/``y`` not finite / outside ``MS_limits``. Nothing is moved.
+        ImmersionObjectiveActive (a RuntimeError): An immersion objective is
+            active; the Z=0 lower would break the immersion bridge. Use a
             positioned ``.czexp`` run by ZEN instead.
-
-    Notes:
-        After the move the function waits ``STAGE_SETTLE_SECONDS`` to allow the
-        stage to mechanically settle before the caller proceeds.
-        The Z-drive is left at 0 m on return — it is NOT moved back to its
-        pre-move position. Callers must establish focus at the new position
-        (e.g. via Definite Focus) before acquiring.
     """
     logger = set_logging()
     MS_limits.require_xy_position(x, y)
 
-    # Immersion guard — must run BEFORE the Z=0 lower below. With the immersion
-    # objective active, lowering Z to 0 retracts the objective and breaks the
-    # immersion water bridge on this inverted CD7 (and DF then fails). Refuse the
-    # direct move rather than kill immersion; the caller should write the target
-    # XY(Z) into a .czexp and let ZEN drive the stage (its immersion logic
-    # raises/lowers Z safely). See DEV_NOTES.
+    # Immersion guard: must run BEFORE the Z=0 lower below.
     await refuse_if_immersion_active("stage move")
 
     async with open_zen_channel(config_path) as (channel, metadata):
         simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-        # Lower the objective to Z=0 before moving laterally to prevent
-        # collisions. The Z-drive is deliberately left at 0 afterwards; the
-        # caller re-focuses (e.g. Definite Focus) at the new position.
+        # Z=0 before the lateral move (collision safety); left there.
         new_z = 0
         await MS_zenapi_focus.move_focus_to_new_z_position(new_z)
 
@@ -226,7 +157,6 @@ async def move_stage_to_new_xy_position(x: float, y: float) -> None:
             f"{posXY.x * 1e6:.2f} - {posXY.y * 1e6:.2f} [micron]"
         )
 
-        # Perform the XY move (coordinates in metres).
         await simple_stage_service.move_to(StageServiceMoveToRequest(x=x, y=y))
 
         new_posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
@@ -235,7 +165,6 @@ async def move_stage_to_new_xy_position(x: float, y: float) -> None:
             f"{new_posXY.x * 1e6:.2f} - {new_posXY.y * 1e6:.2f} [micron]"
         )
 
-        # Allow the stage to settle mechanically before the next operation.
         logger.info(f"Waiting for {STAGE_SETTLE_SECONDS} seconds...")
         await asyncio.sleep(STAGE_SETTLE_SECONDS)
 
@@ -243,41 +172,25 @@ async def move_stage_to_new_xy_position(x: float, y: float) -> None:
 async def set_stage_motion(speed_percent: Optional[float] = None,
                            acceleration_percent: Optional[float] = None,
                            ) -> Dict[str, Optional[float]]:
-    """Set the XY-stage travel speed and acceleration (percent of max, [0, 100]).
+    """Set the XY-stage speed and acceleration (percent of max, [0, 100]).
 
-    Speed/acceleration are device state, NOT per-move parameters: ``MoveTo`` has
-    no velocity field, and the controller holds the values across SmartMic's
-    per-call open/close of the gRPC channel. So this is the "global stage-speed
-    control for a whole project" knob — set it once at the start of a run (see
-    the shared ``preflight``) and leave it; every later move inherits it. No
-    restore (restoring would defeat the purpose).
-
-    Both are requested TOGETHER on purpose: for a live sample it is the
-    acceleration (the jerk at the start/stop of a move) that sloshes the medium,
-    so a low top speed paired with a high acceleration would still jolt the
-    sample. **But they are applied INDEPENDENTLY**: confirmed on this gateway
-    (2026-07-14) that ``SetSpeed``/``GetSpeed`` are rejected outright
-    (``FAILED_PRECONDITION: "This parameter is not supported by the device."``)
-    while ``SetAcceleration``/``GetAcceleration`` work fine at any value. Since
-    acceleration is the parameter that actually matters for protecting a live
-    sample, a speed failure is logged and tolerated rather than raised — it must
-    NOT prevent acceleration from being applied. An acceleration failure, by
-    contrast, DOES raise: that is the one knob this function exists to guarantee.
+    Device state, held across channels: set once per run (``preflight``).
+    Applied INDEPENDENTLY on purpose: this gateway rejects
+    ``SetSpeed``/``GetSpeed`` (FAILED_PRECONDITION) but accepts acceleration,
+    so a speed failure is logged and tolerated; an acceleration failure raises
+    (DEV_NOTES "Stage speed / acceleration"). Do not re-couple without
+    re-testing on the hardware.
 
     Args:
-        speed_percent: Target XY travel speed, percent of max. ``None`` falls
-            back to ``STAGE_TRAVEL_SPEED_PERCENT`` (100 = full speed).
-        acceleration_percent: Target XY acceleration, percent of max. ``None``
-            falls back to ``STAGE_ACCELERATION_PERCENT`` (100 = full).
+        speed_percent: ``None`` = ``STAGE_TRAVEL_SPEED_PERCENT``.
+        acceleration_percent: ``None`` = ``STAGE_ACCELERATION_PERCENT``.
 
     Returns:
-        The read-back after setting, as
-        ``{"speed_x", "speed_y", "acceleration_x", "acceleration_y"}`` (percent).
-        ``speed_x``/``speed_y`` are ``None`` when the device rejected the speed
-        knob (see above) — that is NOT a failure of this function.
+        Read-back ``{"speed_x", "speed_y", "acceleration_x", "acceleration_y"}``
+        (percent); the speeds are ``None`` if the device rejected speed.
 
     Raises:
-        ValueError: If a percent is not a finite number in [0, 100] (bool is
+        ValueError: A percent is not a finite number in [0, 100] (bool is
             refused). Nothing is sent to the device.
     """
     logger = set_logging()
@@ -291,16 +204,13 @@ async def set_stage_motion(speed_percent: Optional[float] = None,
     async with open_zen_channel(config_path) as (channel, metadata):
         stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-        # Acceleration is the parameter this function guarantees — let a failure
-        # here propagate to the caller.
+        # Acceleration must succeed: let a failure propagate.
         await stage_service.set_acceleration(
             StageServiceSetAccelerationRequest(acceleration_x=accel, acceleration_y=accel)
         )
         ac = await stage_service.get_acceleration(StageServiceGetAccelerationRequest())
 
-        # Speed is a known, permanent limitation on this gateway/device, not a
-        # transient failure — tolerate it so it can never block acceleration
-        # (already applied above) from taking effect.
+        # Speed is rejected by this gateway: tolerate it.
         sp_x = sp_y = None
         try:
             await stage_service.set_speed(
@@ -314,8 +224,7 @@ async def set_stage_motion(speed_percent: Optional[float] = None,
                 f"proceeding with acceleration only."
             )
 
-        # Read back what is actually in effect, so the run log records the real
-        # values (insurance against a silent overwrite by ZEN / a tile scan).
+        # Log the read-back (ZEN / a tile scan can overwrite the values).
         logger.info(
             f"Stage motion set: speed=({sp_x}, {sp_y})%  "
             f"acceleration=({ac.x}, {ac.y})%"

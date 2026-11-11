@@ -21,13 +21,9 @@
 # to provide helpers for Software Autofocus (SWAF) operations.
 #################################################################
 
-"""
-Software autofocus (SWAF) over the ZEN gRPC ``ExperimentSwAutofocusService``.
+"""Software autofocus (``ExperimentSwAutofocusService``), experiment loaded by path.
 
-SWAF acquires a short z-stack and picks the plane with the best contrast; no
-DefiniteFocus hardware needed. The experiment is loaded BY PATH (like
-``MS_zenapi_experiment_methods.run_experiment_from_path``). The synchronous,
-raising entry point is ``MS_CD7_API_LoA.swaf_find_focus``.
+Sync, raising entry point: ``MS_CD7_API_LoA.swaf_find_focus``.
 """
 
 import asyncio
@@ -61,10 +57,9 @@ async def run_software_autofocus(
     """Load a SWAF ``.czexp`` by path and run FindAutoFocus, with retries.
 
     Args:
-        czexp_path: The SWAF ``.czexp`` file.
         timeout: Seconds ZEN may spend on one search.
-        max_retries: Attempts including the first. A gRPC error is retried
-            after 3 s, 6 s, … (``SWAF_RETRY_BACKOFF_S``).
+        max_retries: Attempts including the first; a gRPC error is retried
+            after n x ``SWAF_RETRY_BACKOFF_S``.
 
     Returns:
         ``(focus_um, attempts)``; *focus_um* is None if every attempt failed.

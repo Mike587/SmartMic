@@ -13,13 +13,11 @@
 #################################################################
 
 """
-MS_czexp_editor.py  —  read and modify ZEN .czexp experiment files.
+Read and modify ZEN .czexp experiment files.
 
-Pure stdlib (xml.etree) plus ``MS_limits`` — no ZEN API, no extra dependency.  Generic helpers for
-any project that needs to customise an experiment per target (position, z-stack,
-scan crop) and then run the result via the LoA's run_experiment_from_path.
-
-A .czexp is a ZEN HardwareExperiment XML.  The fields this module edits:
+Stdlib (xml.etree) plus ``MS_limits``; no ZEN API. Customise an experiment per
+target (position, z-stack, scan crop), then run it with the LoA's
+run_experiment_from_path. Fields edited in the HardwareExperiment XML:
 
   POSITION   SingleTileRegion "P1"  → <X> <Y> <Z>          (stage coords in µm)
   Z-STACK    ZStackSetup            → <First>/<Last>/<Interval> <Value>
@@ -32,34 +30,22 @@ A .czexp is a ZEN HardwareExperiment XML.  The fields this module edits:
   SCAN SPEED Detector "MTBLSMImagingDevice" → <IsMaxScanSpeedSet>
   RUN MODE   HardwareExperiment     → <RunMode>
 
-Crop: Zoom sets the field of view (FOV); FrameSize sets the sampling within it.
-Two modes (see fit_lsm_crop):
-  * constant pixel size  → FrameSize = round(FOV / base_pixel), SamplingMode left
-                           as-is (Nyquist as in the base).
-  * fixed frame size     → FrameSize forced (e.g. 512² fast preview); Sampling is
-                           set to match AND SamplingMode is switched to "User".
+ZEN gotchas (DEV_NOTES "Positioning an acquisition at a target XY(Z)"):
+  * <FocusZStackMode>, NOT <IsCenterMode>, decides how ZEN reads First/Last:
+      CurrentZ → OFFSETS from the focus at the position (the region <Z>);
+      FixedZ   → ABSOLUTE Z, also in CENTER mode; the region <Z> does not
+                 shift the stack.
+    Pass expect_mode= to set_zstack_range so a relative range is never
+    written into a FixedZ file or vice versa (DEV_NOTES "FocusZStackMode,
+    not IsCenterMode").
+  * Frame size is DERIVED from FOV × Sampling and recomputed on load under
+    SamplingMode=SR; a manual frame needs SamplingMode=User + matching Sampling.
+  * Tiles on with no tile region: ZEN refuses to start (require_runnable_tiles).
+    A focus strategy can run a search (DF/SWAF) even when the caller sets Z
+    (require_no_focus_search).
+  * Run generated files BY PATH (run_experiment_from_path), not import-then-run.
 
-ZEN gotchas these helpers handle (all learned against the live system):
-  * <FocusZStackMode> (in the focus strategy), NOT <IsCenterMode>, decides how
-    ZEN reads the z-stack First/Last (Marc_SM_003, 2026-11-02):
-      CurrentZ → First/Last are OFFSETS from the focus at the position
-                 (the tile-region <Z> when there is a used region);
-      FixedZ   → First/Last are ABSOLUTE Z, also in CENTER mode; the region
-                 <Z> does not shift the stack.
-    Read it with get_focus_z_stack_mode; pass expect_mode= to set_zstack_range
-    so a relative range is never written into a FixedZ file (that ran ~2.9 mm
-    below the sample) or vice versa.
-  * Frame size is DERIVED from FOV × Sampling and is recomputed on load under
-    SamplingMode=SR; forcing a manual frame requires SamplingMode=User + a
-    matching Sampling value (this is how the FAZ experiment keeps its 512²).
-  * Tiles switched on with no tile region: ZEN refuses to start the run
-    ("Failed to start experiment", Marc_SM_003) — require_runnable_tiles.
-    A focus strategy can run a search (DF/SWAF) even if the caller sets Z
-    itself — require_no_focus_search.
-  * Generated files are run via ExperimentService.Load BY PATH (see the LoA's
-    run_experiment_from_path) — load, do NOT import-then-run.
-
-Always give a generated file a unique name (ZEN caches by name on re-import) and
+Give a generated file a unique name (ZEN caches by name on re-import) and
 verify it once on the scope before trusting a batch run.
 
 CLI:
@@ -108,10 +94,9 @@ def load_czexp(path: PathLike) -> Tuple[ET.ElementTree, ET.Element]:
 
 
 def save_czexp(tree: ET.ElementTree, path: PathLike) -> Path:
-    """Write a .czexp file as UTF-8 with BOM + XML declaration (ZEN style).
+    """Write a .czexp as UTF-8 with BOM + XML declaration (ZEN style).
 
-    The file is written to ``<name>.tmp`` and then moved into place, so a crash
-    during the write never leaves half an experiment under the final name.
+    Atomic (via ``<name>.tmp``): a crash never leaves half an experiment.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,10 +138,8 @@ def _require(elem: ET.Element, tag: str) -> ET.Element:
 def _iter_own(root: ET.Element, tag: str) -> List[ET.Element]:
     """root.iter(tag), minus elements inside an embedded <Experiment>.
 
-    A software-autofocus strategy carries its own complete experiment
-    (FocusSetup/SoftwareAutofocus/Extensions/Extension/Experiment/...) with its
-    own FocusSetup and ZStackSetup; those describe the autofocus run, not this
-    experiment's acquisition.
+    A software-autofocus strategy carries its own experiment (with its own
+    FocusSetup, ZStackSetup, …); that is not this experiment's acquisition.
     """
     embedded = set()
     for exp in root.iter("Experiment"):
@@ -168,8 +151,7 @@ def _iter_own(root: ET.Element, tag: str) -> List[ET.Element]:
 def find_lsm_detector(root: ET.Element) -> ET.Element:
     """Return the experiment's own <Detector Id='MTBLSMImagingDevice'> element.
 
-    All locators in this section ignore the copy inside a software-autofocus
-    sub-experiment (see _iter_own).
+    All locators here ignore a software-autofocus sub-experiment (_iter_own).
     """
     for det in _iter_own(root, "Detector"):
         if det.get("Id") == LSM_DETECTOR_ID:
@@ -185,17 +167,13 @@ def find_tile_regions(root: ET.Element) -> List[ET.Element]:
 def find_stitch_regions(root: ET.Element) -> List[ET.Element]:
     """Return all <TileRegion> elements (multi-tile / stitch regions).
 
-    A stitch region is positioned by its <CenterPosition> (µm) and sized by
-    <ContourSize> / <Columns> / <Rows>, unlike a SingleTileRegion (<X>/<Y>).
+    Positioned by <CenterPosition> (µm), unlike a SingleTileRegion (<X>/<Y>).
     """
     return _iter_own(root, "TileRegion")
 
 
 def find_zstack_setup(root: ET.Element) -> ET.Element:
-    """Return the <ZStackSetup> element that defines First/Last/Interval.
-
-    A software-autofocus sub-experiment's own ZStackSetup is never returned.
-    """
+    """Return the experiment's own <ZStackSetup> with First/Last/Interval."""
     for zs in _iter_own(root, "ZStackSetup"):
         if zs.find("First") is not None and zs.find("Last") is not None:
             return zs
@@ -210,14 +188,10 @@ def find_processing_steps(root: ET.Element) -> List[ET.Element]:
 def is_stitching_configured(root: ET.Element) -> bool:
     """False only if an ACTIVE remote-processing step is the empty placeholder.
 
-    A stitch experiment saved with an active but unconfigured step
-    (``<ProcessingStep Id="NULL"/>`` and no children) runs in the ZEN UI — ZEN
-    fills the defaults on open — but the API run aborts ("experiment not valid /
-    failed to start").  Returns True when:
-      * there is no <ExperimentRemoteProcessingSetup>, or
-      * it is IsActivated="false" (deactivated → nothing runs/validates), or
-      * a real step (Id != "NULL", or with an Algorithm/FunctionParameters
-        child) is present.
+    An active ``<ProcessingStep Id="NULL"/>`` without children runs in the ZEN
+    UI but the API run aborts ("experiment not valid / failed to start").
+    True when there is no active <ExperimentRemoteProcessingSetup>, or it has
+    a real step (Id != "NULL", or an Algorithm/FunctionParameters child).
     """
     setup = next(iter(_iter_own(root, "ExperimentRemoteProcessingSetup")), None)
     if setup is None:
@@ -236,13 +210,10 @@ def is_stitching_configured(root: ET.Element) -> bool:
 
 
 def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
-    """Return the active focus strategy as a dict, or None if there is none.
+    """Return the active focus strategy, or None if there is none.
 
-    The strategy lives in <FocusSetup><FocusStrategy> as <Method>, <SearchAction>
-    and <SurfaceMode> (e.g. Method=FollowAction, SearchAction=DefiniteFocusFindSurface).
-    Returns {"method", "search_action", "surface_mode"} when a real strategy is
-    configured, else None.  See has_focus_strategy for the "what counts as a
-    strategy" rules.
+    Returns {"method", "search_action", "surface_mode"} from
+    <FocusSetup><FocusStrategy>. See has_focus_strategy for what counts.
     """
     setup = next(iter(_iter_own(root, "FocusSetup")), None)
     if setup is None or (setup.get("IsActivated") or "true").lower() == "false":
@@ -262,14 +233,10 @@ def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
 def has_focus_strategy(root: ET.Element) -> bool:
     """True if an ACTIVE focus strategy is configured in the experiment.
 
-    ZEN can silently (re)add a focus strategy when an experiment is re-opened or
-    re-saved.  Some pipeline stages forbid this — e.g. HD_Nuclei_from_slide's
-    find_nuclei / image_nuclei set Z explicitly and MUST run with no strategy.
-    The strategy is effectively OFF when its <Method>, <SearchAction> and
-    <SurfaceMode> are all "None" (the ZEN "no strategy" state), even though
-    <FocusStrategy> keeps IsActivated="true".  Returns True when the setup is
-    activated and any of those three names a real action.  Check-only: use it to
-    assert/abort before running a generated .czexp.
+    ZEN can silently (re)add a strategy when an experiment is re-saved; check
+    before running a file that sets Z itself. The strategy is OFF when
+    <Method>, <SearchAction> and <SurfaceMode> are all "None", even though
+    <FocusStrategy> keeps IsActivated="true".
     """
     return get_focus_strategy(root) is not None
 
@@ -282,15 +249,11 @@ def require_no_focus_search(root: ET.Element, path: Optional[PathLike] = None,
                             reason: Optional[str] = None) -> Optional[Dict[str, str]]:
     """Raise if the experiment's focus strategy runs a focus SEARCH.
 
-    For runs that set Z themselves (e.g. Marc_SM_003: DefiniteFocus and SWAF
-    don't work on U-bottom plates; focus comes from image sweeps).  A strategy
-    WITHOUT a search action is allowed: e.g. Method=FollowSurface with
-    SearchAction=None only uses the stored Z of each region, which is how a
-    re-aimed OV gets its focus Z.  Stricter than "no strategy at all" — use
-    has_focus_strategy for that.
+    For runs that set Z themselves. A strategy WITHOUT a search action is
+    allowed (e.g. FollowSurface + SearchAction=None uses each region's stored
+    Z); has_focus_strategy refuses any strategy.
 
-    reason: optional text appended to the error (why this run can't search).
-    Returns the strategy dict (see get_focus_strategy) or None.
+    reason: text appended to the error. Returns the strategy dict or None.
 
     Raises:
         ValueError: An active strategy names a SearchAction (DefiniteFocus,
@@ -307,10 +270,7 @@ def require_no_focus_search(root: ET.Element, path: Optional[PathLike] = None,
 
 
 def tiles_activated(root: ET.Element) -> bool:
-    """True if the experiment's own <TilesSetup> is switched on (Tiles in ZEN).
-
-    A software-autofocus sub-experiment's TilesSetup is ignored.
-    """
+    """True if the experiment's own <TilesSetup> is switched on (Tiles in ZEN)."""
     tiles = next(iter(_iter_own(root, "TilesSetup")), None)
     return tiles is not None and (tiles.get("IsActivated") or "false").lower() == "true"
 
@@ -318,13 +278,10 @@ def tiles_activated(root: ET.Element) -> bool:
 def require_runnable_tiles(root: ET.Element, path: Optional[PathLike] = None) -> None:
     """Raise if Tiles is switched on but the experiment has no tile region.
 
-    ZEN refuses to start such an experiment ("ABORTED: Failed to start
-    experiment", Marc_SM_003 shakedown 2026-11-02: a final LSM base saved with
-    Tiles on and no region).  With Tiles OFF the experiment acquires at the
-    current stage position — the usual set-up for a base the caller positions
-    by moving the stage first.  Any <TileRegion> or <SingleTileRegion> counts
-    (IsUsedForAcquisition is not checked).  Regions inside a software-autofocus
-    sub-experiment are ignored.
+    ZEN refuses to start such an experiment ("Failed to start experiment").
+    With Tiles OFF it acquires at the current stage position. Any
+    <TileRegion> or <SingleTileRegion> counts (IsUsedForAcquisition is not
+    checked).
 
     Raises:
         ValueError: Tiles on, no region.
@@ -362,17 +319,11 @@ def get_focus_z_stack_mode(root: ET.Element) -> Optional[str]:
     """The experiment's <FocusZStackMode>: "CurrentZ", "FixedZ", or None.
 
     THIS decides how ZEN reads the z-stack First/Last, not <IsCenterMode>
-    (found in Marc_SM_003, 2026-11-02; DEV_NOTES "FocusZStackMode, not
-    IsCenterMode"):
-      CurrentZ → First/Last are offsets from the focus at the position.
-      FixedZ   → First/Last are absolute Z, also when IsCenterMode is true.
-                 A FixedZ + CENTER-mode stack given relative ±200 µm ran at
-                 absolute Z −200 … +200 µm.
-    The value is returned as written; check it against FOCUS_Z_STACK_MODES
-    (or use require_focus_z_stack_mode) before relying on it.
-
-    The copy inside a software-autofocus sub-experiment is ignored.  Returns
-    None when the field is absent (no focus strategy saved).
+    (DEV_NOTES "FocusZStackMode, not IsCenterMode"):
+      CurrentZ → offsets from the focus at the position;
+      FixedZ   → absolute Z, also when IsCenterMode is true.
+    Returned as written: check it against FOCUS_Z_STACK_MODES (or use
+    require_focus_z_stack_mode) before relying on it. None when absent.
 
     Raises:
         ValueError: The experiment's own acquisition blocks disagree.
@@ -389,8 +340,8 @@ def require_focus_z_stack_mode(root: ET.Element, expected: str,
     """Raise unless the experiment's FocusZStackMode is ``expected``.
 
     expected: "CurrentZ" (First/Last relative) or "FixedZ" (absolute).
-    Returns the mode.  Use before writing a z-stack range, so that offsets are
-    never written into a FixedZ file (or absolute Z into a CurrentZ file).
+    Use before writing a z-stack range, so offsets never go into a FixedZ
+    file (or absolute Z into a CurrentZ file). Returns the mode.
 
     Raises:
         ValueError: ``expected`` is not a known mode, or the file's mode is
@@ -413,19 +364,16 @@ def require_focus_z_stack_mode(root: ET.Element, expected: str,
 def is_zstack_center_mode(root: ET.Element) -> bool:
     """True if the z-stack is in CENTER mode (<IsCenterMode>true</IsCenterMode>).
 
-    Only says how the stack is set up in the ZEN UI (centre ± range vs
-    first/last); whether First/Last are relative or absolute is decided by
-    get_focus_z_stack_mode.
+    UI set-up only; relative vs absolute is get_focus_z_stack_mode.
     """
     flag = find_zstack_setup(root).find("IsCenterMode")
     return flag is not None and (flag.text or "").strip().lower() == "true"
 
 
 def _used_stitch_regions(root: ET.Element) -> List[Tuple[str, ET.Element]]:
-    """[(name, <TileRegion>)] of the multi-tile regions used for acquisition.
+    """[(name, <TileRegion>)] of the used multi-tile regions, in file order.
 
-    File order. IsUsedForAcquisition=false is skipped; a missing flag counts as
-    used (as in load_positions_from_czexp).
+    A missing IsUsedForAcquisition flag counts as used.
 
     Raises:
         ValueError: A used region without a Name, or two with the same Name.
@@ -444,12 +392,10 @@ def _used_stitch_regions(root: ET.Element) -> List[Tuple[str, ET.Element]]:
 
 
 def get_tile_region_centers(root: ET.Element) -> Dict[str, Tuple[float, float]]:
-    """{region name: (x_m, y_m)} of the multi-tile regions used for acquisition.
+    """{region name: (x_m, y_m)} of the used multi-tile regions, in file order.
 
-    Reads each <TileRegion>'s <CenterPosition> (µm in the file) and returns
-    metres, in file order. Regions with IsUsedForAcquisition=false are skipped;
-    a missing flag counts as used (as in load_positions_from_czexp). E.g. an OV
-    experiment with one tile region per well → the well centres.
+    <CenterPosition> is µm in the file, returned in metres. A missing
+    IsUsedForAcquisition flag counts as used.
 
     Raises:
         ValueError: A used region without a Name or CenterPosition, or two used
@@ -463,18 +409,13 @@ def get_tile_region_centers(root: ET.Element) -> Dict[str, Tuple[float, float]]:
 
 
 def get_tile_region_shape_ids(root: ET.Element) -> Dict[str, str]:
-    """{region name: TemplateShapeId} of the multi-tile regions used for acquisition.
+    """{region name: TemplateShapeId} of the used multi-tile regions.
 
-    <TemplateShapeId> is ZEN's link from a region to its sample-carrier
-    container (well): "row-column", both 1-based, e.g. B2 → "2-2", H12 →
-    "8-12" (seen on 96- and 384-well carriers). Read it from an experiment
-    ZEN laid out with a region per well (e.g. a whole-plate OV) instead of
-    working it out from the well name: the name is only a label, so this
-    stays right for any naming (rows past Z on a 1536-well plate) and for
-    carriers whose row/column labels are switched or inverted.
-
-    Same region selection as get_tile_region_centers (used regions, file
-    order). A region without a TemplateShapeId maps to None.
+    <TemplateShapeId> links a region to its carrier container (well):
+    "row-column", 1-based, e.g. B2 → "2-2". Read it from an experiment ZEN
+    laid out with a region per well; do not compute it from the well name
+    (DEV_NOTES "Re-aiming a tile region at another well"). A region without
+    one maps to None.
 
     Raises:
         ValueError: A used region without a Name, or two with the same Name.
@@ -525,10 +466,10 @@ def summarize(root: ET.Element) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _require_position(x_m: float, y_m: float, z_m: Optional[float]) -> None:
-    """Raise ValueError unless X/Y (and Z, if given) are finite and in range.
+    """Raise ValueError unless X/Y (and Z, if given; metres) are within ``MS_limits``.
 
-    ZEN drives the stage to what is in the file, so a position gets the same
-    check here as a direct move (``MS_limits``). Call it before the first write.
+    ZEN drives the stage to what is in the file: same check as a direct move.
+    Call it before the first write.
     """
     MS_limits.require_xy_position(x_m, y_m)
     if z_m is not None:
@@ -537,15 +478,13 @@ def _require_position(x_m: float, y_m: float, z_m: Optional[float]) -> None:
 
 def set_position(root: ET.Element, x_m: float, y_m: float, z_m: Optional[float] = None,
                  region_index: int = 0) -> Tuple[float, float, Optional[float]]:
-    """Set a tile region's stage position.  X/Y/Z are written in µm (× 1e6).
+    """Set a SingleTileRegion's position: metres in, written in µm (× 1e6).
 
-    What the region <Z> does to a z-stack depends on <FocusZStackMode>
-    (get_focus_z_stack_mode), not on CENTER mode:
-      CurrentZ → First/Last are offsets from the focus at the position, so
-                 <Z> must be the target centre Z (not the base template's
-                 placeholder);
-      FixedZ   → First/Last are absolute Z; <Z> does not move the stack —
-                 write the absolute range with set_zstack_range.
+    Per <FocusZStackMode> (not CENTER mode):
+      CurrentZ → First/Last are offsets from <Z>, so <Z> must be the target
+                 centre Z (not the base's placeholder);
+      FixedZ   → <Z> does not move the stack; write the absolute range with
+                 set_zstack_range.
 
     Raises:
         ValueError: No region, or a position that is not finite or not within
@@ -567,19 +506,14 @@ def add_single_tile_region(root: ET.Element, x_m: float, y_m: float,
                            z_m: Optional[float] = None, name: str = "P1",
                            region_id: str = "639171104957762277",
                            ) -> Tuple[float, float, Optional[float]]:
-    """Ensure a positioned <SingleTileRegion> exists; set its X/Y/Z (µm).
+    """Ensure a positioned <SingleTileRegion> exists; set its X/Y/Z (metres → µm).
 
-    For an experiment whose <SingleTileRegions> container is empty (e.g. a FAZ
-    z-stack authored without a position), this CREATES the region so the
-    experiment can be positioned in holder/sample coordinates and run by path —
-    ZEN then applies the carrier calibration, exactly like the OV/DV (a raw
-    StageService move would be in machine coords and miss on a calibrated plate).
-    If a SingleTileRegion already exists it is updated in place.
+    Creates the region in an empty <SingleTileRegions> container, else updates
+    the existing one. A region is in carrier coordinates, so ZEN applies the
+    carrier calibration (a raw StageService move is in machine coordinates).
 
-    With FocusZStackMode=CurrentZ the <Z> is the reference the relative
-    First/Last are added to, so pass the target centre Z (e.g. the overview
-    focus); with FixedZ the stack is absolute and <Z> does not move it (see
-    set_position).  Leave z_m=None to write 0.
+    CurrentZ: pass the target centre Z (First/Last are offsets from <Z>);
+    FixedZ: <Z> does not move the stack (see set_position). z_m=None writes 0.
 
     Raises:
         ValueError: No container, or a position that is not finite or not
@@ -605,9 +539,8 @@ def add_single_tile_region(root: ET.Element, x_m: float, y_m: float,
 def set_tile_region_center(root: ET.Element, x_m: float, y_m: float,
                            z_m: Optional[float] = None,
                            region_index: int = 0) -> Tuple[float, float]:
-    """Set a multi-tile (stitch) TileRegion's CenterPosition (written in µm).
+    """Set a stitch TileRegion's CenterPosition: metres in, written in µm.
 
-    Used to re-aim a stitch experiment (e.g. the OV) at a new well centre.
     Optionally sets the region <Z>; leave z_m=None if the experiment runs its
     own autofocus.
 
@@ -634,19 +567,11 @@ def retarget_tile_region(root: ET.Element, name: str, x_m: float, y_m: float,
                          region_index: int = 0) -> Dict[str, Optional[str]]:
     """Re-aim a tile region authored for one well at another well.
 
-    A region is tied to its well three ways, and all three are rewritten:
-      * <CenterPosition> (and <Z> if z_m is given), via set_tile_region_center;
-      * its Name, which becomes the CZI scene name;
-      * its <TemplateShapeId> (the container link, "row-column"), when the
-        region has one. Take shape_id from get_tile_region_shape_ids on an
-        experiment with a region per well, not from the well name.
-    The tiling (columns, rows, contour) is left as authored.
-
-    Why the container link too (Marc_SM_003, 2026-11-02): with ZEN's container
-    adaptation on (<IsContainerAdaptionEnabled>true), a region still linked
-    to the authored well might be moved back there by ZEN. Not observed —
-    the re-aimed regions were always rewritten — but a stale link is refused
-    rather than risked.
+    Rewrites <CenterPosition> (and <Z> if z_m is given; metres → µm), the Name
+    (the CZI scene name) and, if present, <TemplateShapeId> (take shape_id from
+    get_tile_region_shape_ids). The tiling is left as authored. A stale
+    container link is refused: ZEN's container adaptation might move the
+    region back (DEV_NOTES "Re-aiming a tile region at another well").
 
     Returns {"authored_name", "authored_shape_id"} (the values replaced).
 
@@ -677,11 +602,9 @@ def retarget_tile_region(root: ET.Element, name: str, x_m: float, y_m: float,
 def clear_single_tile_regions(root: ET.Element) -> int:
     """Remove standalone single-tile regions, leaving only <TileRegion> stitches.
 
-    A stitch experiment (e.g. the OV) may also carry stray <SingleTileRegion> /
-    <SingleTileRegionArray> entries.  ZEN acquires each as an EXTRA scene, so a
-    re-aimed OV would image both the intended well AND those leftover positions,
-    producing a multi-scene mosaic that breaks single-well analysis.  Removing
-    them keeps the OV to the one re-aimed TileRegion.  Returns the count removed.
+    ZEN acquires each stray <SingleTileRegion> / <SingleTileRegionArray> as an
+    EXTRA scene, so a re-aimed stitch would also image leftover positions.
+    Returns the count removed.
     """
     removed = 0
     for container_tag in ("SingleTileRegions", "SingleTileRegionArrays"):
@@ -697,14 +620,13 @@ def set_zstack_range(root: ET.Element, first_m: float, last_m: float,
                      expect_mode: Optional[str] = None) -> Tuple[float, float]:
     """Set the z-stack First/Last (metres); optionally the Interval (step).
 
-    How ZEN reads First/Last is decided by the file's <FocusZStackMode>
-    (get_focus_z_stack_mode), NOT by <IsCenterMode>:
-      "CurrentZ" → offsets from the focus at the position (e.g. −h … +h);
-      "FixedZ"   → absolute Z (e.g. z0 − h … z0 + h), also in CENTER mode.
-    Pass ``expect_mode`` ("CurrentZ" or "FixedZ") for the kind of range you
-    are writing; a file in the other (or no/unknown) mode is refused before
-    anything is written.  ``expect_mode=None`` writes without checking — kept
-    for existing callers; new code should always pass it.
+    The file stores METRES here (no µm conversion). <FocusZStackMode>, NOT
+    <IsCenterMode>, decides how ZEN reads them:
+      "CurrentZ" → offsets from the focus at the position (−h … +h);
+      "FixedZ"   → absolute Z (z0 − h … z0 + h), also in CENTER mode.
+    Pass ``expect_mode`` for the kind of range you write; a file in another
+    (or no/unknown) mode is refused before anything is written.
+    ``expect_mode=None`` writes WITHOUT checking: always pass it.
 
     Raises:
         ValueError: ``expect_mode`` is given and the file does not match it.
@@ -725,27 +647,20 @@ def set_zstack_range(root: ET.Element, first_m: float, last_m: float,
 
 def fit_lsm_crop(root: ET.Element, target_fov_um: float,
                  frame_size_override: Optional[int] = None) -> Dict[str, Any]:
-    """Resize the LSM scan field to target_fov_um (set via Zoom).
+    """Resize the LSM scan field (Zoom) to target_fov_um, re-centred.
 
-    Zoom sets the field of view; the frame size sets the sampling within it:
-      frame_size_override=None → constant pixel size (frame = fov / base pixel,
-                                  Nyquist as in the base experiment).
-      frame_size_override=N    → fixed N×N scan frame (pixel = fov / N), e.g. a
-                                  fast 512² preview that is NOT Nyquist-sampled.
+      frame_size_override=None → constant pixel size (Nyquist as in the base).
+      frame_size_override=N    → fixed N×N frame, NOT Nyquist-sampled;
+                                  SamplingMode is switched to "User".
 
-    Sets Zoom, FrameSize and the dependent FOV / Frame / ImageFrame fields,
-    re-centred.  Returns a dict of applied values. Two keys flag a result that
-    is not what was asked for (nothing is refused; check them):
-      frame_clamped   → the frame was limited to FRAME_SIZE_MIN…FRAME_SIZE_MAX
+    Returns a dict of applied values. Nothing is refused; check these keys:
+      frame_clamped   → frame limited to FRAME_SIZE_MIN…FRAME_SIZE_MAX
                         (frame_size_requested is the value before the limit);
-      fov_exceeds_max → target_fov_um is larger than ScaledMaxImageSize, the
-                        largest field the scanner has. What ZEN then does is
-                        not known: do not trust actual_fov_um.
+      fov_exceeds_max → target_fov_um > ScaledMaxImageSize; ZEN's behaviour is
+                        unknown, do not trust actual_fov_um.
 
     Raises:
-        ValueError: If ``target_fov_um`` is not positive (e.g. a degenerate
-            size from upstream analysis) — the FOV is a divisor below, so a
-            zero/negative value would otherwise crash with ZeroDivisionError.
+        ValueError: If ``target_fov_um`` is not positive.
     """
     if target_fov_um <= 0:
         raise ValueError(f"target_fov_um must be positive, got {target_fov_um}")
@@ -768,13 +683,11 @@ def fit_lsm_crop(root: ET.Element, target_fov_um: float,
         requested_frame = int(round(nyquist_frame))
     new_frame = max(FRAME_SIZE_MIN, min(FRAME_SIZE_MAX, requested_frame))
 
-    # In ZEN the frame size is DERIVED from FOV × Sampling and is re-computed on
-    # load — so to make a frame size stick we must set Sampling to match it.
-    # (frame ∝ sampling at fixed FOV; constant-pixel mode leaves it ≈ base.)
+    # ZEN re-derives the frame from FOV × Sampling on load: set Sampling to
+    # match so the frame sticks (frame ∝ sampling at fixed FOV).
     new_sampling = base_sampling * new_frame / nyquist_frame
 
-    # Zoom sets the FOV (independent of frame); pixel size follows from frame.
-    # Self-calibrated zoom: preserve (zoom × FOV) from the base file.
+    # Self-calibrated zoom: keep (zoom × FOV) of the base file.
     zoom_const = base_zoom_x * base_rect_x
     new_zoom = zoom_const / target_fov_um
     pixel_um = target_fov_um / new_frame
@@ -783,9 +696,8 @@ def fit_lsm_crop(root: ET.Element, target_fov_um: float,
     _require(det, "Zoom").text = f"{_fmt_float(new_zoom)},{_fmt_float(new_zoom)}"
     _require(det, "Sampling").text = _fmt_float(new_sampling)
 
-    # SamplingMode is the master control: "SR" makes ZEN auto-derive the frame
-    # (Nyquist) and ignore our FrameSize; "User" honours the manual frame.
-    # Only switch to User when we force a frame size (e.g. fast 512² test).
+    # "SR" makes ZEN ignore our FrameSize; "User" honours it. Only switch when
+    # a frame size is forced.
     sampling_mode = None
     if frame_size_override is not None:
         sm = det.find("SamplingMode")
@@ -802,9 +714,8 @@ def fit_lsm_crop(root: ET.Element, target_fov_um: float,
         rect.text = (f"{_fmt_float(rect_off)},{_fmt_float(rect_off)},"
                      f"{_fmt_float(target_fov_um)},{_fmt_float(target_fov_um)}")
 
-    # Frame / ImageFrame = the px scan ROI centred in the full scan field.
-    # Full field in px = ScaledMaxImageSize / pixel_um; centred offset follows.
-    # (Matches ZEN: e.g. (397.96/0.405 − 512)/2 ≈ 235 for a 512² @ 207.5 µm FOV.)
+    # Frame / ImageFrame = the px scan ROI centred in the full field
+    # (ScaledMaxImageSize / pixel_um); matches ZEN's own values.
     frame_off = (scaled_max_x / pixel_um - new_frame) / 2.0
     for tag in ("Frame", "ImageFrame"):
         el = det.find(tag)
@@ -828,13 +739,10 @@ def fit_lsm_crop(root: ET.Element, target_fov_um: float,
 
 
 def set_run_mode_lock(root: ET.Element) -> Optional[str]:
-    """Remove perform-time optimize/validate flags from <RunMode>.
+    """Remove the Optimize/ValidateAndAdaptBeforePerform flags from <RunMode>.
 
-    The base experiment runs with OptimizeBeforePerformEnabled and
-    ValidateAndAdaptBeforePerformEnabled, which make ZEN re-derive acquisition
-    settings (notably the frame size) at run time — overriding our manual
-    FrameSize/Sampling.  Stripping them makes ZEN run the experiment as authored.
-    Returns the new RunMode string (or None if absent).
+    They make ZEN re-derive settings (notably the frame size) at run time.
+    Returns the new RunMode string, or None if absent.
     """
     rm = root.find("RunMode")
     if rm is None or not rm.text:
@@ -846,10 +754,7 @@ def set_run_mode_lock(root: ET.Element) -> Optional[str]:
 
 
 def set_lsm_scan_speed_max(root: ET.Element) -> bool:
-    """Use the maximum LSM scan speed (fastest scan, lowest frame time).
-
-    Sets IsMaxScanSpeedSet=true so ZEN clamps to the hardware max on load.
-    """
+    """Set IsMaxScanSpeedSet=true (ZEN uses the hardware max on load); False if absent."""
     det = find_lsm_detector(root)
     el = det.find("IsMaxScanSpeedSet")
     if el is not None:
@@ -859,12 +764,9 @@ def set_lsm_scan_speed_max(root: ET.Element) -> bool:
 
 
 def set_lsm_sampling_mode_user(root: ET.Element) -> Optional[str]:
-    """Force SamplingMode=User on the LSM detector so the authored frame survives.
+    """Force SamplingMode=User so ZEN keeps the authored FrameSize (SR ignores it).
 
-    With SamplingMode=SR, ZEN auto-derives the XY frame to Nyquist on load/run and
-    IGNORES the authored FrameSize.  Switching to "User" makes ZEN honour the frame
-    exactly as authored — no automatic XY rescaling.  Returns the frame size string
-    that is now locked in (for logging), or None if there is no SamplingMode field.
+    Returns the locked frame size string, or None if there is no SamplingMode.
     """
     det = find_lsm_detector(root)
     sm = det.find("SamplingMode")
@@ -890,38 +792,29 @@ def fit_lsm_stack_to_box(base_path: PathLike, out_path: PathLike, center_m: XYZ,
     """Write a copy of an LSM z-stack experiment that images one object's box.
 
     center_m = (x, y, z), size_m = (sx, sy, sz): the object's box, metres.
-    The copy gets:
-      * a z-stack over center z ± (sz/2 + z_margin_m), written the way the
-        base's FocusZStackMode says ZEN reads it (offsets for CurrentZ,
-        absolute Z for FixedZ);
-      * a square LSM field of view of max(sx, sy) + 2·xy_margin_m
-        (fit_lsm_crop: constant pixel size, or frame_size×frame_size);
-      * the region X/Y/Z set to the centre, IF the base has a position
-        region. A base without one acquires at the current stage position:
-        the caller moves there first (see "z_reference" below).
+    The copy gets a z-stack over z ± (sz/2 + z_margin_m), written per the
+    base's FocusZStackMode; a square FOV of max(sx, sy) + 2·xy_margin_m
+    (fit_lsm_crop); and the region X/Y/Z set to the centre (µm in the file)
+    IF the base has a position region (else it acquires at the current stage
+    position: the caller moves there first).
 
-    expect_mode: "CurrentZ" or "FixedZ", the mode the caller has written its
-        Z handling for. A base in another (or no) mode is refused, so a range
-        is never written in the wrong kind of Z (DEV_NOTES "FocusZStackMode,
-        not IsCenterMode": relative ±200 µm in a FixedZ file ran at absolute
-        −200 … +200 µm).
-    sampling_mode_user: set SamplingMode=User so ZEN keeps the fitted frame
-        (default; Marc_SM_003, HD_Nuclei). With False, only a forced
-        frame_size switches to User (fit_lsm_crop).
+    expect_mode: "CurrentZ" or "FixedZ", the mode the caller's Z handling is
+        written for. A base in another (or no) mode is refused (DEV_NOTES
+        "FocusZStackMode, not IsCenterMode").
+    sampling_mode_user: SamplingMode=User so ZEN keeps the fitted frame. With
+        False, only a forced frame_size switches to User.
     max_scan_speed / lock_run_mode: set_lsm_scan_speed_max / set_run_mode_lock.
     forbid_focus_search: True, or a reason string, refuses a base whose focus
-        strategy runs a search (require_no_focus_search). Tiles on without a
-        region is always refused (require_runnable_tiles).
+        strategy runs a search. Tiles on without a region is always refused.
 
     The caller still owns the safety of the Z it asks for (its Z guard /
     ceiling): this only writes the requested range.
 
     Returns a dict: out_path, focus_z_stack_mode, positioned_by_region,
-    z_reference ("absolute" | "region_z" | "current_z": what the z-stack is
-    relative to; "current_z" means the caller must move Z to center z before
-    the run), first_m / last_m (as written), half_z_m, z_step_m, n_slices,
-    max_scan_speed, run_mode, plus fit_lsm_crop's values (actual_fov_um,
-    frame_size, zoom, pixel_um, …; sampling_mode as written).
+    z_reference ("absolute" | "region_z" | "current_z"; "current_z" means the
+    caller must move Z to center z before the run), first_m / last_m (as
+    written), half_z_m, z_step_m, n_slices, max_scan_speed, run_mode, plus
+    fit_lsm_crop's values.
 
     Raises:
         ValueError: mode mismatch, a refused base (see above), or a size that

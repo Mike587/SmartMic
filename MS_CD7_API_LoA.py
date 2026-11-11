@@ -15,19 +15,16 @@
 """
 MS_CD7_API_LoA.py  --  the synchronous entry point of the SmartMic library.
 
-A pipeline imports this module (``import MS_CD7_API_LoA as ms``) and calls plain
-functions. Each function wraps one or more async ZEN gRPC calls of the
-``MS_zenapi_*`` modules in ``asyncio.run``, and adds the checks and guards that
-the raw calls do not have.
+``import MS_CD7_API_LoA as ms``. Each function wraps async ``MS_zenapi_*`` calls
+in ``asyncio.run`` and adds the checks and guards the raw calls lack.
 
 Rules
 -----
-* Synchronous only. Each call makes its own event loop and its own gRPC
-  channel: do not call these functions from async code.
-* Lengths are METRES. The exceptions have the unit in a name or a key:
-  carrier thickness is µm (``thickness_um``).
-* A bad argument raises ``ValueError`` / ``TypeError`` before any hardware call.
-  The range checks are in ``MS_limits``.
+* Synchronous only (own event loop and gRPC channel per call): do not call
+  from async code.
+* Lengths are METRES, except where a name or key says so (``thickness_um``).
+* A bad argument raises ``ValueError`` / ``TypeError`` before any hardware call
+  (range checks in ``MS_limits``).
 * A call that gets no answer raises ``TimeoutError`` after 60 s (reads) or
   300 s (moves); an acquisition has no limit (``MS_zenapi_helpers``).
 * A failure RAISES (DEV_NOTES "Rule: a failure raises"). The one exception:
@@ -129,9 +126,7 @@ MOVE_RETRY_DELAY_S = 1.0
 DF_APPROACH_MARGIN_M = 100e-6       # adaptive start: this far below the last surface
 DF_MAX_CONSECUTIVE_FAILURES = 5     # failed searches in a row = hardware fault
 
-# Hardware limits and the checks that use them are in MS_limits (one module for
-# all layers). The names below are copies for callers of this module: to change
-# a limit, set it in MS_limits.
+# Re-exported from MS_limits; change limits there.
 from MS_limits import (  # noqa: E402,F401
     OBJECTIVE_MIN, OBJECTIVE_MAX, OPTOVAR_MIN, OPTOVAR_MAX,
     Z_POSITION_MIN, Z_POSITION_MAX,
@@ -142,8 +137,6 @@ from MS_limits import (  # noqa: E402,F401
 from MS_limits import validate_range as _validate_range  # noqa: E402,F401
 from MS_limits import require_valid as _require_valid    # noqa: E402
 
-# Default experiment output folder — single-sourced from MS_run_log
-# so the literal path lives in exactly one place.
 DEFAULT_EXPERIMENT_OUTPUT_FOLDER = MS_run_log.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
 
 
@@ -158,18 +151,13 @@ class CarrierBottom(TypedDict):
 def df_find_surface(max_retries: int = 3, start_z_m: Optional[float] = None,
                     store_focus: bool = False) -> float:
     """
-    Run DefiniteFocus FindSurface (with retries) and return the surface Z in metres.
+    Run DefiniteFocus FindSurface (with retries); return the Z-drive position in metres.
 
     Args:
-        max_retries: Maximum number of attempts.
-        start_z_m: Z in metres to start the search from. None: −300 µm (the
-            async default), which retracts the objective: never with the 50x
-            immersion objective (use DefiniteFocusTracker).
-        store_focus: Do StoreFocus after a successful search (for
-            df_recall_focus later).
-
-    Returns:
-        The Z-drive position after the search, in metres.
+        start_z_m: Search start Z (m). None: −300 µm, which retracts the
+            objective: never with the 50x immersion objective (use
+            DefiniteFocusTracker).
+        store_focus: StoreFocus after a success (for df_recall_focus).
 
     Raises:
         FocusSearchFailed: No surface found in max_retries attempts.
@@ -192,10 +180,8 @@ def df_recall_focus(max_retries: int = 3) -> float:
     """
     Run DefiniteFocus RecallFocus and return the Z in metres.
 
-    Needs a FindSurface with ``store_focus=True`` first. 20x / 50x: back to the
-    reflex + the stored offset (±0.15 µm). 5x: the reflex only (no offset is
-    stored). After an objective change it does a full FindSurface. DEV_NOTES
-    "What each DF RPC does".
+    Needs a FindSurface with ``store_focus=True`` first; after an objective
+    change it does a full FindSurface (DEV_NOTES "What each DF RPC does").
 
     Raises:
         FocusSearchFailed: All attempts failed.
@@ -207,20 +193,12 @@ def df_recall_focus(max_retries: int = 3) -> float:
 
 
 def get_current_z_position() -> float:
-    """
-    Get current z-drive position.
-
-    Returns:
-        Current Z position in meters
-    """
+    """Current Z-drive position in metres."""
     return asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
 
 
 class FocusSearchFailed(RuntimeError):
     """One focus search (DF FindSurface, DF RecallFocus or SWAF) found no focus.
-
-    Raised by df_find_surface, df_recall_focus and swaf_find_focus. A caller
-    can skip the position or stop.
 
     Attributes:
         method: "FindSurface", "RecallFocus" or "SWAF".
@@ -244,24 +222,19 @@ class DefiniteFocusFault(RuntimeError):
 class CarrierChanged(DefiniteFocusFault):
     """The carrier bottom that DF uses changed during the run, or is 0 (a load runs).
 
-    A subclass of DefiniteFocusFault, so a pipeline that stops on a DF fault
-    also stops here: a changed thickness or material moves the DF focus by
-    tens of µm on the dry objectives, and DF still reports quality 99
+    A changed bottom silently moves the DF focus on the dry objectives
     (DEV_NOTES "Dry objectives: DF finds the plate UNDERSIDE").
     """
 
 
-# Two thickness values that differ by less than this are the same (µm). ZEN
-# reports e.g. 176.17894736842106 over the API and 176179 nm in the DF log.
+# Thicknesses closer than this are equal (µm): API and DF log round differently.
 CARRIER_THICKNESS_TOL_UM = 0.5
 
 
 def carrier_bottom() -> CarrierBottom:
-    """The bottom of the active sample carrier, over the API (approximately 10 ms).
+    """The bottom of the active sample carrier, over the API (~10 ms).
 
-    Returns:
-        Dict with name, material, thickness_um and refractive_index. When the
-        thickness was measured at load, the value is the measured one.
+    thickness_um is the measured value if it was measured at load.
     """
     info = get_sample_carrier_info()
     return {"name": info["name"], "material": info["material"],
@@ -282,35 +255,23 @@ def _carrier_difference(a: CarrierBottom, b: CarrierBottom) -> Optional[str]:
 
 
 def _df_bottom_as_carrier(df: MS_zen_logs.DfBottom, name: str) -> CarrierBottom:
-    """A zen_df_bottom() dict in the shape of carrier_bottom(), for _carrier_difference.
-
-    The DF log event has no carrier name, so the name of the API carrier is used.
-    """
+    """A zen_df_bottom() dict as a carrier_bottom() (the DF log has no name: use ``name``)."""
     return {"name": name, "material": df["material"], "thickness_um": df["thickness_um"]}
 
 
 def check_carrier_for_df(log: logging.Logger, expected_material: Optional[str] = None,
                          thickness_range_um: Optional[Tuple[float, float]] = None
                          ) -> Optional[CarrierBottom]:
-    """Check the carrier bottom that DF uses. Use it at run start (preflight).
+    """Check the carrier bottom that DF uses (run start / preflight).
 
-    Checks:
-      1. The thickness over the API is more than 0 (0: a tray load runs).
-      2. The material is ``expected_material`` (if given).
-      3. The thickness is in ``thickness_range_um`` (if given).
-      4. The value DF last received (ZEN log) is not 0 and agrees with the API.
-         If the event is not in the logs (rotated), this is logged only.
-    Logs a warning, not an error, if "measure bottom thickness" is off in the
-    live-scan configuration: then the thickness is the template value.
-
-    Args:
-        log: A logger (anything with .info/.warning/.error).
-        expected_material: E.g. "Glass" or "Polystyrene" (case is ignored).
-        thickness_range_um: (min, max) in µm, e.g. (150, 190) for #1.5 glass.
+    Checks: API thickness > 0 (0: a tray load runs); material ==
+    ``expected_material`` (case ignored) and thickness in ``thickness_range_um``
+    (µm, e.g. (150, 190)) if given; the last DF value in the ZEN log is not 0
+    and agrees with the API (logged only if the event rotated out). Warns if
+    "measure bottom thickness" is off (thickness = template value).
 
     Returns:
-        The carrier_bottom() dict if all checks pass, else None (the reason is
-        logged with log.error).
+        The carrier_bottom() dict, or None if a check failed (reason via log.error).
     """
     try:
         api = carrier_bottom()
@@ -362,42 +323,28 @@ def check_carrier_for_df(log: logging.Logger, expected_material: Optional[str] =
 class DefiniteFocusTracker:
     """DefiniteFocus across many positions, on top of df_find_surface.
 
+    The standard way to focus a series of positions.
     - Adaptive start: each search starts ``approach_margin_m`` below the last
-      surface found (~4 s on the CD7, vs ~11 s for a full search from the
-      −300 µm default). Use this as the standard way to focus a series of
-      positions.
-    - Fallback: if the adaptive search fails (surface lower than expected:
-      slide tilt, next well), retry once over the full range.
-    - Hardware-fault stop: after ``max_consecutive_failures`` failed searches
-      in a row, raise DefiniteFocusFault instead of carrying on out of focus
-      (2026-09-28: DF dropped out at 22:14 and the run went on for 2 h). One
-      search = one find_surface call; each can make up to 2 × max_retries
-      FindSurface attempts (adaptive + fallback).
-    - reset(): forget the last surface. Call it after a slide/container change
-      (move_to_container does it when given the tracker) and after an objective
-      change — surfaces differ between objectives (DEV_NOTES).
+      surface (much faster than a full −300 µm search).
+    - Fallback: if that fails, retry once over the full range.
+    - Fault stop: ``max_consecutive_failures`` failed searches in a row raise
+      DefiniteFocusFault. One search can make up to 2 × max_retries attempts.
+    - reset(): call after a slide/container change and after an objective
+      change (surfaces differ between objectives; DEV_NOTES).
 
     Immersion: a full-range search starts at −300 µm, which retracts the
-    objective and breaks the immersion bridge (and fails at 50x anyway —
-    DEV_NOTES). With the immersion objective active the tracker never runs one:
-    without a known surface it raises ImmersionObjectiveActive (pass
-    ``surface_z_m`` near the expected surface), and the fallback is skipped.
+    objective and breaks the immersion bridge. With the immersion objective
+    active the tracker never runs one: without a known surface it raises
+    ImmersionObjectiveActive (pass ``surface_z_m``), and the fallback is skipped.
 
-    Carrier check (``carrier_check``, default True): before each search the
-    tracker reads the carrier bottom over the API (carrier_bottom,
-    approximately 10 ms). The first call records it. If the material or the
-    thickness changes later, or the thickness is 0 (a tray load runs), it
-    raises CarrierChanged (a DefiniteFocusFault): the run must stop. reset()
-    forgets the record, so a new plate after a load is accepted. The full
-    check (ZEN log, expected material and range) is check_carrier_for_df in
-    preflight.
+    Carrier check (``carrier_check``): before each search the carrier bottom
+    is read (~10 ms); the first is recorded, and a later change of material or
+    thickness, or thickness 0 (a load runs), raises CarrierChanged. reset()
+    forgets the record. The full check is check_carrier_for_df (preflight).
 
     Args:
         approach_margin_m: adaptive start distance below the last surface (m).
-        max_consecutive_failures: failed searches in a row before the stop.
-        max_retries: FindSurface attempts per search (df_find_surface).
-        surface_z_m: known surface to start from (e.g. from an earlier run), or None.
-        carrier_check: compare the carrier bottom before each search (default True).
+        surface_z_m: known surface to start from (m), or None.
     """
 
     def __init__(self, approach_margin_m: float = DF_APPROACH_MARGIN_M,
@@ -421,8 +368,7 @@ class DefiniteFocusTracker:
         self.carrier: Optional[CarrierBottom] = None
 
     def reset(self) -> None:
-        """Forget the last surface and the recorded carrier (the failure count
-        is kept: a slide change does not fix a DefiniteFocus fault)."""
+        """Forget the last surface and the recorded carrier (not the failure count)."""
         self.last_surface_z_m = None
         self.carrier = None
 
@@ -448,15 +394,13 @@ class DefiniteFocusTracker:
         """Search the surface at the current XY.
 
         Returns:
-            The surface Z in metres (drive read-back), or None if the search
-            failed (the position should be skipped).
+            The surface Z in metres, or None if the search failed (skip the position).
 
         Raises:
             DefiniteFocusFault: on the max_consecutive_failures-th failure in a row.
-            CarrierChanged: (a DefiniteFocusFault) the carrier bottom changed or is
-                0 (see the class docstring). Nothing is moved.
-            MS_zenapi_stage_LM.ImmersionObjectiveActive: if no surface is known
-                and the immersion objective is active (see the class docstring).
+            CarrierChanged: the carrier bottom changed or is 0. Nothing is moved.
+            MS_zenapi_stage_LM.ImmersionObjectiveActive: no surface is known
+                and the immersion objective is active.
         """
         log = set_logging()
         if self.carrier_check:
@@ -504,23 +448,18 @@ class DefiniteFocusTracker:
 
 
 def _immersion_objective_active() -> bool:
-    """True if the active objective is an immersion objective.
-
-    From the API immersion type, or the known slot
-    (MS_zenapi_stage_LM.immersion_objective_active).
-    """
+    """True if the active objective is immersion (API type or known slot)."""
     return asyncio.run(MS_zenapi_stage_LM.immersion_objective_active())
 
 
 def check_immersion_guard(log: logging.Logger) -> Optional[bool]:
     """Compare the immersion objectives the API reports with the known slot.
 
-    The immersion guard refuses a Z=0 lower if the API says the active
-    objective is an immersion objective, or if it is in slot
-    MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION. The two must say the same.
-    A difference means the turret changed or the constant is wrong: the guard
-    still refuses for both, but the extended timeouts and the tray logic may
-    not match the hardware. Read-only; preflight calls it and does not abort.
+    The guard refuses a Z=0 lower for either source (API immersion type or
+    MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION). A mismatch means the
+    turret or the constant changed: the guard still refuses for both, but the
+    immersion timeouts and tray logic may not match. Read-only; preflight
+    logs it and does not abort.
 
     Returns:
         True if the two agree, False if not (log.error), None if the inventory
@@ -549,23 +488,11 @@ def _move_with_tolerance(move: Callable[[], None], distance_to_target: Callable[
                          what: str, settle_s: float = 0.0) -> None:
     """Run move(); with a tolerance, tolerate ZEN's spurious "not reached".
 
-    ZEN sometimes reports a move as failed (gRPC INTERNAL "Requested position
-    was not reached." for Z, "Position could not be reached." for XY) although
-    the drive is on target — DEV_NOTES "Spurious 'not reached'". On such an
-    error, read the position back: within tolerance_m → done (warning logged,
-    then settle_s); otherwise retry the move once. A second failure that is
-    still off target raises.
-
-    Only ZEN-reported errors (GRPCError) are handled; anything else — notably
-    the immersion guard's refusal — propagates untouched, without a retry.
-
-    Args:
-        move: performs the move (raises on failure).
-        distance_to_target: returns the read-back distance to the target (m).
-        tolerance_m: accepted read-back distance (m); None → plain move().
-        what: description for the log.
-        settle_s: wait after accepting a move that raised (the move's own settle
-            wait is skipped when it raises).
+    DEV_NOTES "Spurious 'not reached'". On a GRPCError the position is read
+    back: within tolerance_m (m) → accepted (then settle_s, since the move's
+    own settle was skipped); else one retry, and a second off-target failure
+    raises. tolerance_m None → plain move(). Any other exception — notably the
+    immersion guard's refusal — propagates without a retry.
     """
     if tolerance_m is None:
         move()
@@ -597,8 +524,7 @@ def _move_with_tolerance(move: Callable[[], None], distance_to_target: Callable[
 def _validate_tolerance(tolerance_m: Optional[float]) -> None:
     if tolerance_m is None:
         return
-    # Non-finite is rejected too: an infinite tolerance would accept any failed
-    # move wherever the drive stopped.
+    # Non-finite rejected: inf would accept a failed move wherever it stopped.
     if (isinstance(tolerance_m, bool) or not isinstance(tolerance_m, (int, float))
             or not math.isfinite(tolerance_m) or tolerance_m < 0):
         raise ValueError(f"tolerance_m must be a finite, non-negative number (metres) "
@@ -608,31 +534,21 @@ def _validate_tolerance(tolerance_m: Optional[float]) -> None:
 def move_focus_to_new_z_position(new_z_pos: float,
                                  tolerance_m: Optional[float] = None) -> None:
     """
-    Move z-drive to new position (in meters).
+    Move the Z-drive to an absolute position in metres.
 
-    WARNING: This moves the physical Z-drive/objective — the position is
-    validated internally (see Raises) but there is no further safety check
-    on what a "valid" Z actually means for the current sample/objective.
-    Unlike move_stage_to_new_xy_position, this function has NO immersion
-    guard: calling it with new_z_pos at/near 0 while the 50x immersion
-    objective is active will retract the objective and break the immersion
-    water bridge (see DEV_NOTES.md). Callers must check the current
-    objective themselves before moving Z to 0 with immersion active.
+    WARNING: only the range is checked (validate_z_position). There is NO
+    immersion guard: Z at/near 0 with the 50x immersion objective active
+    retracts the objective and breaks the water bridge (DEV_NOTES). Callers
+    must check the objective themselves before moving Z to 0.
 
     Args:
-        new_z_pos: New Z position in meters
-        tolerance_m: Tolerate ZEN's spurious "Requested
-            position was not reached" (~0.7 % of focus moves on 2026-09-28,
-            drive on target). On a ZEN error, Z is read back: within
-            tolerance_m of the target → done; otherwise one retry. The
-            read-back never matches the target exactly, so pick a small
-            positive value (Marc_SM_002: 0.25e-6). None (default) → no
-            tolerance, a ZEN error raises as before.
+        tolerance_m: Tolerate ZEN's spurious "Requested position was not
+            reached" (m; see _move_with_tolerance). Use a small positive value
+            (e.g. 0.25e-6): the read-back never matches exactly. None: a ZEN
+            error raises.
 
     Raises:
-        ValueError: If position is outside the safe range (validated
-            internally via validate_z_position — no need to call it yourself),
-            or tolerance_m is invalid.
+        ValueError: Position outside the safe range, or tolerance_m invalid.
     """
     _require_valid(validate_z_position(new_z_pos), "Z position")
     _validate_tolerance(tolerance_m)
@@ -645,44 +561,29 @@ def move_focus_to_new_z_position(new_z_pos: float,
 
 
 def get_current_xy_stage_position() -> List[float]:
-    """
-    Get current stage XY coordinates.
-
-    Returns:
-        [x, y] coordinates in meters
-    """
+    """Current stage position [x, y] in metres."""
     return asyncio.run(MS_zenapi_stage_LM.get_current_xy_stage_coordinates())
 
 
 def move_stage_to_new_xy_position(new_x: float, new_y: float,
                                   tolerance_m: Optional[float] = None) -> None:
     """
-    Move stage to absolute coordinates (in meters).
+    Move the stage to absolute XY in metres.
 
-    This lowers the objective to Z = 0 before moving the stage (collision
-    safety) and leaves it there — it does NOT restore the prior Z. Callers
-    must re-establish focus at the new position before acquiring.
+    Lowers the objective to Z = 0 first (collision safety) and leaves it
+    there: re-focus at the new position before acquiring.
 
     Args:
-        new_x: X coordinate in meters
-        new_y: Y coordinate in meters
-        tolerance_m: Tolerate ZEN's spurious "Position could
-            not be reached" (11 of ~1600 moves on 2026-09-29/30, all tiny
-            2–10 µm hops). On a ZEN error, XY is read back: within tolerance_m
-            (Euclidean distance) of the target → done; otherwise one retry
-            (the whole move again, incl. the Z=0 lower). None (default) → no
-            tolerance, a ZEN error raises as before.
+        tolerance_m: Tolerate ZEN's spurious "Position could not be reached"
+            (m, Euclidean; see _move_with_tolerance). The retry repeats the
+            whole move incl. the Z=0 lower. None: a ZEN error raises.
 
     Raises:
-        ValueError: If coordinates are outside the safe range (validated
-            internally via validate_xy_position — no need to call it yourself),
-            or tolerance_m is invalid.
-        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): If the
-            50x immersion objective is active. Lowering Z to 0 would break the
-            immersion water bridge on this inverted CD7, so the move is refused
-            rather than attempted (never retried) — drive the stage via a
-            positioned .czexp run by ZEN instead (see
-            MS_zenapi_stage_LM.move_stage_to_new_xy_position / DEV_NOTES.md).
+        ValueError: Coordinates outside the safe range, or tolerance_m invalid.
+        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The 50x
+            immersion objective is active. Z=0 would break the water bridge,
+            so the move is refused (never retried) — move via a positioned
+            .czexp run by ZEN instead (DEV_NOTES).
     """
     _require_valid(validate_xy_position(new_x, new_y), "XY coordinates")
     _validate_tolerance(tolerance_m)
@@ -705,22 +606,14 @@ def set_stage_motion_sync(speed_percent: Optional[float] = None,
     """
     Set the XY-stage travel speed and acceleration (percent of max, [0, 100]).
 
-    Speed/acceleration are device state, not per-move parameters: the controller
-    holds them across SmartMic's per-call channel open/close, so this is the
-    once-per-run "global stage-speed" knob (set it in preflight and leave it).
-    Both are set together; for a live sample it is the acceleration (jerk) that
-    disturbs the medium, so a low speed with a high acceleration would still jolt
-    it. None falls back to the module defaults in MS_zenapi_stage_LM
-    (STAGE_TRAVEL_SPEED_PERCENT / STAGE_ACCELERATION_PERCENT, both 100 = full).
-
-    Args:
-        speed_percent: XY travel speed, percent of max.
-        acceleration_percent: XY acceleration, percent of max.
+    Device state held across calls: set once per run (preflight). For a live
+    sample the acceleration is what jolts the medium. None → the
+    MS_zenapi_stage_LM defaults (STAGE_TRAVEL_SPEED_PERCENT /
+    STAGE_ACCELERATION_PERCENT, 100 = full).
 
     Returns:
-        Read-back after setting, with keys speed_x, speed_y, acceleration_x,
-        acceleration_y (percent). The speed values are None on this CD7: the
-        gateway rejects GetSpeed (DEV_NOTES).
+        Read-back: speed_x, speed_y, acceleration_x, acceleration_y (percent).
+        The speeds are None on this CD7: the gateway rejects GetSpeed (DEV_NOTES).
     """
     return asyncio.run(
         MS_zenapi_stage_LM.set_stage_motion(speed_percent, acceleration_percent)
@@ -734,11 +627,9 @@ def run_experiment_from_path(czexp_path: Union[str, Path],
     """
     Run a ``.czexp`` file and move the ``.czi`` to ``custom_folder``.
 
-    The file is LOADED by path (not imported), so a per-run edited copy works.
-    See MS_zenapi_experiment_methods.run_experiment_from_path.
+    LOADED by path (not imported), so a per-run edited copy works.
 
     Args:
-        czexp_path: The ``.czexp`` file.
         custom_folder: Output folder; None → DEFAULT_EXPERIMENT_OUTPUT_FOLDER.
         custom_filename: Output base name (without .czi).
 
@@ -763,7 +654,6 @@ def swaf_find_focus(czexp_path: Union[str, Path], timeout: int = 30,
     Run software autofocus from a SWAF ``.czexp``; return the focus Z in metres.
 
     Args:
-        czexp_path: The SWAF ``.czexp`` file.
         timeout: Seconds ZEN may spend on one search.
         max_retries: Attempts including the first.
 
@@ -785,7 +675,7 @@ def _change_optics(objective_nr: int, optovar_nr: int,
     """
     Send the objective + optovar change and poll until the changer reports it.
 
-    For set_optics_verified only. To or from the immersion objective the timeout
+    For set_optics_verified only. To/from the immersion objective the timeout
     is at least IMMERSION_OBJECTIVE_TIMEOUT, and ZEN's transient "has not been
     set" while the water is removed gets an extra IMMERSION_RETRY_DELAY.
 
@@ -800,22 +690,15 @@ def _change_optics(objective_nr: int, optovar_nr: int,
     log = set_logging()
 
     async def _set_and_wait() -> bool:
-        # See DEV_NOTES.md "Optics map (this CD7)" for the objective/optovar
-        # position -> lens/tubelens mapping (not repeated here to avoid a
-        # second copy that can drift if the turret is ever reconfigured).
-
-        # Get current position to detect immersion operations
+        # Positions -> lenses: DEV_NOTES "Optics map (this CD7)".
         current_obj, current_opt = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
 
-        # Check if moving FROM/TO an immersion objective. Same source as the
-        # immersion move-guard: the API immersion type, plus the known slot.
+        # Same source as the immersion move-guard: API type plus the known slot.
         immersion_positions = await MS_zenapi_stage_LM.immersion_objective_positions()
         is_from_immersion = current_obj in immersion_positions
         is_to_immersion = objective_nr in immersion_positions
 
-        # Adjust timeout for immersion operations
         if is_from_immersion or is_to_immersion:
-            # Much longer timeout for immersion operations
             adjusted_timeout = max(timeout_seconds, IMMERSION_OBJECTIVE_TIMEOUT)
             log.info(f"Immersion objective operation detected - using extended timeout: {adjusted_timeout}s")
         else:
@@ -824,49 +707,40 @@ def _change_optics(objective_nr: int, optovar_nr: int,
         retry_count = 0
         while retry_count < max_retries:
             try:
-                # Send the command to change objective and optovar
                 await MS_zenapi_objectivechanger.set_objective_set_optovar(objective_nr, optovar_nr)
 
-                # Wait for the hardware to complete the change
                 start_time = time.time()
 
                 while time.time() - start_time < adjusted_timeout:
-                    # Get current objective and optovar
                     current_obj, current_opt = await MS_zenapi_objectivechanger.get_current_objective_and_optovar()
 
-                    # Check if both match the desired values
                     if current_obj == objective_nr and current_opt == optovar_nr:
                         return True
 
-                    # Wait before polling again
                     await asyncio.sleep(poll_interval)
 
-                # Timeout reached
                 log.warning(f"Objective change: timeout after {adjusted_timeout}s, "
                             f"retry {retry_count + 1}/{max_retries}")
                 retry_count += 1
 
             except (ValueError, TypeError):
-                # Not transient: e.g. the target position is not in the reported
-                # inventory (MS_zenapi_objectivechanger._require). A retry cannot
-                # fix a configuration mismatch, and a False return would hide it.
+                # Not transient (e.g. target not in the inventory): a retry
+                # cannot fix it, and a False return would hide it.
                 raise
             except Exception as e:
                 log.warning(f"Exception during objective change: {e} — "
                             f"retry {retry_count + 1}/{max_retries}")
 
-                # Special handling for the "has not been set" error ZEN raises
-                # transiently when moving from immersion (hardware needs time
-                # to complete the immersion-removal process).
+                # ZEN raises "has not been set" transiently while the water is
+                # removed after leaving immersion.
                 if "has not been set" in str(e) and is_from_immersion:
                     log.info("This is expected when moving from 50x immersion - hardware "
                              "needs time. Waiting for immersion removal process...")
-                    await asyncio.sleep(IMMERSION_RETRY_DELAY)  # Wait for immersion removal
+                    await asyncio.sleep(IMMERSION_RETRY_DELAY)
 
                 retry_count += 1
-                await asyncio.sleep(OBJECTIVE_CHANGE_RETRY_DELAY)  # Wait before retry
+                await asyncio.sleep(OBJECTIVE_CHANGE_RETRY_DELAY)
 
-        # All retries failed
         return False
 
     return asyncio.run(_set_and_wait())
@@ -879,26 +753,16 @@ def set_optics_verified(objective_nr: int, optovar_nr: int,
     """
     Change objective + optovar, then VERIFY the read-back and SETTLE.
 
-    Use before any acquisition after an optics change. ZEN builds the tile grid
-    from the CURRENT optics at run time; a scan launched right after the change
-    was once tiled for the stale config (HD_Nuclei_from_slide, run_20260629_122403,
-    leaving the 50x immersion objective: doubled/ghosted mosaic). Steps:
-      1. change the optics (_change_optics);
-      2. poll the read-back until it shows the target;
-      3. wait settle_s;
-      4. check again — abort if it never settles within timeout_s.
-
-    The cause (read-back leading ZEN's acquisition engine) is inferred and was
-    only seen when leaving the immersion objective, so the settle is a cheap safe
-    default, not confirmed ZEN behaviour. See TODO "pin an experiment to a
-    DEFINED objective/optovar config" for a possible ZEN-native fix.
+    Use before any acquisition after an optics change: a scan started right
+    after a change can be tiled for the stale optics (mis-tiled mosaic). Polls
+    the read-back until it shows the target, waits settle_s (a cheap safe
+    default, not a measured ZEN time), checks again; aborts after timeout_s.
 
     Args:
         objective_nr: Objective position (1-4).
         optovar_nr: Optovar position (1-3).
         settle_s: Wait after the read-back first shows the target.
         timeout_s: Give up if the target is not read back and stable by then.
-        poll_s: Interval between read-backs while waiting.
 
     Raises:
         ValueError: If a position or a timing argument is invalid.
@@ -909,8 +773,7 @@ def set_optics_verified(objective_nr: int, optovar_nr: int,
             raise ValueError(f"{name} must be >= 0, got {v}")
     log = set_logging()
     target = (objective_nr, optovar_nr)
-    # Validates the positions (ValueError). A False return (changer timeout) is
-    # not fatal by itself: the read-back below is the check.
+    # A False return (changer timeout) is not fatal: the read-back is the check.
     if not _change_optics(objective_nr, optovar_nr):
         log.warning(f"Optics change to {target} not confirmed by the changer — "
                     f"verifying the read-back.")
@@ -934,26 +797,16 @@ def set_optics_verified(objective_nr: int, optovar_nr: int,
 
 
 def get_current_objective_and_optovar() -> Tuple[int, int]:
-    """
-    Get current objective and optovar positions.
-
-    Returns:
-        (objective_position, optovar_position)
-    """
+    """Current (objective_position, optovar_position)."""
     return asyncio.run(MS_zenapi_objectivechanger.get_current_objective_and_optovar())
 
 
 def get_current_objective_and_optovar_names() -> Tuple[Tuple[str, int], Tuple[str, int]]:
     """
-    Get current objective and optovar as (name, position) pairs.
+    Current ((objective_name, position), (optovar_name, position)).
 
-    Resolves the human-readable hardware names (e.g. 'Plan-Apochromat 20x/0.95'
-    and '2x Tubelens') so callers can verify the optics by magnification/NA
-    rather than by slot number.
-
-    Returns:
-        Tuple[Tuple[str, int], Tuple[str, int]]:
-            ((objective_name, objective_position), (optovar_name, optovar_position))
+    Names like 'Plan-Apochromat 20x/0.95', '2x Tubelens': verify optics by
+    magnification/NA rather than slot number.
     """
     return asyncio.run(
         MS_zenapi_objectivechanger.get_current_objective_and_optovar_names()
@@ -962,56 +815,34 @@ def get_current_objective_and_optovar_names() -> Tuple[Tuple[str, int], Tuple[st
 
 def get_sample_carrier_info() -> Dict[str, Any]:
     """
-    Get information about the currently configured sample carrier.
-
-    Returns:
-        Dict[str, Any] with keys: name, rows, columns, material,
-        thickness, skirt, refractive_index. See
-        MS_zenapi_sample_carrier.get_sample_carrier_info for details.
+    The active sample carrier: name, rows, columns, material, thickness (µm),
+    skirt, refractive_index (MS_zenapi_sample_carrier.get_sample_carrier_info).
     """
     return asyncio.run(MS_zenapi_sample_carrier.get_sample_carrier_info())
 
 
 def get_sample_carrier_name() -> str:
-    """
-    Get the name of the currently configured sample carrier.
-
-    Returns:
-        The sample-carrier name as reported by ZEN.
-    """
+    """Name of the active sample carrier."""
     return get_sample_carrier_info()["name"]
 
 
 def get_current_container() -> Optional[Tuple[int, int]]:
     """
-    Get the sample-carrier container the stage is positioned in.
+    The container the stage is in: (row, column) 0-based, or None.
 
-    Returns:
-        (row_index, column_index), 0-based, or None if the stage is in no
-        container. Read-only.
-
-    Note:
-        On the CD7 (3x slide insert) this ALWAYS returns None (ZEN: NOT_FOUND),
-        even right after move_to_container — don't use it as a check
-        (DEV_NOTES "Multi-slide carriers").
+    On the CD7 (3x slide insert) this ALWAYS returns None, even right after
+    move_to_container: don't use it as a check (DEV_NOTES "Multi-slide carriers").
     """
     return asyncio.run(MS_zenapi_sample_carrier.get_current_container())
 
 
 def get_live_scan_configuration() -> Dict[str, Any]:
-    """
-    Get ZEN's live-scan (tray load / prescan) configuration. Read-only.
-
-    Returns:
-        Dict[str, Any] with the keys in MS_zenapi_live_scan.CONFIG_FIELDS
-        (sample_holder_template, the prescan flags, refractive_index,
-        material). See MS_zenapi_live_scan.get_live_scan_configuration.
-    """
+    """ZEN's live-scan (tray load / prescan) configuration, keys as in
+    MS_zenapi_live_scan.CONFIG_FIELDS. Read-only."""
     return asyncio.run(MS_zenapi_live_scan.get_live_scan_configuration())
 
 
-# Dry (air) objective to change to before an eject from the 50x immersion
-# objective: Plan-Apochromat 5x/0.35 (DEV_NOTES "Optics map (this CD7)").
+# Dry 5x/0.35 to change to before an eject from the 50x immersion objective.
 EJECT_DRY_OBJECTIVE = 2
 
 
@@ -1020,21 +851,17 @@ def eject_tray(switch_to_dry_objective: bool = True,
     """
     Move the sample-carrier tray out (LiveScanService.EjectTray).
 
-    ZEN stops DF and retracts Z itself before it moves the tray, so no Z move is
-    done here (seen in the ZEN logs, 2026-11-09; DEV_NOTES "Tray load / eject").
-    The eject also works on the 50x immersion objective. The safe procedure is
-    to change to the 5x (air) first: this is the default.
+    ZEN stops DF and retracts Z itself, so no Z move is done here (DEV_NOTES
+    "Tray load / eject").
 
     Args:
         switch_to_dry_objective: If the 50x immersion objective is active,
-            change to EJECT_DRY_OBJECTIVE (5x) with the current optovar first,
-            verified (set_optics_verified). False: eject directly on the 50x.
-            No effect on a dry objective.
-        focus_tracker: Reset before the eject —
-            the last surface belongs to the plate that leaves.
+            first change to EJECT_DRY_OBJECTIVE (5x, current optovar,
+            set_optics_verified) — the safe procedure. False: eject on the 50x.
+        focus_tracker: Reset before the eject.
 
     Returns:
-        The notifications ZEN returns.
+        ZEN's notifications.
 
     Raises:
         RuntimeError: If an experiment runs (nothing is moved), or the change to
@@ -1064,12 +891,10 @@ def wait_for_df_bottom(timeout_s: float = LOAD_SETTLE_TIMEOUT_S,
                        poll_s: float = LOAD_SETTLE_POLL_S) -> CarrierBottom:
     """Wait until the carrier bottom for DF is set: thickness more than 0, stable.
 
-    During a tray load ZEN sends thickness 0 to DF for some seconds, then the
-    template or the measured value (DEV_NOTES "Dry objectives: DF finds the
-    plate UNDERSIDE"). A DF search in that window parks DF on the plate
-    underside. The condition is met when two reads in a row agree:
-    the API thickness is more than 0, and the last DF value in the ZEN log (if
-    it is in the logs) is more than 0 and agrees with the API.
+    During a load ZEN sends thickness 0 to DF for some seconds; a DF search
+    then parks on the plate underside (DEV_NOTES "Dry objectives: DF finds the
+    plate UNDERSIDE"). Met when two reads in a row agree, the API thickness is
+    > 0, and the DF log value (if present) is > 0 and matches the API.
 
     Returns:
         The carrier_bottom() dict.
@@ -1103,19 +928,15 @@ def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) 
     """
     Move the tray in and run the prescan (LiveScanService.LoadTrayAndPrescan).
 
-    The prescan steps are those of the current live-scan configuration
-    (get_live_scan_configuration). ZEN changes the objective to the 5x
-    (position 2) during the load and does not change it back. Set the objective
-    again before you acquire. Do not start DF while a load runs. The objective
-    and Z after the load are logged. After the load the function waits until
-    DF has a non-zero, stable carrier thickness (wait_for_df_bottom).
+    Prescan steps: get_live_scan_configuration. ZEN leaves the 5x (position 2)
+    active after the load: set the objective again before you acquire. Do not
+    start DF while a load runs; this waits for wait_for_df_bottom afterwards.
 
     Args:
-        focus_tracker: Reset before the load —
-            the last surface belongs to the previous plate.
+        focus_tracker: Reset before the load.
 
     Returns:
-        The notifications ZEN returns.
+        ZEN's notifications.
 
     Raises:
         RuntimeError: If an experiment runs (nothing is moved), or DF has no
@@ -1141,24 +962,16 @@ def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) 
 def move_to_container(row_index: int, column_index: int,
                       focus_tracker: Optional[DefiniteFocusTracker] = None) -> None:
     """
-    Move the stage to a sample-carrier container (e.g. slide 2 of a 3-slide
-    insert = row 0, column 1; indices 0-based). The move is executed by ZEN.
+    Move the stage (via ZEN) to a container, 0-based (slide 2 of 3 = row 0, column 1).
 
-    Behaves like move_stage_to_new_xy_position: lowers Z to 0 first, so Z ends
-    near 0 (4.59 µm seen) on the new slide, and refuses with the immersion
-    objective active. (ZEN retracts Z during the switch, then restores the Z it
-    had when called — without the lowering that would be the old slide's
-    height on the new slide.) Re-focus before acquiring. Verified on the scope
-    2026-10-14 (DEV_NOTES "Multi-slide carriers").
-
-    Do NOT verify the move with get_current_container: it always answers
-    NOT_FOUND on the CD7 (DEV_NOTES "Multi-slide carriers"). Verify the slide
-    from the images instead.
+    Like move_stage_to_new_xy_position: lowers Z to 0 first (else ZEN restores
+    the old slide's Z on the new one), Z ends near 0, and it refuses with the
+    immersion objective active. Re-focus before acquiring. Do NOT verify with
+    get_current_container (always None on the CD7); verify from the images.
+    DEV_NOTES "Multi-slide carriers".
 
     Args:
-        row_index (int), column_index (int): The container, 0-based.
-        focus_tracker: Reset before the move —
-            the last surface belongs to the previous slide.
+        focus_tracker: Reset before the move.
 
     Raises:
         ValueError: If an index is not a non-negative integer.
@@ -1168,8 +981,7 @@ def move_to_container(row_index: int, column_index: int,
     for name, v in (("row_index", row_index), ("column_index", column_index)):
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
             raise ValueError(f"{name} must be a non-negative integer, got {v!r}")
-    # Before the move: forgetting the surface is always safe, also if the move
-    # then fails half-way.
+    # Reset before the move: safe even if the move fails half-way.
     if focus_tracker is not None:
         focus_tracker.reset()
     asyncio.run(MS_zenapi_sample_carrier.move_to_container(row_index, column_index))
@@ -1177,17 +989,11 @@ def move_to_container(row_index: int, column_index: int,
 
 def get_running_experiment_status() -> Optional[Dict[str, Any]]:
     """
-    Get the status of the currently active experiment, if any.
+    Status of the active experiment, or None if idle.
 
-    Returns:
-        Dict[str, Any] with keys is_experiment_running, is_acquisition_running,
-        images_acquired_index, images_count, scenes_index, scenes_count — or
-        None if the microscope is idle (no experiment running).
-
-    Note:
-        Reflects activity started through ZEN / the API (standard experiment,
-        snap, live, continuous). It does not report unrelated activity such as
-        a manual stage move outside an experiment.
+    Keys: is_experiment_running, is_acquisition_running, images_acquired_index,
+    images_count, scenes_index, scenes_count. Covers ZEN / API activity
+    (experiment, snap, live, continuous), not e.g. a manual stage move.
     """
     return asyncio.run(MS_zenapi_experiment_methods.get_running_experiment_status())
 
@@ -1196,8 +1002,8 @@ def stop_experiment() -> bool:
     """
     Stop the experiment that is active in ZEN, if there is one.
 
-    Use it in the handler of a crash or of Ctrl-C, so that ZEN does not continue
-    an acquisition that the pipeline no longer waits for::
+    Use in a crash / Ctrl-C handler so ZEN does not continue an orphaned
+    acquisition::
 
         try:
             run_pipeline()
@@ -1209,13 +1015,11 @@ def stop_experiment() -> bool:
                 log.exception("Could not stop the experiment")
             raise
 
-    Stop ends the acquisition only: the stage, Z and the objective stay where
-    they are. See MS_zenapi_experiment_methods.stop_running_experiment (which
-    experiment is stopped, and what is not verified on the scope).
+    Stops the acquisition only: stage, Z and objective stay where they are
+    (MS_zenapi_experiment_methods.stop_running_experiment).
 
     Returns:
-        True if an experiment was active and the stop request was sent, False
-        if the microscope was idle.
+        True if an experiment was active and the stop was sent, False if idle.
 
     Raises:
         GRPCError: ZEN refused the status query or the stop request.
@@ -1224,15 +1028,7 @@ def stop_experiment() -> bool:
 
 
 def is_microscope_busy() -> bool:
-    """
-    Check whether the microscope is currently running an experiment/acquisition.
-
-    Returns:
-        True if an experiment or acquisition is running, False if idle.
-
-    Note:
-        See get_running_experiment_status for what "busy" covers.
-    """
+    """True while an experiment or acquisition runs (see get_running_experiment_status)."""
     status = get_running_experiment_status()
     if status is None:
         return False
@@ -1253,47 +1049,25 @@ def preflight(expected_carrier: str, log: logging.Logger,
     """
     Standard start-of-run preflight — run this before ANY hardware action.
 
-    Checks, in order:
-      1. the ZEN-API gateway is responsive (a live carrier query that doubles as
-         a ping),
-      2. the microscope is idle (no experiment already running),
-      3. the correct sample carrier is loaded,
-      3b. the carrier bottom that DF uses (check_carrier_for_df): thickness not
-         0, the material and thickness range if given, DF value = API value,
-      4. sets the XY-stage travel speed + acceleration once for the run (device
-         state the controller holds across calls) and logs the read-back.
-
-    Also logs, never aborting on them: version identity, the auto-immersion
-    refill settings, the live-scan (tray load / prescan) configuration, and
-    whether the immersion objectives of the API match the known slot
-    (check_immersion_guard).
+    Checks, in order: gateway responsive (the carrier query is the ping);
+    microscope idle; ``expected_carrier`` loaded; the DF carrier bottom
+    (check_carrier_for_df with expected_material / thickness_range_um, µm);
+    then sets stage speed + acceleration once for the run (set_stage_motion_sync)
+    and logs the read-back. Logs only, never aborts on: versions, auto-immersion
+    refill settings, live-scan configuration, check_immersion_guard.
 
     Args:
-        expected_carrier: The sample-carrier name the run requires; the
-            run aborts if a different carrier is loaded.
-        log: A logger (anything with .info/.error). Used for all reporting so
-            the outcome lands in the per-run log file.
-        stage_speed_percent: XY travel speed, percent of max.
-            None → STAGE_TRAVEL_SPEED_PERCENT (100 = full speed). Turn down for a
-            sensitive/live sample.
-        stage_acceleration_percent: XY acceleration, percent of
-            max. None → STAGE_ACCELERATION_PERCENT (100 = full).
-        expected_material: Carrier bottom material the run
-            requires, e.g. "Glass". None: not checked.
-        thickness_range_um ((float, float), optional): Allowed carrier bottom
-            thickness in µm, e.g. (150, 190). None: not checked.
+        log: Logger for all reporting (lands in the per-run log).
+        stage_speed_percent, stage_acceleration_percent: percent of max; None →
+            the MS_zenapi_stage_LM defaults (100 = full). Lower for a live sample.
+            If one is given and cannot be applied, preflight fails; if both are
+            None, a rejected setting only warns.
 
     Raises:
         PreflightFailed: A check failed (the reason is also logged with
             ``log.error``). Nothing has moved.
     """
-    # 0. Record version identity: none of this is available over the gRPC API
-    # itself (no version/about service), so each piece is recovered out-of-band
-    # (see MS_zen_logs.zen_app_version, zeiss_paths.zen_api_gateway_version / zen_api_version /
-    # smartmic_version) and logged together so a support question ("what were you
-    # running?") has a complete answer: the ZEN application, the gateway service it
-    # talks to, the Python-side stubs generated against it, AND the exact SmartMic
-    # commit driving the run.
+    # 0. Versions (the gRPC API has no version service: read out-of-band).
     sm_ver = zeiss_paths.smartmic_version()
     zen_ver = MS_zen_logs.zen_app_version()
     gw_ver = zeiss_paths.zen_api_gateway_version()
@@ -1303,9 +1077,7 @@ def preflight(expected_carrier: str, log: logging.Logger,
              f"ZenApiGateway: {gw_ver or 'unknown'}  |  "
              f"zen_api stubs: {api_ver or 'unversioned (loose layout)'} @ {api_path}")
 
-    # 0b. Record the CD7 auto-immersion refill settings (log only, never a
-    # reason to abort). Not available over the API either; read from the ZEN
-    # user's Options.config and the ZENService log (zeiss_paths, DEV_NOTES
+    # 0b. Auto-immersion refill settings, log only (not in the API: DEV_NOTES
     # "The re-immersion settings are NOT reachable through the ZEN-API").
     try:
         log.info(MS_zen_logs.format_auto_immersion_settings(
@@ -1313,24 +1085,21 @@ def preflight(expected_carrier: str, log: logging.Logger,
     except Exception as e:
         log.info(f"Auto-immersion refill settings: could not read ({e})")
 
-    # 1. Gateway ping (the carrier query is also the liveness check).
+    # 1. Gateway ping.
     try:
         carrier = get_sample_carrier_name()
     except Exception as e:
         _fail(log, f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
 
-    # 1b. Record the live-scan (tray load / prescan) configuration: carrier
-    # template, bottom material / RI, which prescan steps a load runs. Log only,
-    # never a reason to abort; flags a template / carrier mismatch (DEV_NOTES
-    # "Tray load / eject").
+    # 1b. Live-scan configuration, log only; flags a template / carrier
+    # mismatch (DEV_NOTES "Tray load / eject").
     try:
         log.info(MS_zenapi_live_scan.format_live_scan_configuration(
             get_live_scan_configuration(), carrier=carrier))
     except Exception as e:
         log.info(f"Live-scan config: could not read ({e})")
 
-    # 1c. Immersion guard: the API immersion types against the known slot.
-    # Log only (an error line if they differ); the guard refuses for both.
+    # 1c. Immersion guard sources agree? Log only; the guard refuses for both.
     check_immersion_guard(log)
 
     # 2. Microscope idle.
@@ -1346,26 +1115,15 @@ def preflight(expected_carrier: str, log: logging.Logger,
         _fail(log, f"Wrong sample carrier: '{carrier}' "
                   f"(expected '{expected_carrier}') — aborting.")
 
-    # 3b. The carrier bottom that DF uses (thickness, material). A wrong value
-    # moves the DF focus on the dry objectives with no error from DF.
+    # 3b. DF carrier bottom: a wrong value silently moves the DF focus (dry objectives).
     if check_carrier_for_df(log, expected_material, thickness_range_um) is None:
         _fail(log, "DF carrier check failed — aborting.")
 
-    # 4. Stage speed + acceleration (set once for the run).
-    #
-    # Whether a failure here is fatal depends on INTENT. If the caller explicitly
-    # asked to throttle (speed/accel not None) — e.g. a sensitive/live sample —
-    # and we cannot apply it, abort: proceeding at an unknown (likely full) speed
-    # would silently violate the intended protection. But if no throttle was
-    # requested (both None → full speed, no protection intended), a device that
-    # rejects the knob outright must NOT block the run — we weren't limiting
-    # anything anyway. Warn and proceed at the stage's current motion settings.
-    #
-    # set_stage_motion already tolerates a speed-only failure internally (this
-    # gateway rejects SetSpeed/GetSpeed outright, confirmed 2026-07-14, but
-    # SetAcceleration/GetAcceleration work fine — see MS_zenapi_stage_LM), so an
-    # exception here means ACCELERATION itself — the parameter that actually
-    # matters for protecting a live sample — could not be applied.
+    # 4. Stage speed + acceleration. A requested throttle that cannot be applied
+    # aborts (the run would silently go at full speed); with none requested a
+    # rejection only warns. set_stage_motion already tolerates the gateway's
+    # SetSpeed rejection (DEV_NOTES), so an exception here means ACCELERATION
+    # could not be set.
     throttle_requested = (stage_speed_percent is not None
                           or stage_acceleration_percent is not None)
     motion = None

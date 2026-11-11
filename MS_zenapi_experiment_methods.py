@@ -22,24 +22,11 @@
 # experiment.
 #################################################################
 
-"""
-Experiment acquisition helpers for ZEN blue / ZEN core via gRPC.
+"""ExperimentService helpers: run a ``.czexp`` by path, query / stop the active experiment.
 
-This module wraps the ZEN gRPC ``ExperimentService`` (acquisition.v1beta).
-
-Public functions
-----------------
-run_experiment_from_path      -- Load a ``.czexp`` file by path and run it
-get_running_experiment_status -- Status of the active experiment, or None (idle)
-stop_running_experiment       -- Stop the active experiment (for a crash / Ctrl-C handler)
-
-Image-output strategy
----------------------
-ZEN always saves acquired images to its own default output folder.  After each
-acquisition this module moves the file to the caller-supplied *custom_image_folder*
-so that downstream code can find images in a predictable location.  Any
-leftover ``.czi`` files in the default folder are cleaned up at the end
-(DEV_NOTES "The cleanup deletes everything in ZEN's default folder").
+ZEN saves each result in its own default folder; it is moved to the caller's
+folder, then every other ``.czi`` in ZEN's default folder is deleted (DEV_NOTES
+"The cleanup deletes everything in ZEN's default folder").
 """
 
 import logging
@@ -57,7 +44,6 @@ from MS_run_log import DEFAULT_EXPERIMENT_OUTPUT_FOLDER  # single source for the
 from MS_zenapi_helpers import open_zen_channel, set_logging
 from zeiss_paths import CONFIG_PATH as config_path  # config.ini at the repo root
 
-# Auto-generated gRPC stubs for the experiment service.
 from zen_api.acquisition.v1beta import (
     ExperimentServiceGetImageOutputPathRequest,
     ExperimentServiceGetStatusRequest,
@@ -73,9 +59,7 @@ class ExperimentResult(TypedDict):
     experiment_id: str
 
 
-# Id of the experiment the latest run of this process started (or None).
-# stop_running_experiment uses it: a handler for a crash or Ctrl-C does not
-# have the id.
+# Id of the latest experiment this process started, for stop_running_experiment.
 _last_started_experiment_id: Optional[str] = None
 
 
@@ -85,17 +69,7 @@ _last_started_experiment_id: Optional[str] = None
 
 async def _get_default_image_folder(exp_service: ExperimentServiceStub,
                                     logger: logging.Logger) -> Path:
-    """Query ZEN's read-only default image output folder.
-
-    NOTE: this path (e.g. ``F:\\UserData\\mike\\temp``) is **owned by ZEN**, not
-    by this repo.  It is whatever is configured as the default image-save
-    location inside the running ZEN application, fetched live here.  ZEN always
-    writes acquired CZIs here first; the caller then moves each result into the
-    custom output folder (see ``_move_result_and_cleanup``).  The ZEN-API exposes
-    only ``GetImageOutputPath`` (no setter), so this folder CANNOT be changed from
-    code — change it in ZEN's options if needed.  Keeping it on the same drive as
-    the custom output folder makes the move a fast same-volume rename.
-    """
+    """Query ZEN's default image output folder (read-only: no API setter; set it in ZEN)."""
     save_path = await exp_service.get_image_output_path(
         ExperimentServiceGetImageOutputPathRequest()
     )
@@ -128,10 +102,8 @@ def _same_folder(a: Path, b: Path) -> bool:
 def _refuse_zen_default_folder(image_folder: Path, default_image_folder: Path) -> None:
     """Raise ValueError if the output folder is ZEN's default image folder.
 
-    After each acquisition the cleanup deletes every other ``.czi`` in ZEN's
-    default folder (DEV_NOTES "The cleanup deletes everything in ZEN's default
-    folder"). With the results in that same folder, each acquisition would
-    delete the results of all earlier ones.
+    The cleanup would delete all earlier results there (DEV_NOTES "The cleanup
+    deletes everything in ZEN's default folder").
     """
     if _same_folder(image_folder, default_image_folder):
         raise ValueError(
@@ -163,19 +135,13 @@ def _unique_czi_name(image_folder: Path, czi_name: str, logger: logging.Logger) 
 
 def _move_result_and_cleanup(exp_result: Any, default_image_folder: Path,
                              image_folder: Path, logger: logging.Logger) -> Path:
-    """Move the acquired .czi to image_folder and clear leftover .czi files.
-
-    Returns the final Path of the moved (or already in-place) result file.
-    """
+    """Move the acquired .czi to image_folder, delete other .czi in the default
+    folder; return the result's final Path."""
     exp_default_path = default_image_folder / (exp_result.output_name + ".czi")
     exp_custom_path = image_folder / (exp_result.output_name + ".czi")
-    # Resolve before comparing so an equal custom/default folder expressed in a
-    # different string form is still detected (and we never rename a file onto
-    # itself).
+    # Resolve before comparing: never rename a file onto itself.
     if exp_default_path.resolve() != exp_custom_path.resolve() and exp_default_path.exists():
-        # shutil.move (not Path.rename): the custom folder may be on a different
-        # drive than ZEN's default output folder, and os.rename cannot move across
-        # drives on Windows (WinError 17). Same-drive moves behave like rename.
+        # shutil.move, not rename: may cross drives (WinError 17).
         shutil.move(str(exp_default_path), str(exp_custom_path))
         logger.info(f"Moved experiment result from {exp_default_path} to {exp_custom_path}")
         result_path = exp_custom_path
@@ -183,10 +149,7 @@ def _move_result_and_cleanup(exp_result: Any, default_image_folder: Path,
         result_path = exp_default_path
     logger.info("Final Experiment Location: " + str(result_path))
 
-    # Clean up any leftover .czi files in the ZEN default temp folder.  NEVER
-    # delete the result itself: when custom_image_folder IS the default folder
-    # the result stays here, so a blanket glob+unlink would destroy the
-    # acquisition we just made.
+    # Delete leftover .czi in ZEN's default folder, NEVER the result itself.
     result_resolved = result_path.resolve()
     temp_files_after = [
         f for f in default_image_folder.glob("*.czi")
@@ -206,11 +169,8 @@ async def _run_experiment_and_collect(
     exp_service: ExperimentServiceStub, experiment_id: str, default_image_folder: Path,
     image_folder: Path, czi_name: str, logger: logging.Logger,
 ) -> Path:
-    """Run the experiment by id, log status, then move + clean up the result.
-
-    Ensures a non-colliding output name, runs the experiment, logs its status,
-    and relocates the result.  Returns the final result Path.
-    """
+    """Run the experiment by id under a non-colliding name, log its status,
+    move + clean up the result; return the final Path."""
     global _last_started_experiment_id
     czi_name = _unique_czi_name(image_folder, czi_name, logger)
     _last_started_experiment_id = experiment_id
@@ -280,33 +240,18 @@ async def run_experiment_from_path(
 
 
 async def get_running_experiment_status() -> Optional[Dict[str, Any]]:
-    """Query the status of the currently active experiment, if any.
+    """Status of the active experiment (``GetStatus`` without id), or None if idle.
 
-    Calls ``ExperimentService.GetStatus`` with no experiment_id.  Per the ZEN
-    API contract this returns the status of one active experiment, or raises
-    ``FAILED_PRECONDITION`` ("No experiment is running") when nothing is active.
-
-    "Active" covers acquisitions started through ZEN / the API — standard
-    experiments, snap, live and continuous.  It does NOT report unrelated
-    activity such as a manual stage move outside an experiment.
+    "Active" = experiment, snap, live or continuous; not a manual stage move.
+    Idle is ZEN's FAILED_PRECONDITION.
 
     Returns:
-        A dict of status fields if an experiment is active::
-
-            {
-                "is_experiment_running":  bool,
-                "is_acquisition_running": bool,
-                "images_acquired_index":  int,
-                "images_count":           int,
-                "scenes_index":           int,
-                "scenes_count":           int,
-            }
-
-        or ``None`` if the microscope is idle (no experiment running).
+        dict with is_experiment_running, is_acquisition_running,
+        images_acquired_index, images_count, scenes_index, scenes_count; or None.
 
     Raises:
-        GRPCError:  for any gRPC error other than FAILED_PRECONDITION.
-        Exception:  connection errors raised by ``initialize_zenapi``.
+        GRPCError: for any gRPC error other than FAILED_PRECONDITION.
+        Exception: connection errors raised by ``initialize_zenapi``.
     """
     logger = set_logging()
 
@@ -338,20 +283,14 @@ async def get_running_experiment_status() -> Optional[Dict[str, Any]]:
 
 
 async def stop_running_experiment() -> bool:
-    """Stop the experiment that is active in ZEN, if there is one.
+    """Stop the experiment active in ZEN, if any (for a crash / Ctrl-C handler).
 
-    For the handler of a crash or of Ctrl-C: the pipeline stops, but ZEN
-    continues an acquisition that is already started. Sends
-    ``ExperimentService.Stop`` with the id of the experiment the latest
-    ``run_experiment_from_path`` call of this process started. If this process started none, the
-    request has no id (ZEN's ``GetStatus`` reads the active experiment that
-    way; that ``Stop`` does the same is NOT verified on the scope).
-
-    Stop ends the acquisition. It does not move the stage, Z or the objective.
+    Sends ``Stop`` with the id this process last started, else with no id
+    (that an empty id stops the active one is NOT verified on the scope). Does
+    not move the stage, Z or the objective.
 
     Returns:
-        True if an experiment was active and the stop request was sent, False
-        if the microscope was idle (nothing is sent then).
+        True if a stop was sent, False if idle (nothing sent).
 
     Raises:
         GRPCError: ZEN refused the status query or the stop request.

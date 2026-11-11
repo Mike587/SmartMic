@@ -15,26 +15,14 @@
 """
 Range checks for values that go to the hardware: positions and changer numbers.
 
-One module, so that every layer uses the same limits: the sync wrappers
-(``MS_CD7_API_LoA``), the async moves (``MS_zenapi_stage_LM``,
-``MS_zenapi_focus``) and the ``.czexp`` writers (``MS_czexp_editor``). No ZEN
-API and no other SmartMic import: it is safe to import anywhere.
+The single source of limits for every layer (sync wrappers, async moves,
+``.czexp`` writers). No ZEN API and no SmartMic import: safe to import anywhere.
 
-All lengths are METRES. The limits are those of this CD7 (they are part of the
-microscope configuration, see TODO.md "Factor out the microscope
-configuration"). To change a limit, set it HERE (``MS_limits.Z_POSITION_MAX``):
+All lengths are METRES; the limits are those of this CD7. Change a limit HERE:
 the names re-exported by ``MS_CD7_API_LoA`` are copies.
 
-Public functions
-----------------
-validate_objective_number, validate_optovar_number, validate_z_position,
-validate_xy_position       -- return ``(ok, message)``; never raise
-require_z_position, require_xy_position, require_objective_number,
-require_optovar_number     -- raise ``ValueError`` with that message
-validate_range             -- the shared check behind all of them
-require_valid              -- raise for a failed ``(ok, message)`` result
-
-Every check refuses ``bool``, ``NaN`` and ``±inf``.
+validate_* return ``(ok, message)`` and never raise; require_* raise
+``ValueError``. Every check refuses ``bool``, ``NaN`` and ``±inf``.
 """
 
 import math
@@ -57,9 +45,8 @@ def validate_range(value: Any, lo: float, hi: float, label: str,
                    unit: str = "") -> Tuple[bool, str]:
     """Shared isinstance + min/max check; returns ``(ok, message)``.
 
-    bool is refused (it is an int in Python: True would select position 1).
-    NaN and ±inf are refused: every comparison with NaN is False, so a plain
-    ``value < lo or value > hi`` test lets NaN through to the hardware.
+    Refuses bool (True would select position 1) and NaN/±inf (a plain
+    ``value < lo or value > hi`` test lets NaN through to the hardware).
     """
     if isinstance(value, bool) or not isinstance(value, type_check):
         return False, f"{label} must be {type_name}, got {type(value)}"
@@ -78,41 +65,25 @@ def require_valid(check: Tuple[bool, str], what: str) -> None:
 
 
 def validate_objective_number(objective_nr: int) -> Tuple[bool, str]:
-    """Check that an objective position number is in the valid range.
-
-    Returns:
-        (is_valid, message)
-    """
+    """Check an objective position number; returns ``(ok, message)``."""
     return validate_range(objective_nr, OBJECTIVE_MIN, OBJECTIVE_MAX,
                           "Objective number", int, "integer")
 
 
 def validate_optovar_number(optovar_nr: int) -> Tuple[bool, str]:
-    """Check that an optovar position number is in the valid range.
-
-    Returns:
-        (is_valid, message)
-    """
+    """Check an optovar position number; returns ``(ok, message)``."""
     return validate_range(optovar_nr, OPTOVAR_MIN, OPTOVAR_MAX,
                           "Optovar number", int, "integer")
 
 
 def validate_z_position(z_pos: float) -> Tuple[bool, str]:
-    """Check that a Z position (metres) is within the limits.
-
-    Returns:
-        (is_valid, message)
-    """
+    """Check a Z position (metres); returns ``(ok, message)``."""
     return validate_range(z_pos, Z_POSITION_MIN, Z_POSITION_MAX,
                           "Z position", (int, float), "numeric", unit="m")
 
 
 def validate_xy_position(x: float, y: float) -> Tuple[bool, str]:
-    """Check that an XY position (metres) is within the stage limits.
-
-    Returns:
-        (is_valid, message)
-    """
+    """Check an XY position (metres) against the stage limits; returns ``(ok, message)``."""
     x_ok, x_msg = validate_range(x, X_STAGE_MIN, X_STAGE_MAX,
                                  "X coordinate", (int, float), "numeric", unit="m")
     if not x_ok:

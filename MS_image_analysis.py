@@ -13,19 +13,11 @@
 #################################################################
 
 """
-MS_image_analysis.py
+Launcher for external image-analysis scripts.
 
-Reusable launcher for external image-analysis scripts.
-
-Smart microscopy is the interaction of microscopy and image analysis.  The
-microscopy half lives in this repo (the MS_* wrapper modules); the analysis
-half is kept as separate, self-contained pixi projects (e.g. the nuclei
-detector in the ZEN-API ``image_analysis`` tree) so each can have its own
-dependency stack without conflicting with the ZEN API environment.
-
-This module provides the glue that runs such an analysis script as a
-subprocess in *its own* pixi environment and feeds it an image, decoupling the
-acquisition pipeline from any particular analysis implementation.
+Each analysis is a separate pixi project with its own dependencies; this
+module runs it as a subprocess in *its own* pixi environment and feeds it an
+image (DEV_NOTES "Image-analysis repos").
 """
 
 import json
@@ -51,35 +43,20 @@ def run_analysis(image_path: Path,
     """
     Launch an external image-analysis script in its own pixi environment.
 
-    The analysis script is intentionally run as a subprocess so that its
-    dependencies (bioio, scikit-image, scipy, napari, etc.) don't need to be
-    installed in the ZEN API environment.  All ``PIXI_*`` environment variables
-    are stripped before the subprocess is launched so that the child process
-    picks up its own pixi environment rather than inheriting the parent's.
-
-    The script is invoked as::
+    ``PIXI_*`` env vars are stripped so the child uses its own environment.
+    Invoked as::
 
         pixi run python <analysis_script> <image_path> <output_folder> --prefix <tag> [extra_args...]
 
-    so any analysis project exposing that CLI (image, output dir, ``--prefix``)
-    can be plugged in here.
-
     Args:
-        image_path:          Path to the image (e.g. .czi) to analyse.
-        output_folder:       Folder where analysis results are written
-                             (created if absent).
-        tag:                 Filename prefix, e.g. "D9_P1".  Forwarded to
-                             ``--prefix``.
-        log:                 Run-level logger.
-        analysis_script:     Path to the analysis entry-point script.
-        analysis_script_dir: Working directory for the subprocess (so pixi
-                             resolves the analysis project's environment).
-                             Defaults to ``analysis_script.parent``.
-        extra_args:          Additional CLI arguments appended after ``--prefix
-                             <tag>``, forwarded as-is (stringified).
+        output_folder:       Created if absent.
+        tag:                 Filename prefix (``--prefix``), e.g. "D9_P1".
+        analysis_script_dir: Subprocess cwd, so pixi finds the analysis
+                             project. Defaults to ``analysis_script.parent``.
+        extra_args:          Appended after ``--prefix <tag>`` (stringified).
 
     Returns:
-        True if the analysis script exited with code 0, False otherwise.
+        True if the script exited with code 0, False otherwise.
     """
     image_path = Path(image_path)
     output_folder = Path(output_folder)
@@ -100,8 +77,7 @@ def run_analysis(image_path: Path,
 
     log.info(f"Starting analysis for {tag}: {image_path.name}")
 
-    # Strip all pixi env vars so the analysis project uses its own environment
-    # rather than inheriting the caller's (ZEN API) pixi environment.
+    # Don't inherit the caller's pixi environment.
     env = {k: v for k, v in os.environ.items() if not k.startswith("PIXI_")}
 
     result = subprocess.run(
@@ -136,14 +112,9 @@ def run_analysis_json(image_path: Path,
     """
     Run an analysis (see run_analysis) and read back its result JSON.
 
-    The result is ``<output_folder>/<tag>_<suffix>.json`` — the convention of
-    the analysis repos (e.g. suffix ``"targets"`` for analyses built from the
-    ia_PoC_002 scaffold; DEV_NOTES "Image-analysis repos").
-
-    Args:
-        image_path, output_folder, tag, log, analysis_script,
-        analysis_script_dir, extra_args: as for run_analysis.
-        suffix: Result-file suffix, e.g. "targets".
+    The result is ``<output_folder>/<tag>_<suffix>.json``, e.g. suffix
+    ``"targets"`` (DEV_NOTES "Image-analysis repos"). Other args: as for
+    run_analysis.
 
     Returns:
         The parsed result, or None (with a warning logged) if the analysis

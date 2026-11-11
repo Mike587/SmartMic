@@ -12,34 +12,16 @@
 # as long as this copyright notice remains part of the code.
 #################################################################
 
-"""
-Live-scan helpers for ZEN via gRPC: tray load / eject and the prescan configuration.
+"""LiveScanService helpers: tray load / eject and the prescan configuration.
 
-``LiveScanService`` (zen_api.lm.live_scan.v1) has four RPCs:
-``LoadTrayAndPrescan``, ``EjectTray``, ``GetConfiguration`` and
-``SetConfiguration``. Load and eject take no arguments; what the prescan does
-on load (carrier detection, bottom-thickness / material measurement, barcodes,
-overview, calibration) is set through the configuration.
+``eject_tray`` and ``load_tray_and_prescan`` are the RAW RPCs, with NO guards.
+Use the ``MS_CD7_API_LoA`` wrappers: they refuse while an experiment runs,
+change from the 50x to the 5x before an eject, and reset a
+``DefiniteFocusTracker``. ZEN retracts Z before it moves the tray; a load
+changes the objective to the 5x (DEV_NOTES "Tray load / eject").
+``SetConfiguration`` is not wrapped.
 
-``eject_tray`` and ``load_tray_and_prescan`` are the RAW RPCs. They have no
-guards. Use the ``MS_CD7_API_LoA`` wrappers instead: they refuse while an
-experiment runs, change from the 50x to the 5x before an eject, and reset a
-``DefiniteFocusTracker``. ZEN itself retracts Z before it moves the tray, and a
-load changes the objective to the 5x (DEV_NOTES "Tray load / eject").
-``SetConfiguration`` is not wrapped yet (TODO.md).
-
-Run the module directly on the scope PC to print the configuration (read-only)::
-
-    pixi run -e smartmic python MS_zenapi_live_scan.py
-
-Public functions
-----------------
-get_live_scan_configuration    -- Read the live-scan configuration as a dict.
-format_live_scan_configuration -- One log line for it (used by preflight);
-                                  flags a template / ZEN carrier mismatch.
-eject_tray                     -- Raw EjectTray RPC (moves the tray out).
-load_tray_and_prescan          -- Raw LoadTrayAndPrescan RPC (moves the tray
-                                  in, changes the objective, runs the prescan).
+Print the configuration (read-only): ``pixi run -e smartmic python MS_zenapi_live_scan.py``
 """
 
 import asyncio
@@ -52,7 +34,6 @@ from MS_metadata import strip_czsht
 from MS_zenapi_helpers import set_logging, open_zen_channel
 from zeiss_paths import CONFIG_PATH as config_path  # config.ini at the repo root
 
-# Auto-generated gRPC stubs for the live-scan service.
 from zen_api.lm.live_scan.v1 import (
     LiveScanServiceStub,
     LiveScanServiceGetConfigurationRequest,
@@ -60,14 +41,11 @@ from zen_api.lm.live_scan.v1 import (
     LiveScanServiceLoadTrayAndPrescanRequest,
 )
 
-# RPC timeouts (s). From the ZEN UI on 2026-11-09: eject approximately 11 s,
-# load + prescan approximately 21 s with every prescan step off. Thickness
-# measurement, barcodes or carrier detection make the load longer.
+# Tray RPC timeouts (s); prescan steps make a load longer (DEV_NOTES "Tray load / eject").
 EJECT_TIMEOUT_S = 120.0
 LOAD_TIMEOUT_S = 600.0
 
-# Field names of LiveScanServiceConfiguration, in proto order. Kept explicit so
-# callers get a plain dict with stable keys, as in get_sample_carrier_info.
+# LiveScanServiceConfiguration fields, in proto order (stable dict keys).
 CONFIG_FIELDS = (
     "sample_holder_template",
     "live_scan_detection",
@@ -84,25 +62,10 @@ CONFIG_FIELDS = (
 
 
 async def get_live_scan_configuration() -> Dict[str, Any]:
-    """Return ZEN's live-scan (tray load / prescan) configuration. Read-only.
+    """Return ZEN's live-scan configuration as a dict keyed by ``CONFIG_FIELDS``. Read-only.
 
-    Calls ``LiveScanService.GetConfiguration``. gRPC errors are NOT swallowed:
-    if this gateway does not support the service (e.g. UNIMPLEMENTED, or the
-    INTERNAL rejection seen for SetSpeed), the ``GRPCError`` propagates.
-
-    Returns:
-        dict with the keys in ``CONFIG_FIELDS``:
-            sample_holder_template          (str):   Carrier/holder type template.
-            live_scan_detection             (bool):  Automatic carrier detection.
-            measure_bottom_thickness        (bool):  Measure bottom thickness.
-            determine_bottom_material       (bool):  Determine bottom material.
-            create_carrier_overview         (bool):  Create a carrier overview image.
-            read_barcodes                   (bool):  Read barcodes.
-            use_left_barcode                (bool):  Use the left barcode reader.
-            use_right_barcode               (bool):  Use the right barcode reader.
-            automatic_live_scan_calibration:  Automatic carrier calibration.
-            refractive_index                (float): Bottom-material refractive index.
-            material                        (str):   Bottom material name.
+    Raises:
+        GRPCError: Propagated if the gateway does not support the service.
     """
     logger = set_logging()
 
@@ -116,8 +79,7 @@ async def get_live_scan_configuration() -> Dict[str, Any]:
     return result
 
 
-# The boolean prescan steps, in proto order (everything in CONFIG_FIELDS except
-# the template, refractive index and material).
+# The boolean prescan steps.
 PRESCAN_FLAGS = tuple(
     f for f in CONFIG_FIELDS
     if f not in ("sample_holder_template", "refractive_index", "material")
@@ -125,16 +87,11 @@ PRESCAN_FLAGS = tuple(
 
 def format_live_scan_configuration(cfg: Dict[str, Any],
                                    carrier: Optional[str] = None) -> str:
-    """One log line for a ``get_live_scan_configuration()`` dict.
+    """One log line for a ``get_live_scan_configuration()`` dict: prescan steps on / off.
 
-    Lists the prescan steps that are on and off. If ``carrier`` (the
-    SampleCarrierService name) is given and the template, without its
-    ``.czsht`` suffix, is a different name, the line ends with a MISMATCH note.
-    Formatting only — never raises on a missing key.
-
-    The suffix: seen on the CD7 2026-11-09, template 'Multiwell 6 - 250um.czsht'
-    while SampleCarrierService reported 'Multiwell 6 - 250um' (DEV_NOTES "Tray
-    load / eject").
+    Appends a MISMATCH note if *carrier* (the SampleCarrierService name)
+    differs from the template without its ``.czsht`` suffix. Never raises on a
+    missing key.
     """
     template = cfg.get("sample_holder_template")
     on = [f for f in PRESCAN_FLAGS if cfg.get(f) is True]
@@ -151,24 +108,16 @@ def format_live_scan_configuration(cfg: Dict[str, Any],
 async def eject_tray(timeout_s: float = EJECT_TIMEOUT_S) -> List[str]:
     """Raw ``LiveScanService.EjectTray``: move the tray out. NO guards.
 
-    Use ``MS_CD7_API_LoA.eject_tray`` instead. Logs how long the RPC took (still
-    to check: does it return at the end of the movement?).
-
-    Returns:
-        list[str]: The notifications ZEN returns.
+    Use ``MS_CD7_API_LoA.eject_tray`` instead. Returns ZEN's notifications.
     """
     return await _timed_rpc("eject_tray", LiveScanServiceEjectTrayRequest(), timeout_s)
 
 
 async def load_tray_and_prescan(timeout_s: float = LOAD_TIMEOUT_S) -> List[str]:
-    """Raw ``LiveScanService.LoadTrayAndPrescan``: move the tray in and run the
-    prescan with the current configuration. NO guards.
+    """Raw ``LiveScanService.LoadTrayAndPrescan``: tray in, then prescan. NO guards.
 
-    ZEN changes the objective to the 5x during the load and does not change it
-    back. Use ``MS_CD7_API_LoA.load_tray_and_prescan`` instead.
-
-    Returns:
-        list[str]: The notifications ZEN returns.
+    ZEN changes the objective to the 5x and does not change it back. Use
+    ``MS_CD7_API_LoA.load_tray_and_prescan`` instead. Returns ZEN's notifications.
     """
     return await _timed_rpc("load_tray_and_prescan",
                             LiveScanServiceLoadTrayAndPrescanRequest(), timeout_s)

@@ -12,31 +12,16 @@
 # as long as this copyright notice remains part of the code.
 #################################################################
 
-"""
-zeiss_paths.py
+"""SmartMic bootstrap: puts this repo and the Zeiss ``zen_api`` tree on ``sys.path``.
 
-Standalone SmartMic project bootstrap.
-
-The MS_* modules depend on the Zeiss-provided ``zen_api`` package (the
-auto-generated gRPC stubs), which lives in the Zeiss ZEN-API example/package
-tree, not in this repository.  Importing this module inserts that tree (and this
-project's own directory) onto ``sys.path`` so ``import zen_api`` resolves no
-matter where a script is launched from.
-
-(The ``zen_api_utils`` example glue is not a dependency: the helpers SmartMic
-uses are vendored in ``MS_zenapi_helpers.py``.)
-
-Usage — import this FIRST, before any MS_* / zen_api import::
+Import this FIRST, before any MS_* / zen_api import (otherwise ``zen_api``
+fails or a test silently skips)::
 
     import zeiss_paths  # noqa: F401  (side effect: extends sys.path)
 
-If the Zeiss example folder ever moves, update ZEISS_EXAMPLES below (or set the
-SMARTMIC_ZEISS_EXAMPLES environment variable to override it).
-
-Also here: the identity of the code in use (``zen_api_version``,
-``zen_api_gateway_version``, ``smartmic_version``, ``git_state``).  The readers
-of ZEN's own log and options files are in ``MS_zen_logs``;
-``zeiss_paths.<name>`` also resolves them (see ``__getattr__``).
+Also: ``CONFIG_PATH``, and the identity of the code in use (``zen_api_version``,
+``zen_api_gateway_version``, ``smartmic_version``, ``git_state``).
+``zeiss_paths.<name>`` also resolves the ``MS_zen_logs`` readers.
 """
 
 import os
@@ -45,9 +30,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
-# Location of the Zeiss ZEN-API python_examples folder (used to locate zen_api;
-# in the OLD layout zen_api shipped loose here).  Override with the
-# SMARTMIC_ZEISS_EXAMPLES env var if needed.
+# The ZEN-API python_examples folder (OLD layout: zen_api loose here).
 ZEISS_EXAMPLES = Path(
     os.environ.get(
         "SMARTMIC_ZEISS_EXAMPLES",
@@ -55,19 +38,12 @@ ZEISS_EXAMPLES = Path(
     )
 )
 
-# This project's own directory, so the MS_* modules can import each other.
 THIS_DIR = Path(__file__).resolve().parent
 
-# The ZEN-API connection config lives at the repo root next to this file.
-# Single source of truth: every MS_zenapi_* module imports CONFIG_PATH from here
-# instead of recomputing ``Path(__file__).parent / "config.ini"`` itself.  It is
-# absolute, so it does not depend on the current working directory.
+# The one config.ini path (absolute, repo root) for every MS_zenapi_* module.
 CONFIG_PATH = THIS_DIR / "config.ini"
 
-# Where ZEN and the ZEN-API gateway write their own logs / binaries. Used only
-# to recover facts the gRPC API itself doesn't expose (MS_zen_logs, and
-# zen_api_gateway_version below). Override via env vars if a
-# machine's install differs from the standard layout.
+# ZEN logs and the gateway exe, for facts the API does not expose.
 ZEN_LOGGING_DIR = Path(
     os.environ.get("SMARTMIC_ZEN_LOGGING_DIR", r"C:/ProgramData/Carl Zeiss/Logging")
 )
@@ -78,32 +54,21 @@ ZEN_API_GATEWAY_EXE = Path(
     )
 )
 
-# IMPORTANT ordering:
-#   * THIS_DIR goes to the FRONT  -> this project's MS_* modules win.
-#   * ZEISS_EXAMPLES goes to the BACK -> used only as a fallback for
-#     zen_api (which does not exist in this project).
-# Otherwise the old MS_* copies still sitting in the Zeiss folder would
-# shadow the ones in this repository.
+# Order matters: THIS_DIR at the FRONT, ZEISS_EXAMPLES at the BACK, so old
+# MS_* copies in the Zeiss folder never shadow this repo's.
 _this = str(THIS_DIR)
 if _this in sys.path:
     sys.path.remove(_this)
 sys.path.insert(0, _this)
 
-# In the OLD ZEN-API layout, python_examples also held a loose zen_api folder,
-# so keep it on the path as a fallback for that layout.
 _zeiss = str(ZEISS_EXAMPLES)
 if _zeiss not in sys.path:
     sys.path.append(_zeiss)
 
 def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
-    """Numeric sort key for a ``.../zen_api-<version>/src`` path.
+    """Numeric (not lexical: 2025.10 > 2025.9) sort key for ``.../zen_api-<version>/src``.
 
-    Sorting the raw path strings is lexical, so e.g. ``zen_api-2025.10.0``
-    would sort BEFORE ``zen_api-2025.9.0`` once a version component reaches two
-    digits ('1' < '9') — silently picking the older package as "newest". Parse
-    each dot-separated component as an int instead. Falls back to ``(-1,)``
-    (sorts before any real version) for a folder name that doesn't parse, so a
-    malformed entry never wins "newest" instead of crashing the comparison.
+    An unparsable name gives ``(-1,)``, so it never wins "newest".
     """
     version = src_path.parent.name[len("zen_api-"):]
     try:
@@ -112,21 +77,13 @@ def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
         return (-1,)
 
 
-# Package names of the ZEN-API folder that holds the versioned zen_api packages
-# (ZEN-API/<folder>/zen_api-<version>/src/).  The ZEISS OAD repository first
-# used "python_package"; it was later renamed to "python_packages" (checked
-# 2026-11-11 on a fresh clone).  Which one exists depends on when OAD was
-# cloned, not on the ZEN version, so both are searched.
+# Folder of the versioned packages (ZEN-API/<folder>/zen_api-<version>/src/);
+# the name depends on the OAD clone, so both are searched.
 ZEN_API_PACKAGE_DIRS = ("python_package", "python_packages")
 
 
 def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> list:
-    """All ``zen_api-<version>/src`` folders next to ``python_examples``.
-
-    Searches every folder name in ``ZEN_API_PACKAGE_DIRS`` and returns the
-    ``src`` paths sorted by numeric version (see ``_zen_api_src_version_key``),
-    newest last.
-    """
+    """All ``<ZEN_API_PACKAGE_DIRS>/zen_api-<version>/src`` next to ``python_examples``, newest last."""
     root = Path(examples_dir).parent
     found = []
     for name in ZEN_API_PACKAGE_DIRS:
@@ -134,14 +91,9 @@ def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> list:
     return sorted(found, key=_zen_api_src_version_key)
 
 
-# NEW ZEN-API layout: zen_api is a separate installable package at
-# ZEN-API/python_package(s)/zen_api-<version>/src/.  Add the newest one's src so
-# `import zen_api` resolves without pip-installing it.  (The OLD layout had
-# zen_api loose in python_examples, already covered above.)
+# NEW layout: add the newest zen_api-<version>/src, so no pip install is needed.
 _zen_api_srcs = _find_zen_api_srcs(ZEISS_EXAMPLES)
-# The repo can ship MULTIPLE package versions, and the newest may be ahead of
-# the gateway.  Pin one with SMARTMIC_ZEN_API_VERSION
-# (e.g. "2025.10.1"); otherwise fall back to the newest available.
+# The newest may be ahead of the gateway: pin with SMARTMIC_ZEN_API_VERSION.
 _pin = os.environ.get("SMARTMIC_ZEN_API_VERSION")
 if _pin:
     _pinned = [s for s in _zen_api_srcs if s.parent.name == f"zen_api-{_pin}"]
@@ -162,19 +114,11 @@ if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
 
 
 def zen_api_version() -> Tuple[Optional[str], Optional[str]]:
-    """Best-effort identity of the resolved ``zen_api`` gRPC stubs, for logging.
+    """``(version, path)`` of the resolved ``zen_api`` stubs, for logging.
 
-    The ZEN gRPC API exposes NO version/about service, and the ``zen_api`` package
-    has no ``__version__`` / pip metadata (see DEV_NOTES). The only version signal
-    is the package folder name in the NEW layout
-    (``…/python_package(s)/zen_api-<version>/src/zen_api``); the OLD loose layout
-    (``python_examples/zen_api``) carries no version.
-
-    Returns ``(version, path)`` where ``version`` is the string parsed from a
-    ``zen_api-<version>`` ancestor folder or ``None`` if not present, and ``path``
-    is the resolved ``zen_api`` package directory (or ``None`` if unimportable).
-    Always log ``path`` too — on a machine with both layouts the loose copy can
-    shadow a versioned package, so the version alone can be misleading.
+    The version comes only from a ``zen_api-<version>`` folder name (None in
+    the OLD loose layout); ``path`` is None if unimportable. Log ``path`` too: a
+    loose copy can shadow a versioned package.
     """
     try:
         import zen_api
@@ -185,12 +129,7 @@ def zen_api_version() -> Tuple[Optional[str], Optional[str]]:
 
 
 def _zen_api_version_from_dir(pkg_dir: Union[str, Path]) -> Optional[str]:
-    """Parse the version from a ``zen_api-<version>`` ancestor of a package dir.
-
-    Returns the version string (e.g. ``"2025.10.1"``) or ``None`` if no such
-    ancestor exists (the OLD loose layout). Pure/​path-only — no I/O — so it is
-    unit-testable against synthetic paths for both layouts.
-    """
+    """Version from a ``zen_api-<version>`` ancestor of a package dir, or None. No I/O."""
     for parent in Path(pkg_dir).parents:
         if parent.name.startswith("zen_api-"):
             return parent.name[len("zen_api-"):]
@@ -198,19 +137,9 @@ def _zen_api_version_from_dir(pkg_dir: Union[str, Path]) -> Optional[str]:
 
 
 def zen_api_gateway_version() -> Optional[str]:
-    """Best-effort FileVersion of ``ZenApiGateway.exe``, for logging.
+    """FileVersion of ``ZenApiGateway.exe`` (e.g. ``"3.6.25262.3"``), or None, for logging.
 
-    This is the actual gRPC service SmartMic connects to — its version tracks
-    the API *contract* (message shapes, RPC behavior) more directly than either
-    the ZEN application version (``zen_app_version``) or the ``zen_api`` Python
-    stub version (``zen_api_version``), since the gateway can be serviced
-    somewhat independently of the rest of ZEN. Not available over the API
-    itself (no version/about call); read via the Win32 file-version resource
-    instead (``win32api``, already present transitively in this env).
-
-    Returns the version string (e.g. ``"3.6.25262.3"``), or ``None`` if the exe
-    is missing, ``win32api`` isn't importable, or its version resource can't be
-    read.
+    The gateway version tracks the API contract best. Read via ``win32api``.
     """
     try:
         import win32api
@@ -225,25 +154,10 @@ def zen_api_gateway_version() -> Optional[str]:
 
 
 def smartmic_version() -> Optional[str]:
-    """Best-effort identity of the exact SmartMic code that is running, for logging.
+    """``git describe --tags --always --dirty`` of SmartMic (THIS_DIR, not the CWD), for logging.
 
-    There is no formal release process yet (no ``__version__``, no git tags —
-    ``pixi.toml``'s ``version = "0.1.0"`` is a static placeholder that has never
-    been bumped), so this reads it straight from git instead:
-    ``git describe --tags --always --dirty``, run against THIS_DIR (SmartMic's
-    own repo root) rather than the caller's cwd, so it reports SmartMic's commit
-    regardless of which project imports it or where that project's own repo is.
-
-    Falls back gracefully at every stage: no tags yet -> just the abbreviated
-    commit hash (e.g. ``"3bf63cf"``); uncommitted changes on top of it ->
-    ``-dirty`` appended (e.g. ``"3bf63cf-dirty"``); once ``PROJECT_CHECKLIST.md``'s
-    freezing workflow actually tags a release, this starts returning a real
-    version automatically (e.g. ``"v0.2.0-5-g3bf63cf-dirty"``) with no code change
-    needed here.
-
-    Returns the describe string, or ``None`` if git itself is unavailable or
-    THIS_DIR isn't inside a git repo (e.g. a project that vendored/copied the
-    SmartMic modules per the freezing workflow, rather than importing them live).
+    E.g. ``"3bf63cf-dirty"``; None if git is unavailable or THIS_DIR is not in
+    a repo (a vendored copy).
     """
     try:
         result = subprocess.run(
@@ -258,23 +172,12 @@ def smartmic_version() -> Optional[str]:
 
 
 def git_state(repo: Union[str, Path]) -> Dict[str, Any]:
-    """Exact code state of the git checkout containing ``repo``, for run records.
+    """Code state of the git checkout containing ``repo``, for run records.
 
-    Unlike :func:`smartmic_version` (a short ``describe`` string for log lines),
-    this gives the FULL commit hash plus the list of uncommitted files, so a
-    dataset can be traced back to the exact code that produced it. Works for any
-    repo: SmartMic itself, a project with its own git repo, an analysis repo.
-
-    Returns ``{"root": str or None, "commit": str or None, "dirty_files": [str]}``:
-
-    * ``root`` — top level of the checkout that git actually reported on. It can
-      differ from ``repo``: a folder that is NOT its own repo but sits inside one
-      (e.g. a project folder without its own ``.git`` under ``SmartMic/projects``)
-      reports the ENCLOSING repo — ``root`` makes that visible.
-    * ``commit`` — ``None`` if git is unavailable, ``repo`` doesn't exist or is not
-      in a git checkout (e.g. a vendored/frozen copy), or the repo has no commit.
-    * ``dirty_files`` — ``git status --porcelain`` paths (relative to ``root``),
-      tracked and untracked; ``[]`` when clean or unknown.
+    Returns ``{"root", "commit", "dirty_files"}``: ``root`` is the checkout git
+    reported on (can be an ENCLOSING repo); ``commit`` the full hash or None
+    (no git / no repo / no commit); ``dirty_files`` the ``git status
+    --porcelain`` paths relative to ``root`` (``[]`` if clean or unknown).
     """
     def git(*args: str) -> Optional[str]:
         try:
@@ -293,12 +196,7 @@ def git_state(repo: Union[str, Path]) -> Dict[str, Any]:
 
 
 def __getattr__(name: str) -> Any:
-    """Compatibility: resolve the names of ``MS_zen_logs`` on this module.
-
-    Project code calls ``zeiss_paths.zen_app_version`` etc.; the readers are in
-    ``MS_zen_logs``. Imported here, not at the top: ``MS_zen_logs`` imports this
-    module, and this bootstrap must stay cheap.
-    """
+    """Resolve ``MS_zen_logs`` names on this module (lazy: it imports this module)."""
     if name.startswith("__"):
         raise AttributeError(name)
     import MS_zen_logs

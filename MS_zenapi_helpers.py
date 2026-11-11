@@ -18,40 +18,10 @@
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #################################################################
 
-"""
-Vendored, dependency-free versions of the few ``zen_api_utils`` helpers
-SmartMic needs.
+"""Vendored ``zen_api_utils`` helpers: logging, channel setup, RPC time limits,
+objective / optovar lookups.
 
-``zen_api`` (the auto-generated gRPC stubs) is an installable package, but
-``zen_api_utils`` is hand-written example glue that ships only inside the
-ZEN-API ``python_examples`` folder and is not packaged.  By vendoring the few
-functions actually used here, the SmartMic library depends solely on
-``zen_api`` and does not need ``zen_api_utils`` on ``sys.path``.
-
-What is vendored
-----------------
-* :func:`set_logging`        -- stdlib logger setup (the Zeiss
-                                ``misc.set_logging`` uses loguru; see below)
-* :func:`initialize_zenapi`  -- config.ini → SSL context → grpclib Channel +
-                                control-token metadata (from ``misc.py``)
-* :func:`open_zen_channel`   -- async context manager around ``initialize_zenapi``
-* :func:`default_rpc_timeout` -- the time limit a ZEN-API call gets when the
-                                caller gives none (not in the Zeiss original)
-* objective / optovar position lookups (from ``objective.py``)
-
-Only third-party imports (``grpclib``) and the stdlib are used — importing this
-module does NOT require the Zeiss tree to be resolvable.
-
-Logging
--------
-``set_logging`` returns a plain :mod:`logging` logger (stdlib, not loguru) on the
-shared ``"smartmic"`` logger name, the same name used by
-:func:`MS_run_log.setup_run_logger`.  This unifies SmartMic onto one
-logging stack: when a pipeline (e.g. the PoC) has already called
-``setup_run_logger`` to attach a per-run file handler, the wrapper modules'
-``set_logging()`` returns that same configured logger, so their output lands in
-the run log file too.  When a wrapper module is used standalone, ``set_logging``
-attaches a UTF-8 stdout handler so logs still print.
+Stdlib + ``grpclib`` only: importing this does NOT need the Zeiss tree.
 """
 
 import asyncio
@@ -66,21 +36,17 @@ from typing import Any, AsyncIterator, List, Optional, Tuple, Union
 
 from grpclib.client import Channel
 
-# The one logger name and line format of SmartMic. setup_run_logger
-# (MS_run_log) imports them, so both configure the SAME logger object.
+# Shared with MS_run_log.setup_run_logger: both configure the SAME logger.
 LOGGER_NAME = "smartmic"
 LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
 LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 
 def ensure_utf8_stdout() -> None:
-    """Best-effort: make ``sys.stdout`` encode UTF-8 so characters like µ don't
-    crash on a Windows cp1252 console.
+    """Best-effort: make ``sys.stdout`` UTF-8 (µ on a cp1252 console).
 
-    Uses ``reconfigure`` (Python 3.7+) to mutate the existing stream in place
-    rather than wrapping it in a new owning ``TextIOWrapper`` — wrapping would
-    close the shared underlying buffer when the wrapper is dropped, breaking any
-    other handler on stdout.  No-op if stdout cannot be reconfigured.
+    ``reconfigure`` in place, not a new ``TextIOWrapper`` (that would close the
+    shared buffer when dropped).
     """
     try:
         if hasattr(sys.stdout, "reconfigure"):
@@ -90,21 +56,10 @@ def ensure_utf8_stdout() -> None:
 
 
 def set_logging(name: str = LOGGER_NAME) -> logging.Logger:
-    """Return the shared stdlib logger, attaching a stdout handler if needed.
+    """Return the shared stdlib logger; attach a UTF-8 stdout handler if it has none.
 
-    The whole SmartMic library uses ONE logging stack (stdlib :mod:`logging`);
-    the Zeiss original uses loguru.
-
-    Returns ``logging.getLogger(name)``.  If that logger already has handlers —
-    e.g. :func:`MS_run_log.setup_run_logger` configured it with a per-run
-    file handler — it is returned untouched, so wrapper-module logs flow into the
-    same run log.  Otherwise a UTF-8-wrapped stdout handler is attached (so
-    standalone use of a wrapper module still prints, and special characters like
-    µ don't crash a Windows cp1252 terminal).  Idempotent: repeated calls never
-    accumulate duplicate handlers.
-
-    Returns:
-        logging.Logger: the shared, handler-equipped logger.
+    A logger already set up by ``MS_run_log.setup_run_logger`` is returned
+    untouched. Idempotent.
     """
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
@@ -119,11 +74,9 @@ def set_logging(name: str = LOGGER_NAME) -> logging.Logger:
 # ---------------------------------------------------------------------------
 # Default time limits for the gRPC calls
 # ---------------------------------------------------------------------------
-# A call to a gateway that hangs otherwise blocks the pipeline with no message.
-# These apply to every call made on a channel from initialize_zenapi /
-# open_zen_channel for which the caller gives no ``timeout`` (a caller's own
-# timeout always wins). They are a guard against a hang, not a tuned value:
-# both are much longer than any duration seen on the CD7.
+# Applied to every call without a caller ``timeout`` (the caller's always wins).
+# A guard against a hung gateway, not a tuned value (DEV_NOTES "Default time
+# limits for the gRPC calls").
 RPC_TIMEOUT_S: float = 60.0         # reads, settings, load / import / save
 MOVE_RPC_TIMEOUT_S: float = 300.0   # stage, Z, objective, optovar, container, DF
 
@@ -131,27 +84,22 @@ MOVE_RPC_TIMEOUT_S: float = 300.0   # stage, Z, objective, optovar, container, D
 _MOVE_RPC_METHODS = frozenset({
     "MoveTo", "MoveToContainer", "FindSurface", "RecallFocus", "LockFocus",
 })
-# Calls with no default limit: an acquisition has no upper bound, and a
-# "Register..." call is a stream that stays open.
+# No default limit: acquisitions are unbounded; "Register..." calls are streams.
 _UNLIMITED_RPC_METHODS = frozenset({
     "RunExperiment", "RunSnap", "StartExperiment", "StartSnap", "StartLive",
     "StartContinuous",
 })
-# Services whose calls get no default: the caller gives the limit itself
-# (tray load / eject), or ZEN limits the search (SWAF ``timeout`` field).
+# No default: the caller sets the limit (tray), or ZEN does (SWAF ``timeout``).
 _UNLIMITED_RPC_SERVICES = frozenset({"LiveScanService", "ExperimentSwAutofocusService"})
 
 
 def default_rpc_timeout(route: str) -> Optional[float]:
-    """The default time limit (s) for a gRPC route, or None for no limit.
-
-    Args:
-        route: e.g. ``"/zen_api.lm.hardware.v2.StageService/MoveTo"``.
+    """The default time limit (s) for a route such as
+    ``"/zen_api.lm.hardware.v2.StageService/MoveTo"``.
 
     Returns:
-        None for an acquisition, a stream, a tray RPC or a SWAF RPC;
-        ``MOVE_RPC_TIMEOUT_S`` for a call that moves hardware;
-        ``RPC_TIMEOUT_S`` for every other call.
+        None for an acquisition, a stream, a tray or a SWAF RPC;
+        ``MOVE_RPC_TIMEOUT_S`` for a hardware move; else ``RPC_TIMEOUT_S``.
     """
     service_path, _, method = route.rpartition("/")
     service = service_path.rsplit(".", 1)[-1]
@@ -166,9 +114,8 @@ def default_rpc_timeout(route: str) -> Optional[float]:
 class ZenChannel(Channel):
     """A grpclib Channel that gives each call a default time limit.
 
-    The one place where the limit is applied: the service stubs are used
-    unchanged. ``last_route`` / ``last_timeout`` name the latest call, for the
-    message of a timeout (``open_zen_channel``).
+    ``last_route`` / ``last_timeout`` name the latest call, for the timeout
+    message in ``open_zen_channel``.
     """
 
     last_route: Optional[str] = None
@@ -187,22 +134,13 @@ class ZenChannel(Channel):
 def initialize_zenapi(
     config_file: Union[str, Path] = "config.ini",
 ) -> Tuple[Channel, List[Tuple[str, str]]]:
-    """Create a gRPC Channel + control-token metadata from a ZEN-API config.ini.
+    """Create a :class:`ZenChannel` + control-token metadata from a config.ini.
 
-    Vendored from ``zen_api_utils.misc.initialize_zenapi``.  Uses only the
-    stdlib (``configparser`` / ``ssl``) plus ``grpclib`` (already a hard
-    dependency).  ``cert_file`` is resolved relative to the config file when it
-    is given as a relative path.
-
-    Args:
-        config_file: Path to the ``config.ini`` file (str or Path).  A relative
-            path is resolved against the current working directory.
+    A relative *config_file* is resolved against the CWD; a relative
+    ``cert_file`` against the config file.
 
     Returns:
-        Tuple ``(channel, metadata)`` — a :class:`ZenChannel` (a grpclib
-        :class:`~grpclib.client.Channel` with default time limits, see
-        :func:`default_rpc_timeout`) and the metadata list
-        ``[("control-token", <token>)]``.
+        ``(channel, [("control-token", <token>)])``.
 
     Raises:
         FileNotFoundError: if the configuration file does not exist.
@@ -221,19 +159,15 @@ def _connection_settings(config_path: str, mtime_ns: int,
                          ) -> Tuple[str, int, str, ssl.SSLContext]:
     """Parse config.ini and build the TLS context: ``(host, port, token, context)``.
 
-    Cached: every wrapper call opens its own channel (a poll loop does so twice
-    a second), and the file and the CA certificate do not change in between.
-    ``mtime_ns`` is part of the cache key only, so an edited config.ini is read
-    again. A changed certificate FILE at the same path needs a new process.
+    Cached (every call opens a channel). ``mtime_ns`` is only a cache key, so an
+    edited config.ini is re-read; a changed certificate file needs a new process.
     """
     config = configparser.ConfigParser()
     config.read(config_path)
     api = config["api"]
 
-    # A TLS client context that trusts the ZEN-API gateway's CA cert.
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
-    # Resolve cert_file relative to the config file when it is a relative path.
     cert_file = Path(api["cert_file"])
     if not cert_file.is_absolute():
         cert_file = (Path(config_path).parent / cert_file).resolve()
@@ -250,32 +184,13 @@ def _connection_settings(config_path: str, mtime_ns: int,
 @asynccontextmanager
 async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
                            ) -> AsyncIterator[Tuple[Channel, List[Tuple[str, str]]]]:
-    """Async context manager: open a ZEN-API gRPC channel and ALWAYS close it.
-
-    Wraps :func:`initialize_zenapi` and guarantees ``channel.close()`` runs on
-    exit, whether the ``async with`` body completes normally or raises.  This is
-    the single place channel lifetime is managed, so the wrapper functions no
-    longer leak a channel when a gRPC call fails mid-function.
-
-    Usage::
-
-        async with open_zen_channel(config_path) as (channel, metadata):
-            svc = SomeServiceStub(channel=channel, metadata=metadata)
-            ...   # any raise here still closes the channel
-
-    Args:
-        config_file: Path to the ``config.ini`` (forwarded to
-            :func:`initialize_zenapi`).
-
-    Yields:
-        Tuple ``(channel, metadata)`` — the open :class:`~grpclib.client.Channel`
-        and the control-token metadata list.
+    """Async context manager: yield ``(channel, metadata)``, ALWAYS close the channel.
 
     Raises:
         TimeoutError: A call did not answer within its time limit
-            (:func:`default_rpc_timeout`, or the caller's own timeout). The
-            message names the call. ZEN may still carry out the request: a
-            timeout stops the wait, not the hardware.
+            (:func:`default_rpc_timeout` or the caller's). The message names
+            the call. ZEN may still carry out the request: a timeout stops the
+            wait, not the hardware.
     """
     channel, metadata = initialize_zenapi(config_file)
     try:
@@ -298,17 +213,11 @@ async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
 # ---------------------------------------------------------------------------
 # Objective / optovar position lookups (from zen_api_utils.objective)
 # ---------------------------------------------------------------------------
-# Duck-typed: these only read the ``.objectives`` / ``.optovars`` lists whose
-# items expose ``.position``, so no zen_api message-type imports are required.
+# Duck-typed on ``.objectives`` / ``.optovars`` items with ``.position``.
 
 
 def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
-    """Return the objective whose ``.position`` matches *position*, or ``None``.
-
-    Args:
-        objectives: an ``ObjectiveChangerServiceGetObjectivesResponse``.
-        position:   the position index to look up.
-    """
+    """Return the objective at *position* in a GetObjectives response, or ``None``."""
     for obj in objectives.objectives:
         if obj.position == position:
             return obj
@@ -316,12 +225,7 @@ def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
 
 
 def get_optovar_by_position(optovars: Any, position: int) -> Optional[Any]:
-    """Return the optovar whose ``.position`` matches *position*, or ``None``.
-
-    Args:
-        optovars: an ``OptovarServiceGetOptovarsResponse``.
-        position: the position index to look up.
-    """
+    """Return the optovar at *position* in a GetOptovars response, or ``None``."""
     for opt in optovars.optovars:
         if opt.position == position:
             return opt

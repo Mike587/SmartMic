@@ -16,21 +16,8 @@
 Read acquisition metadata from ZEN files: ``.czexp`` experiments and ``.czi`` images.
 
 Read-only, no ZEN API. Lengths are µm in the files and metres in every return
-value, except where a name says ``_um``.
-
-Public functions
-----------------
-load_positions_from_czexp     -- The used stage positions of a position file
-get_sample_carrier_from_czi   -- The sample carrier a CZI was acquired with
-get_sample_carrier_from_czexp -- The sample carrier an experiment is set up for
-check_sample_carrier          -- Compare such a carrier with the expected one
-strip_czsht                   -- Carrier template name without ``.czsht``
-get_focus_position_from_czi   -- FocusPosition (µm) of the first plane
-get_zstack_z_range            -- First / centre / last plane Z (µm) of a z-stack
-get_stage_position_from_czi   -- Planned and encoder XY, and Z, of a CZI
-get_xy_position_from_czi      -- The XY of the above as one tuple
-
-The CZI readers need ``pylibCZIrw`` (imported when called).
+value, except where a name says ``_um``. The CZI readers import ``pylibCZIrw``
+when called.
 """
 
 import math
@@ -54,49 +41,32 @@ class Position(TypedDict):
 
 def load_positions_from_czexp(file_path: Path) -> List[Position]:
     """
-    Load well-plate positions directly from a ZEN .czexp experiment file.
+    Load the used positions of a ZEN .czexp, converted from µm to metres.
 
-    Parses the experiment XML with the stdlib ``xml.etree`` parser and returns a
-    flat list of position dicts. Coordinates are converted from µm (as stored in
-    the .czexp) to metres. Only positions with ``is_used == True`` are returned.
-
-    Args:
-        file_path: Path to the .czexp file.
+    A well or position without an ``IsUsedForAcquisition`` flag counts as used.
+    ``scene_index`` counts ALL regions in file order, used or not (ZEN's scene
+    numbering); it is not re-numbered after filtering.
 
     Returns:
-        A flat list of dicts, one entry per position::
-
-            {
-                "well":          str,   # e.g. "D3"
-                "position_name": str,   # e.g. "P1"
-                "scene_index":   int,   # index in file order across ALL regions,
-                                        # used or not — matches ZEN's own scene
-                                        # numbering; NOT re-numbered after filtering.
-                "x_m":           float, # metres
-                "y_m":           float, # metres
-                "z_m":           float, # metres
-            }
+        One ``Position`` dict per used position.
 
     Raises:
         FileNotFoundError: if *file_path* does not exist.
         ValueError: if a used position has no ``<X>`` or ``<Y>``, or an
             ``<X>``/``<Y>``/``<Z>`` that is not a finite number. A missing or
-            empty ``<Z>`` gives ``z_m = 0.0`` (as before); positions that are
-            not used are not checked.
+            empty ``<Z>`` gives ``z_m = 0.0``; unused positions are not checked.
     """
     file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(f"czexp file not found: {file_path}")
 
     def _bool(text: str) -> bool:
-        # Default to True when the tag is missing/empty: a SingleTileRegion
-        # without an explicit IsUsedForAcquisition flag is treated as USED,
-        # matching ZEN's own behaviour (the flag is only written when False).
+        # Missing/empty → USED, as in ZEN (the flag is only written when False).
         return (text or "true").strip().lower() == "true"
 
     def _um(region: ET.Element, tag: str, well: str, required: bool) -> float:
-        # A coordinate that cannot be read must stop the run. A silent 0.0
-        # would send the stage to (0, 0).
+        # An unreadable coordinate must stop the run: a silent 0.0 would send
+        # the stage to (0, 0).
         text = (region.findtext(tag) or "").strip()
         where = f"{file_path.name}: well '{well}', position '{region.get('Name', '')}'"
         if not text:
@@ -141,9 +111,8 @@ def load_positions_from_czexp(file_path: Path) -> List[Position]:
 # --------------------------------------------------------------------------
 # Sample carrier (ZEN SampleHolder "Template") from a .czi / .czexp
 # --------------------------------------------------------------------------
-# Parents a carrier Template is found under. The experiment's own one is
-# SampleHolder/Template; SWAF/stitching blocks also carry a copy under
-# AdditionalSettings/ScanAreaSampleHolderInfo, named with a ".czsht" suffix.
+# The experiment's own carrier is SampleHolder/Template; SWAF/stitching blocks
+# carry a copy under ScanAreaSampleHolderInfo, named with a ".czsht" suffix.
 _CARRIER_TEMPLATE_PARENTS = ("SampleHolder", "ScanAreaSampleHolderInfo")
 
 
@@ -156,14 +125,10 @@ def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict[s
     """
     Read the sample-carrier Template from parsed .czi metadata or .czexp XML.
 
-    Uses the first ``SampleHolder/Template`` in document order (the
-    experiment's own carrier, the outermost one). Falls back to a
-    ``ScanAreaSampleHolderInfo/Template`` (its ``.czsht`` suffix removed) only
-    if there is none. Warns if the file names more than one carrier.
-
-    Lengths are µm in the file and returned in metres. Returns ``None`` if the
-    XML holds no carrier Template. See ``get_sample_carrier_from_czi`` for the
-    keys and for what an insert carrier records.
+    Prefers the first ``SampleHolder/Template``, else a
+    ``ScanAreaSampleHolderInfo/Template``; warns if the file names more than
+    one carrier. µm in the file → metres. ``None`` if there is no Template.
+    Keys: see ``get_sample_carrier_from_czi``.
     """
     found = [(parent.tag, child)
              for parent in root.iter()
@@ -228,32 +193,22 @@ def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict[s
 
 def get_sample_carrier_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
     """
-    Read the sample carrier a CZI was acquired with, from its embedded
-    experiment metadata (``…/SampleHolder/Template``).
+    Read the sample carrier a CZI was acquired with (``SampleHolder/Template``).
 
-    Returns a dict (any value may be ``None`` if the file lacks it):
+    Returns a dict (any value may be ``None``): ``name``, ``category``,
+    ``shape_type``, ``rows``, ``columns``, ``well_width_m``,
+    ``well_height_m``, ``pitch_x_m``/``pitch_y_m`` (centre to centre),
+    ``bounds_size_m`` and ``anchor_point_m`` as ``(x, y)``,
+    ``bottom_material``, ``bottom_thickness_m``, ``insert_type``
+    (``"Default"``/``"PartOfInsert"``), ``part_of_insert_name``,
+    ``is_part_of_insert``. Lengths in metres (µm in the file). ``None`` if
+    the file is unreadable or holds no carrier.
 
-    - ``name``: the Template name, e.g. ``"Multichamber 384"``,
-      ``"Marc_96W_U-Bottom"``, ``"Chamber Slide 8x - 76 x 26 mm - Vertical"``.
-    - ``category`` (``"Multiwell"``, ``"Multichamber"``, …), ``shape_type``
-      (``"Rectangle"``, ``"Ellipse"``, …), ``rows``, ``columns``.
-    - ``well_width_m`` / ``well_height_m`` (one well), ``pitch_x_m`` /
-      ``pitch_y_m`` (well centre to well centre), ``bounds_size_m`` and
-      ``anchor_point_m`` as ``(x, y)``: all metres (µm in the file).
-    - ``bottom_material``, ``bottom_thickness_m``.
-    - ``insert_type`` (``"Default"`` or ``"PartOfInsert"``),
-      ``part_of_insert_name``, ``is_part_of_insert``.
-
-    CAUTION, inserts: for a carrier that is an insert holding slides (e.g.
-    ZEN carrier ``Insert - 3x Slide - Chamber Slide 8x - 432332-9110-000``)
-    the file records only the ONE SLIDE (``name`` = ``"Chamber Slide 8x - 76
-    x 26 mm - Vertical"``, ``is_part_of_insert`` True). The insert's name is
-    not stored (``part_of_insert_name`` is empty), nor which slot was imaged.
+    CAUTION, inserts: for an insert holding slides the file records only the
+    ONE SLIDE (``is_part_of_insert`` True), not the insert's name nor the slot.
     So ``name`` equals the API's ``get_sample_carrier_name()`` only for a
-    carrier that is not an insert (a plate). Use ``check_sample_carrier``.
-    DEV_NOTES "What a CZI / .czexp records about the sample carrier".
-
-    Returns ``None`` if the file is unreadable or holds no carrier.
+    carrier that is not an insert. Use ``check_sample_carrier``. DEV_NOTES
+    "What a CZI / .czexp records about the sample carrier".
     """
     try:
         from pylibCZIrw import czi as pyczi
@@ -267,11 +222,10 @@ def get_sample_carrier_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
 
 def get_sample_carrier_from_czexp(czexp_path: Path) -> Optional[Dict[str, Any]]:
     """
-    Read the sample carrier a ZEN .czexp experiment is set up for
-    (``SampleHolder/Template``). Same dict, and the same caution about
-    inserts, as ``get_sample_carrier_from_czi``.
+    Read the sample carrier a .czexp is set up for.
 
-    Returns ``None`` if the file is unreadable or holds no carrier.
+    Same dict, and the same caution about inserts, as
+    ``get_sample_carrier_from_czi``. ``None`` if unreadable or no carrier.
     """
     try:
         root = ET.parse(str(czexp_path)).getroot()
@@ -286,23 +240,18 @@ def check_sample_carrier(carrier: Optional[Dict[str, Any]],
                          expected_slide: Optional[str] = None,
                          ) -> Tuple[Optional[bool], str]:
     """
-    Check a carrier read by ``get_sample_carrier_from_czi`` / ``_czexp``
-    against what a project expects.
+    Check a carrier from ``get_sample_carrier_from_czi`` / ``_czexp``.
 
     Args:
-        carrier:          The dict from the reader (``None`` → can't check).
-        expected_carrier: The ZEN carrier name, as the API reports it (a
-                          project's ``EXPECTED_SAMPLE_CARRIER``). Compared
-                          only for a carrier that is not an insert.
+        expected_carrier: ZEN carrier name as the API reports it; compared only
+                          for a carrier that is not an insert.
         expected_slide:   For an insert carrier, the slide Template the file
-                          should record, e.g. ``"Chamber Slide 8x - 76 x 26
-                          mm - Vertical"``.
+                          should record.
 
     Returns:
-        ``(ok, message)``. ``ok`` is True (matches), False (doesn't match), or
-        None (can't be checked: no carrier in the file, nothing expected, or
-        an insert with no ``expected_slide``, since the file doesn't record
-        the insert).
+        ``(ok, message)``. ``ok`` is True / False, or None if it can't be
+        checked (no carrier, nothing expected, or an insert without
+        ``expected_slide``: the file doesn't record the insert).
     """
     if carrier is None:
         return None, "no sample carrier in the file"
@@ -326,30 +275,20 @@ def check_sample_carrier(carrier: Optional[Dict[str, Any]],
 
 _FOCUS_POS_RE = re.compile(
     rb"<FocusPosition>\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*</FocusPosition>")
-# The first <FocusPosition> is in the metadata near the start of a ZEN-written
-# CZI (fixtures: at approximately 0.8 MB). A file with more metadata than this
-# gives None, not a wrong value.
+# The first <FocusPosition> is near the start of a ZEN-written CZI (~0.8 MB in
+# the fixtures). A file with more metadata gives None, not a wrong value.
 _CZI_READ_BYTES = 8 * 1024 * 1024
 
 
 def get_focus_position_from_czi(czi_path: Path) -> Optional[float]:
     """
-    Extract the FocusPosition (µm) stored by ZEN in a CZI file's XML metadata.
+    The FocusPosition (µm) in a CZI's metadata: the imaging-plane Z.
 
-    FocusPosition is the actual imaging-plane Z as recorded by the acquisition
-    engine — distinct from the raw ZDrive encoder value returned by the gRPC
-    API.  For a z-stack this is the Z of the first acquired plane.
-
-    Fast path: only the first 8 MB of the file are scanned (no CZI library),
-    and the first ``<FocusPosition>`` found is used.  In a ZEN-written CZI that
-    is in the metadata near the start of the file.
-
-    Args:
-        czi_path: Path to the .czi file.
+    Not the raw ZDrive encoder value of the gRPC API. For a z-stack, the first
+    plane. Scans only the first 8 MB (no CZI library).
 
     Returns:
-        Focus position in µm, or ``None`` if not found or the file is
-        unreadable.
+        Focus position in µm, or ``None`` if not found or unreadable.
     """
     try:
         with open(czi_path, "rb") as f:
@@ -364,30 +303,22 @@ def get_focus_position_from_czi(czi_path: Path) -> Optional[float]:
 
 def get_zstack_z_range(czi_path: Path) -> Optional[Dict[str, Any]]:
     """
-    Return the absolute Z positions (µm) of the first, center, and last planes
-    of a CZI z-stack, together with the number of planes and the step size.
+    Absolute Z (µm) of the first, centre and last planes of a CZI z-stack.
 
-    Uses:
-    - ``FocusPosition`` from the CZI binary header → absolute Z of the first plane.
-    - ``total_bounding_box`` from pylibCZIrw         → number of Z planes.
-    - ``<Scaling><Distance Id="Z"><Value>`` in the embedded XML → step size (m → µm).
-
-    Args:
-        czi_path: Path to the .czi file.
+    First plane from ``FocusPosition``; step from ``Scaling/Distance Id="Z"``
+    (stored in m, returned in µm).
 
     Returns:
-        Dict with keys ``first_um``, ``center_um``, ``last_um``, ``n_z``,
-        ``step_um``, or ``None`` if the file cannot be read or is not a z-stack.
+        Dict with ``first_um``, ``center_um``, ``last_um``, ``n_z``,
+        ``step_um``, or ``None`` if unreadable or not a z-stack.
     """
     try:
         from pylibCZIrw import czi as pyczi
 
-        # First-plane absolute Z — reuse get_focus_position_from_czi
         first_um = get_focus_position_from_czi(czi_path)
         if first_um is None:
             return None
 
-        # --- number of planes and step size from embedded XML ---
         with pyczi.open_czi(str(czi_path)) as czidoc:
             bbox    = czidoc.total_bounding_box
             z_range = bbox.get("Z", (0, 1))
@@ -427,28 +358,20 @@ def get_zstack_z_range(czi_path: Path) -> Optional[Dict[str, Any]]:
 
 def get_stage_position_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
     """
-    Read the stage position (metres) a CZI was acquired at, from its embedded
-    ZEN metadata.  Returns a dict (any field may be ``None``):
+    Read the stage position (metres) a CZI was acquired at.
 
-    - ``planned_x_m`` / ``planned_y_m`` — the scene ``CenterPosition``: the position
-      the acquisition is set to.  For an experiment with an AUTHORED, used position
-      (use-positions mode), this is where the stage navigates to and images — i.e.
-      WHERE THE IMAGE WAS TAKEN.  This is the reliable field; use it.
-    - ``actual_x_m`` / ``actual_y_m`` — the ``MTBStageAxisX``/``Y`` encoder value in
-      the metadata.  CAUTION: this is typically the PARKED/home position, not the
-      scan position — a positioned acquisition moves to the target, images, then
-      returns the stage home, and the encoder here reflects that parked spot
-      (observed: encoder = the start position even when the scan navigated
-      elsewhere).  ZEN also marks it ``IsPrecise=false``.  Do not treat it as
-      "where imaged".
-    - ``z_m`` — the focus Z (``FocusPosition``; for a z-stack, the first plane).
+    Returns a dict (any field may be ``None``), or ``None`` if unreadable:
 
-    Note: this only reflects a navigated position when the experiment has an
-    AUTHORED position (e.g. NfS_image_nuceli_002).  A region merely injected into a
-    non-positioned experiment is ignored by ZEN, and CenterPosition then need not
-    match where it imaged — verify by image content.  Logic promoted from the
-    image-analysis ``get_scene_center_positions`` (ia_PoC_002 / ia_Marc / ia_NfS).
-    Returns ``None`` if the file is unreadable.
+    - ``planned_x_m`` / ``planned_y_m``: the scene ``CenterPosition``. For an
+      experiment with an AUTHORED, used position this is where it imaged. Use it.
+    - ``actual_x_m`` / ``actual_y_m``: the ``MTBStageAxisX``/``Y`` encoder.
+      CAUTION: usually the PARKED/home position after the scan, not the scan
+      position (``IsPrecise=false``). Do not treat it as "where imaged".
+    - ``z_m``: ``FocusPosition`` (for a z-stack, the first plane).
+
+    A region merely injected into a non-positioned experiment is ignored by
+    ZEN; CenterPosition then need not match where it imaged (verify by image
+    content).
     """
     try:
         from pylibCZIrw import czi as pyczi
@@ -458,7 +381,6 @@ def get_stage_position_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
         set_logging().warning(f"Stage position: could not read the file ({type(e).__name__}: {e})")
         return None
 
-    # Actual encoder XY (recorded at acquisition).
     actual_x_m = actual_y_m = None
     for pc in root.iter("ParameterCollection"):
         cid = pc.get("Id", "")
@@ -498,14 +420,11 @@ def get_stage_position_from_czi(czi_path: Path) -> Optional[Dict[str, Any]]:
 def get_xy_position_from_czi(czi_path: Path, prefer: str = "planned"
                              ) -> Optional[Tuple[float, float]]:
     """
-    Convenience getter: the stage XY (metres) a CZI was acquired at, as a tuple.
+    The stage XY (metres) a CZI was acquired at, as a tuple.
 
-    ``prefer="planned"`` (default) returns the scene ``CenterPosition`` — the
-    acquisition position (where an authored-position experiment navigates to and
-    images) — falling back to the encoder if absent.  ``prefer="actual"`` returns
-    the ``MTBStageAxis`` encoder first, but note that is usually the PARKED home
-    position, not the scan position (see :func:`get_stage_position_from_czi`).
-    Returns ``None`` if neither XY is present.
+    ``prefer="planned"`` (default): ``CenterPosition``, else the encoder.
+    ``prefer="actual"``: the encoder first, which is usually the PARKED home
+    position (see :func:`get_stage_position_from_czi`). ``None`` if neither.
     """
     info = get_stage_position_from_czi(czi_path)
     if info is None:

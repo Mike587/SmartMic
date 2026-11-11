@@ -15,21 +15,8 @@
 """
 Run records: the per-run log file, the version record and JSONL records.
 
-No ZEN API here.
-
-Public functions
-----------------
-setup_run_logger -- Timestamped run log (file + stdout) on the shared logger
-write_run_info   -- ``run_info_<ts>.json``: the code and software of a run
-append_jsonl     -- Append one record to a crash-safe ``.jsonl`` file
-read_jsonl       -- Read the records back (a cut-off last line is skipped)
-
-Constants
----------
-DEFAULT_EXPERIMENT_OUTPUT_FOLDER -- where acquisitions go when the caller names
-    no folder. Machine-specific: override with the ``SMARTMIC_OUTPUT_ROOT``
-    environment variable.
-DEFAULT_LOG_FOLDER -- ``<output folder>/log``.
+No ZEN API here. ``DEFAULT_EXPERIMENT_OUTPUT_FOLDER`` is machine-specific:
+override it with the ``SMARTMIC_OUTPUT_ROOT`` environment variable.
 """
 
 import json
@@ -43,13 +30,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from MS_zenapi_helpers import (LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME,
                                ensure_utf8_stdout, set_logging)
 
-# Default output folder of an acquisition (the one place this path is written).
-# Keep it on the drive of ZEN's own default image folder: the move of each
-# result is then a fast rename (DEV_NOTES).
+# Keep it on the drive of ZEN's default image folder: the move of each result
+# is then a fast rename (DEV_NOTES).
 DEFAULT_EXPERIMENT_OUTPUT_FOLDER = Path(
     os.environ.get("SMARTMIC_OUTPUT_ROOT", "F:/UserData/mike/api"))
 
-# Default folder for run log files
 DEFAULT_LOG_FOLDER = DEFAULT_EXPERIMENT_OUTPUT_FOLDER / "log"
 
 
@@ -58,25 +43,19 @@ def setup_run_logger(
     name: str = LOGGER_NAME,
 ) -> Tuple[logging.Logger, Path]:
     """
-    Create a timestamped per-run log file and return a logger that emits to
-    both the log file and stdout.
+    Attach a timestamped ``run_<ts>.log`` file and stdout to the shared logger.
+
+    Call once at the start of a run; the wrappers' ``set_logging`` then returns
+    this logger, so their output lands in the run log too. Existing handlers
+    are replaced.
 
     Args:
-        log_folder: Directory for the log file.
-                    Defaults to DEFAULT_LOG_FOLDER.
-        name:       Logger name passed to logging.getLogger().
-                    Use different names when running multiple independent
-                    scripts in the same process to avoid handler collisions.
+        log_folder: Defaults to DEFAULT_LOG_FOLDER.
+        name:       Logger name; use another name for an independent script in
+                    the same process.
 
     Returns:
-        Tuple ``(logger, log_file)`` — the configured ``logging.Logger`` and
-        the ``Path`` to the timestamped per-run log file it writes to.
-
-    Note:
-        Uses the logger name and line format of ``MS_zenapi_helpers`` (imported,
-        one definition).  Call this once at the start of a run to attach the
-        per-run file handler; the wrapper modules' ``set_logging`` then returns
-        this same configured logger, so their output also lands in the run log.
+        ``(logger, log_file)``.
     """
     if log_folder is None:
         log_folder = DEFAULT_LOG_FOLDER
@@ -89,8 +68,7 @@ def setup_run_logger(
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
 
-    # Clear any handlers left over from a previous call so we never
-    # accumulate duplicates when the function is called more than once.
+    # No duplicate handlers on a second call.
     logger.handlers.clear()
 
     fmt = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
@@ -115,28 +93,19 @@ def write_run_info(log_file: Path, log: logging.Logger,
     """
     Write the run's version record, ``run_info_<ts>.json``, next to its run log.
 
-    The record pins a dataset to the exact code and software that produced it:
-    SmartMic's full commit + uncommitted files, the same for each repo in
-    ``repos`` (the project's own repo, its analysis repo(s), …), and the ZEN app,
-    ZenApiGateway and ``zen_api`` stub versions (none of which the gRPC API
-    reports — see ``zeiss_paths``). ``preflight()`` logs a one-line summary of the
-    ZEN/SmartMic versions; this is the full, machine-readable record. Call it
-    once per run, right after ``setup_run_logger``. Promoted from Marc_SM_003.
-
-    Every repo's commit is also logged, with a WARNING listing its uncommitted
-    files, so a run on modified code is visible in the run log itself.
+    Records the commit + uncommitted files of SmartMic and of each repo in
+    ``repos``, and the ZEN app, ZenApiGateway and ``zen_api`` versions (the
+    gRPC API reports none of them; see ``zeiss_paths``). Each repo's commit is
+    logged, with a WARNING for uncommitted files. Call once per run, right
+    after ``setup_run_logger``.
 
     Args:
-        log_file: The run log from ``setup_run_logger`` (``run_<ts>.log``); the
-                  record is written beside it as ``run_info_<ts>.json`` (any
-                  other log name ``<stem>.log`` → ``<stem>_run_info.json``).
-        log:      Logger for the summary lines.
-        repos:    ``{name: path}`` of further git repos to record, e.g.
-                  ``{"project": PROJECT_DIR, "analysis": ANALYSIS_DIR}``. A path
-                  that is not a git checkout records ``commit: None``.
-        extra:    Optional JSON-serialisable dict stored under ``"extra"``
-                  (e.g. the run's key settings).
-        script:   The script to record; defaults to ``sys.argv[0]``.
+        log_file: The ``run_<ts>.log`` from ``setup_run_logger`` (another
+                  ``<stem>.log`` gives ``<stem>_run_info.json``).
+        repos:    ``{name: path}`` of further git repos; a non-git path
+                  records ``commit: None``.
+        extra:    JSON-serialisable dict stored under ``"extra"``.
+        script:   Defaults to ``sys.argv[0]``.
 
     Returns:
         Path of the written JSON file.
@@ -181,17 +150,14 @@ def write_run_info(log_file: Path, log: logging.Logger,
 
 def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     """
-    Append one record as a JSON line — the per-record log of a resumable run
-    (e.g. one line per imaged cell, read back on resume with read_jsonl).
+    Append one record as a JSON line (crash-safe log of a resumable run).
 
-    Each record is flushed and fsync'ed, so a crash or power cut loses at most
-    the line being written. If the file does not end in a newline (the last
-    write was cut off), a newline is written first, so the fragment stays on a
-    line of its own instead of swallowing this record too.
+    Flushed and fsync'ed: a crash loses at most the line being written. A
+    cut-off last line gets a newline first, so it does not swallow this record.
 
     Args:
-        path:   The .jsonl file (created, with its folder, if absent).
-        record: A JSON-serializable dict (numpy scalars are not — convert first).
+        path:   Created, with its folder, if absent.
+        record: JSON-serializable dict (convert numpy scalars first).
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -211,11 +177,7 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     """
     Read the records written by append_jsonl.
 
-    Lines that are not valid JSON — a record cut off by a crash — are skipped
-    with a warning; blank lines are ignored.
-
-    Args:
-        path: The .jsonl file.
+    Invalid lines (cut off by a crash) are skipped with a warning.
 
     Returns:
         The records in file order; [] if the file does not exist.

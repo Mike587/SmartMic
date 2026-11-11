@@ -22,26 +22,7 @@
 # optovar magnification changers.
 #################################################################
 
-"""
-Objective changer and optovar helpers for ZEN blue / ZEN core via gRPC.
-
-This module wraps two ZEN gRPC hardware services:
-
-* ``ObjectiveChangerService`` (zen_api.lm.hardware.v2) -- motorised revolving
-  nosepiece / objective changer
-* ``OptovarService``          (zen_api.lm.hardware.v2) -- magnification
-  changer (optovar) placed in the beam path
-
-Public functions
-----------------
-set_objective_set_optovar         -- Move both objective and optovar to new positions
-get_current_objective_and_optovar -- Query the current position indices of both devices
-get_active_objective              -- The inventory entry (name, NA, immersion type) of the active objective
-get_immersion_objective_positions -- Changer positions that hold an immersion objective
-is_immersion_objective            -- True unless the API says the objective is dry (AIR)
-get_current_objective_and_optovar_names -- Same, resolved to human-readable names
-list_objectives_and_optovars      -- Read-only (name, position) inventory of both devices
-"""
+"""Objective changer and optovar helpers (ObjectiveChangerService, OptovarService)."""
 
 from typing import Any, Callable, List, Tuple
 
@@ -55,7 +36,6 @@ from MS_zenapi_helpers import (
     get_optovar_by_position,
 )
 
-# Auto-generated gRPC stubs for objective changer and optovar services.
 from zen_api.lm.hardware.v2 import (
     ObjectiveChangerServiceStub,
     ObjectiveChangerServiceGetPositionRequest,
@@ -68,20 +48,15 @@ from zen_api.lm.hardware.v2 import (
     OptovarServiceGetOptovarsRequest,
 )
 
-# config.ini path — single-sourced from zeiss_paths (repo root), not recomputed.
 from zeiss_paths import CONFIG_PATH as config_path
 
 
 def _require(lookup_fn: Callable[[Any, int], Any],
              used_positions_fn: Callable[[Any], List[int]],
              inventory: Any, position: int, context: str, kind: str) -> Any:
-    """Return ``lookup_fn(inventory, position)``, or raise a clear error if unknown.
+    """Return ``lookup_fn(inventory, position)``; ValueError if the position is unknown.
 
-    lookup_fn returns None for a position not present in the reported
-    inventory; dereferencing that None would otherwise surface as a generic
-    AttributeError, which a caller's broad except/retry (see
-    MS_CD7_API_LoA._change_optics) would then mask as just
-    another transient failure instead of the real config/hardware mismatch.
+    (A None would surface as an AttributeError that a retrying caller masks.)
     """
     item = lookup_fn(inventory, position)
     if item is None:
@@ -130,23 +105,17 @@ async def _read_positions(objchanger_service: ObjectiveChangerServiceStub,
 
 
 def is_immersion_objective(objective: Any) -> bool:
-    """True unless the API says the objective is a dry objective.
+    """True unless the ``ObjectiveData`` has ``immersion_type == AIR``.
 
-    ``objective`` is an inventory entry (``ObjectiveData``). Only
-    ``immersion_type == AIR`` counts as dry: WATER, OIL, GLYCERINE, SILICONE and
-    also UNSPECIFIED count as immersion, so an objective that ZEN does not
-    describe is treated the safe way (the Z=0 lower is refused).
-    On this CD7 (read 2026-11-10): 5x, 20x/0.7, 20x/0.95 = AIR, 50x/1.2 = WATER.
+    UNSPECIFIED counts as immersion, so an undescribed objective is treated the
+    safe way (the Z=0 lower is refused). This CD7: only the 50x/1.2 is WATER.
     """
     return objective.immersion_type != ObjectiveChangerImmersionTypes.AIR
 
 
 async def get_active_objective() -> Any:
-    """Return the inventory entry of the objective that is in the beam path.
-
-    Returns:
-        The ``ObjectiveData`` of the active objective: ``name``, ``position``,
-        ``na``, ``magnification``, ``immersion_type``.
+    """Return the ``ObjectiveData`` (name, position, na, magnification,
+    immersion_type) of the objective in the beam path.
 
     Raises:
         ValueError: The changer reports a position that is not in its inventory.
@@ -161,10 +130,7 @@ async def get_active_objective() -> Any:
 
 
 async def get_immersion_objective_positions() -> List[int]:
-    """Return the changer positions that hold an immersion objective (sorted).
-
-    Read from the inventory (``is_immersion_objective``), not from a constant.
-    """
+    """Return the sorted changer positions the inventory marks as immersion."""
     async with open_zen_channel(config_path) as (channel, metadata):
         objchanger_service, _ = _services(channel, metadata)
         objectives = await objchanger_service.get_objectives(
@@ -174,23 +140,18 @@ async def get_immersion_objective_positions() -> List[int]:
 
 
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int) -> None:
-    """Move the objective changer and optovar to the requested positions.
+    """Move the objective changer and optovar to 1-based position indices.
 
-    Logs all available objectives and optovars, the initial positions, and the
-    positions after each move so that changes are fully traceable in the run log.
+    No immersion handling here; the inventory and positions are logged.
 
-    Args:
-        obj_new_position: 1-based position index of the target objective on
-            the revolving nosepiece.
-        opt_new_position: 1-based position index of the target optovar
-            setting.
+    Raises:
+        ValueError: A current or requested position is not in the inventory.
     """
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
         objchanger_service, optovar_service = _services(channel, metadata)
 
-        # Fetch the full hardware inventory so we can resolve names from positions.
         objectives, optovars = await _read_inventory(objchanger_service, optovar_service)
 
         logger.info("-------- Available objectives and Optovars  ----------------------------")
@@ -208,7 +169,6 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
 
         logger.info("------------------ Move Objectives -----------------------")
 
-        # Record where we started so the change is explicit in the log.
         pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
         current_objective = _require_objective(objectives, pos_obj.value, "Current objective")
         logger.info(
@@ -243,14 +203,9 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
 
 
 async def get_current_objective_and_optovar() -> Tuple[int, int]:
-    """Return the current position indices of the objective changer and optovar.
+    """Return ``(obj_position, opt_position)``.
 
-    Two RPCs only (the two positions): this is called by every move guard and
-    in the poll loop of an objective change.
-
-    Returns:
-        Tuple ``(obj_position, opt_position)`` — both are integer position
-        indices as reported by the hardware.
+    Two RPCs only: called by every move guard and in poll loops.
     """
     async with open_zen_channel(config_path) as (channel, metadata):
         return await _read_positions(*_services(channel, metadata))
@@ -258,16 +213,7 @@ async def get_current_objective_and_optovar() -> Tuple[int, int]:
 
 async def list_objectives_and_optovars(
 ) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
-    """Return the full objective and optovar inventory as ``(name, position)`` lists.
-
-    Read-only — does not move any hardware.  Useful for discovering which
-    position index corresponds to which magnification (e.g. the 5x objective
-    or the 1x optovar).
-
-    Returns:
-        Tuple ``(objectives, optovars)`` where each is a list of
-        ``(name, position)`` tuples.
-    """
+    """Return ``(objectives, optovars)``, each a list of ``(name, position)``. Read-only."""
     async with open_zen_channel(config_path) as (channel, metadata):
         objectives, optovars = await _read_inventory(*_services(channel, metadata))
 
@@ -278,15 +224,7 @@ async def list_objectives_and_optovars(
 
 async def get_current_objective_and_optovar_names(
 ) -> Tuple[Tuple[str, int], Tuple[str, int]]:
-    """Return the current objective and optovar as ``(name, position)`` pairs.
-
-    Unlike :func:`get_current_objective_and_optovar`, which returns only the
-    hardware position indices, this resolves the human-readable names (e.g.
-    ``Plan-Apochromat 20x/0.8`` / ``2x``) so callers can verify the optics by
-    magnification/NA rather than by slot number.
-
-    Returns:
-        Tuple ``((obj_name, obj_position), (opt_name, opt_position))``.
+    """Return ``((obj_name, obj_position), (opt_name, opt_position))``.
 
     Raises:
         ValueError: A current position is not in the reported inventory.
