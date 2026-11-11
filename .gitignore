@@ -75,3 +75,6 @@ temp_*.py
 # ...except the superseded large CZIs — use the *_small variants instead.
 tests/fixtures/czi/sharp.czi
 tests/fixtures/czi/blurry.czi
+
+# Library functions unused by the Marc_SM* projects (generated 2026-11-10) — kept locally, not shared.
+UNUSED_IN_MARC_PROJECTS.md
