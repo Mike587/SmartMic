@@ -221,9 +221,16 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   plate UNDERSIDE and adds an offset"). Cause still open (polystyrene bottom? TODO
   "A real polystyrene plate"). The DF and SWAF hardware tests cannot run on this plate.
   **Update (Mike, same day):** DF failed the same way when run manually in ZEN on this
-  plate, so it is not the API path. With a glass-bottom plate DF works again. Cause
-  still not understood (this plate / polystyrene / the 3 mm skirt?): investigate
-  later (TODO).
+  plate, so it is not the API path. With a glass-bottom plate DF works again.
+  **Likely cause (Mike's suspicion, 2026-11-11, not proven):** the carrier material
+  was set to **Polystyrene**. The plate has a plastic bottom, but its optical
+  properties are much closer to glass than to polystyrene, and the wrong material
+  seems to confuse DF. **With the material set to Glass in ZEN** (n = 1.52; ZEN then
+  reported 186.9 µm, measured), DF on the same plate works: the hardware tests
+  `test_focus.py` (FindSurface, repeatability, Store/Recall, SWAF) and
+  `test_smoke_e2e.py` all passed the same day. So for such plates set the material
+  by the optical behaviour, not the nominal bottom material;
+  `preflight(..., expected_material="Glass")` can enforce it.
 
 - **With immersion, DF can lock onto the WRONG surface and still report
   quality 99.** Same run (New-03.czi, 50x/1.2 W, ibidi 96-well, 170 µm glass
