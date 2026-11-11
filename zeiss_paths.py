@@ -112,14 +112,33 @@ def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
         return (-1,)
 
 
-# NEW ZEN-API layout (>= 2026.05): zen_api is a separate installable package at
-# ZEN-API/python_package/zen_api-<version>/src/.  Add the newest one's src so
+# Package names of the ZEN-API folder that holds the versioned zen_api packages
+# (ZEN-API/<folder>/zen_api-<version>/src/).  The ZEISS OAD repository first
+# used "python_package"; it was later renamed to "python_packages" (checked
+# 2026-11-11 on a fresh clone).  Which one exists depends on when OAD was
+# cloned, not on the ZEN version, so both are searched.
+ZEN_API_PACKAGE_DIRS = ("python_package", "python_packages")
+
+
+def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> list:
+    """All ``zen_api-<version>/src`` folders next to ``python_examples``.
+
+    Searches every folder name in ``ZEN_API_PACKAGE_DIRS`` and returns the
+    ``src`` paths sorted by numeric version (see ``_zen_api_src_version_key``),
+    newest last.
+    """
+    root = Path(examples_dir).parent
+    found = []
+    for name in ZEN_API_PACKAGE_DIRS:
+        found.extend((root / name).glob("zen_api-*/src"))
+    return sorted(found, key=_zen_api_src_version_key)
+
+
+# NEW ZEN-API layout: zen_api is a separate installable package at
+# ZEN-API/python_package(s)/zen_api-<version>/src/.  Add the newest one's src so
 # `import zen_api` resolves without pip-installing it.  (The OLD layout had
 # zen_api loose in python_examples, already covered above.)
-_zen_api_srcs = sorted(
-    (ZEISS_EXAMPLES.parent / "python_package").glob("zen_api-*/src"),
-    key=_zen_api_src_version_key,
-)
+_zen_api_srcs = _find_zen_api_srcs(ZEISS_EXAMPLES)
 # The repo can ship MULTIPLE package versions, and the newest may be ahead of
 # the gateway.  Pin one with SMARTMIC_ZEN_API_VERSION
 # (e.g. "2025.10.1"); otherwise fall back to the newest available.
@@ -137,7 +156,7 @@ _zen_api_locations = [ZEISS_EXAMPLES, *_zen_api_srcs]
 if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
     sys.stderr.write(
         f"[zeiss_paths] WARNING: zen_api not found under {ZEISS_EXAMPLES} or "
-        f"{ZEISS_EXAMPLES.parent / 'python_package'}/zen_api-*/src. "
+        f"{ZEISS_EXAMPLES.parent}/{{{','.join(ZEN_API_PACKAGE_DIRS)}}}/zen_api-*/src. "
         f"Set SMARTMIC_ZEISS_EXAMPLES to the correct python_examples path.\n"
     )
 
@@ -148,7 +167,7 @@ def zen_api_version() -> Tuple[Optional[str], Optional[str]]:
     The ZEN gRPC API exposes NO version/about service, and the ``zen_api`` package
     has no ``__version__`` / pip metadata (see DEV_NOTES). The only version signal
     is the package folder name in the NEW layout
-    (``…/python_package/zen_api-<version>/src/zen_api``); the OLD loose layout
+    (``…/python_package(s)/zen_api-<version>/src/zen_api``); the OLD loose layout
     (``python_examples/zen_api``) carries no version.
 
     Returns ``(version, path)`` where ``version`` is the string parsed from a

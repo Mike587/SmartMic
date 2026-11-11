@@ -371,3 +371,33 @@ def test_log_readers_follow_a_changed_logging_dir(tmp_path, monkeypatch):
     (tmp_path / "ZEN.log.xml").write_text(
         '<data name="SoftwareVersion" value="9.9.9" />', encoding="utf-8")
     assert MS_zen_logs.zen_app_version() == "9.9.9"
+
+
+def _make_pkg(root: Path, folder: str, version: str) -> Path:
+    src = root / "ZEN-API" / folder / f"zen_api-{version}" / "src"
+    (src / "zen_api").mkdir(parents=True)
+    return src
+
+
+def test_find_srcs_old_folder_name(tmp_path):
+    # OAD checkouts before the rename: ZEN-API/python_package/
+    src = _make_pkg(tmp_path, "python_package", "2025.10.1")
+    assert zp._find_zen_api_srcs(tmp_path / "ZEN-API" / "python_examples") == [src]
+
+
+def test_find_srcs_new_folder_name(tmp_path):
+    # Current OAD layout: ZEN-API/python_packages/
+    src = _make_pkg(tmp_path, "python_packages", "2025.10.1")
+    assert zp._find_zen_api_srcs(tmp_path / "ZEN-API" / "python_examples") == [src]
+
+
+def test_find_srcs_both_names_sorted_by_version(tmp_path):
+    old = _make_pkg(tmp_path, "python_package", "2026.5.1")
+    new = _make_pkg(tmp_path, "python_packages", "2025.10.1")
+    newest = _make_pkg(tmp_path, "python_packages", "2026.11.1")
+    found = zp._find_zen_api_srcs(tmp_path / "ZEN-API" / "python_examples")
+    assert found == [new, old, newest]
+
+
+def test_find_srcs_none(tmp_path):
+    assert zp._find_zen_api_srcs(tmp_path / "ZEN-API" / "python_examples") == []

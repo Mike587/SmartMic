@@ -1037,6 +1037,14 @@ versioned package to win, remove/rename the loose `python_examples/zen_api` copy
 reorder `zeiss_paths` to prefer the `python_package` src) — not changed here, since
 the loose copy may be intentionally the one matched to the gateway.
 
+**OAD folder renamed: `python_package` → `python_packages` (found 2026-11-11).**
+A fresh clone of the ZEISS OAD repo has `ZEN-API/python_packages/zen_api-2025.10.1/`
+(plural) and no loose `python_examples/zen_api` any more; ZEN 3.14/3.15 packages
+are published as GitHub releases, not in that folder. The folder name depends on
+when OAD was cloned, not on the ZEN version. `zeiss_paths` now searches both names
+(`ZEN_API_PACKAGE_DIRS`, `_find_zen_api_srcs`); unit tests in `test_zeiss_paths.py`.
+This machine's older checkout is unaffected. Not yet tested on the scope.
+
 **Per-run version record — promoted from Marc_SM_003 (2026-11-09):** the
 preflight line is for a human reading the log; a dataset also needs a
 machine-readable record of the exact code. `MS_Helper_function.write_run_info

@@ -1,97 +1,164 @@
 # SmartMic
 
-Smart-microscope automation built on top of the Zeiss ZEN gRPC API (ZEN-API).
+**Agent-coded smart microscopy on a commercial ZEISS system.**
 
-This repository contains the custom (`MS_*`) automation code. It depends on the
-Zeiss-provided **`zen_api`** package (auto-generated gRPC stubs), which ships with
-the ZEN-API examples and is **not** vendored here — see
-[How the Zeiss dependency is resolved](#how-the-zeiss-dependency-is-resolved).
-The small set of ZEN-API helpers SmartMic needs (channel init, logging,
-objective/optovar lookups) are vendored in `MS_zenapi_helpers.py`.
+SmartMic is a Python wrapper around the ZEISS ZEN gRPC API (ZEN-API). It lets an
+AI coding agent write smart-microscopy experiments that run unattended on a
+ZEISS microscope: the agent is the *developer*, not the runtime. Acquisitions
+run as ordinary, deterministic Python scripts that a person has reviewed and
+tested on the microscope.
 
-## Layout
+Developed at [ScopeM](https://scopem.ethz.ch), the microscopy core facility of
+ETH Zurich.
 
-The repo root holds the **reusable API wrapper** (the "library"). Example
-pipelines that consume it live under `projects/`, one folder each.
+![How SmartMic fits between you, the AI agent, ZEN and the microscope](docs/images/smartmic_full_picture.svg)
 
-### API wrapper (repo root)
+## Why
 
-| File | Role |
-|------|------|
-| `MS_CD7_API_LoA.py` | Synchronous wrappers around the ZEN gRPC API |
-| `MS_zenapi_focus.py` | DefiniteFocus / FocusService (Z-drive) helpers |
-| `MS_zenapi_swaf.py` | Software-autofocus experiment helpers |
-| `MS_zenapi_objectivechanger.py` | Objective / optovar control |
-| `MS_zenapi_stage_LM.py` | XY-stage control |
-| `MS_zenapi_sample_carrier.py` | Sample-carrier info query; container (slide position) moves |
-| `MS_zenapi_live_scan.py` | Tray load / eject (LiveScanService) RPCs and the read-only prescan configuration; run it directly to print the configuration. Use the guarded `eject_tray` / `load_tray_and_prescan` in `MS_CD7_API_LoA.py` |
-| `MS_zenapi_experiment_methods.py` | Run an experiment by name, path, or XML and collect the result; status of a running experiment |
-| `MS_zenapi_experiment_smoke.py` | Smoke test of the whole ExperimentService (clone / save / export / import / delete, snap, live, continuous). Not an acquisition path |
-| `MS_czexp_editor.py` | Read/modify ZEN `.czexp` files (position, z-stack, scan crop); checks that refuse unrunnable or unsafe files before a run |
-| `MS_run_log.py` | Run log, per-run version record (`write_run_info`), JSONL run records, default output folder |
-| `MS_metadata.py` | Read `.czexp` / `.czi` metadata: positions, sample carrier, focus and stage position |
-| `MS_image_metrics.py` | Focus score and signal level of a `.czi` |
-| `MS_Helper_function.py` | Compatibility module: re-exports the three modules above under the old name |
-| `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files: ZEN version, auto-immersion settings, the carrier bottom DF uses |
-| `MS_limits.py` | Range checks for positions and changer numbers; used by the LoA, the async moves and the `.czexp` writers |
-| `MS_zenapi_helpers.py` | Vendored ZEN-API glue (channel init with default call time limits, logging, objective lookups) |
-| `MS_image_analysis.py` | Launcher for external image-analysis scripts (own pixi env); result-JSON read-back |
-| `zeiss_paths.py` | Path bootstrap, and the version of the code and stubs in use — see below |
+Smart microscopy is the combination of real-time analysis, feedback control and
+automated actuation (Rates et al., 2026): the microscope looks first, decides,
+and then images only what matters. Until recently, building such a loop needed
+three things: coding, live image analysis, and remote control of vendor
+software that is usually closed.
 
-### Projects (`projects/`)
+AI coding agents now handle the first two in hours instead of days, and the
+ZEN-API opens ZEN to external control. But the raw API is not a safe place for
+an agent to work. It is low-level, and the microscope is a physical device with
+hidden dependencies (lowering the objective breaks the immersion), imperfect
+hardware (objectives are not perfectly parcentric or parfocal), errors that
+aren't errors, and mistakes that are physical (a crashed objective, a bleached
+sample).
 
-| Folder | Role |
-|--------|------|
-| `projects/smartmic_poc/MS_SmartMic_PoC.py` | Smart-microscope proof-of-concept pipeline (entry point). **Outdated (2026-11-10):** not maintained at the moment; an update is planned |
+SmartMic is the guide layer between the agent and the microscope.
 
-Each project script resolves the repo root via the `SMARTMIC_ROOT` environment
-variable (defaulting to the standard checkout location) and adds it to
-`sys.path`, then imports `zeiss_paths`, so it can use the wrapper modules and
-the Zeiss `zen_api` package regardless of the working directory it is launched
-from — or of where the project itself lives on disk. `config.ini` is resolved
-relative to the repo root, so it stays at the root and is shared by all
-projects.
+## What SmartMic does
 
-## Image analysis
+- **Drives the microscope reliably** with short, human-readable calls: stage,
+  focus (DefiniteFocus, software autofocus), objectives and optovar,
+  experiments, tray load and eject. A failed call raises an error instead of
+  returning a value that a script could ignore.
+- **Checks before it moves.** Arguments are range-checked before any hardware
+  call, stage and focus moves are guarded, arrival is confirmed, and every
+  call has a time limit.
+- **Ships documentation written for the agent.** [`CLAUDE.md`](CLAUDE.md) and
+  [`DEV_NOTES.md`](DEV_NOTES.md) record the ZEN and hardware quirks and the
+  safety rules the agent reads before it writes code.
+- **Edits ZEN experiments** (`.czexp` XML files) for settings the API cannot
+  reach, such as positions, tile regions and z-range, and refuses files that
+  would be unrunnable or unsafe.
+- **Records what produced the data.** Each run can write a version record with
+  the SmartMic commit, the ZEN, gateway and `zen_api` versions, and the
+  commits of the project and analysis repositories.
 
-Smart microscopy pairs acquisition with image analysis. The analysis half is kept
-in **separate, self-contained repos**, each with its own pixi environment, so its
-dependencies never conflict with the ZEN-API environment. `MS_image_analysis.py`
-launches such a project as a subprocess: it passes a CZI, an output directory and
-a `--prefix`, and reads back a `<prefix>_targets.json` listing the detected
-targets (each with absolute stage coordinates).
+## How a project works
 
-The reference analysis used by `smartmic_poc` is the nuclei-detection scaffold at
-**[Mike587/ia_PoC_002](https://github.com/Mike587/ia_PoC_002)**, which also
-documents the input/output contract for building new analyses.
+1. **You set up the base experiments in the ZEN GUI**: channels, lasers,
+   detectors, objectives. Imaging settings stay with you, in software you
+   already know. SmartMic later changes only what the run needs (positions,
+   tiles, z-range).
+2. **You describe the experiment** to the agent (we use Claude, by Anthropic),
+   with a few example images.
+3. **The agent writes the experiment script and the image analysis**, using
+   SmartMic and its docs.
+4. **You review the code and test it on the microscope**, with a person present,
+   before any unattended run.
 
-## How the Zeiss dependency is resolved
+Projects are usually one-off: set up for one user's question, run, then
+retired. Code that turns out to be generally useful is moved into SmartMic.
+Image analysis lives in separate repositories with their own environments (see
+[Image analysis](#image-analysis)).
 
-`zeiss_paths.py` inserts the Zeiss `python_examples` folder (and the ZEN-API
-package `src`) onto `sys.path` at import time, so `zen_api` resolves without
-copying it here. Every module that needs it imports `zeiss_paths` first.
+## Applications so far
 
-Default location:
+All on a ZEISS Celldiscoverer 7 at ScopeM. The project code is kept outside
+this repository.
+
+| Application | Pipeline | Setup | Imaging | Imaged |
+|---|---|---|---|---|
+| Spheroid scan (flat-bottom 96-well plates) | 5× widefield overview → 20× fast z-stack, bounding-box fit → 20× confocal z-stack of the box only | 6 h | 48 h | 200+ spheroids |
+| Single-cell Airyscan (ibidi 8-well slides) | 5× widefield overview, pick nuclei → recentre at 40× → short confocal stack, find mid-plane → one Airyscan plane per cell | 2 h | 30 h | 2000+ cells |
+| U-bottom spheroid scan (96-well U-bottom plates) | focus from a 2.5× brightfield z-sweep → find spheroid → 10× fast LSM stack, box fit → 10× LSM of the box | 5 h | 42 h | 170+ spheroids |
+
+"Setup" is the time from idea to a running pipeline. None of these unattended
+runs crashed.
+
+## Status and limitations
+
+SmartMic is research software in active development. Please read this before
+you use it.
+
+- **Tested on one microscope model.** Every project so far ran on a single
+  ZEISS Celldiscoverer 7 (inverted, with a 50× water-immersion objective).
+  Other ZEN-controlled systems should work in principle but are untested, and
+  some safety constants (optics, carriers, immersion handling) are specific to
+  this setup.
+- **Tested on one software version:** ZEN (blue) 3.13 (3.13.109), ZenApiGateway
+  3.6.25262, `zen_api` stubs matching ZEN-API package 2025.10.1. ZEISS publishes
+  separate `zen_api` packages for ZEN 3.14 and 3.15; SmartMic has not been
+  tested with them.
+- **Windows only.** The pixi environment is defined for `win-64`, because ZEN
+  runs on Windows.
+- **It drives real hardware.** A wrong script can crash an objective, break the
+  immersion or bleach a sample. Review every script, run it with someone
+  present first, and use it at your own risk (see [License](#license)).
+- **Code written by an AI agent.** Most of the code was written by Claude under
+  human direction. It is reviewed and tested on the microscope, but the agent
+  makes mistakes, and review is what catches them.
+- **Base experiments are made by hand** in the ZEN GUI; SmartMic does not
+  create acquisition settings from scratch.
+- **Not everything is reachable through the ZEN-API.** For example, the
+  auto-immersion settings can only be read from ZEN's own files. See
+  `DEV_NOTES.md`.
+- **No releases yet.** The API can still change. Each run logs the exact
+  SmartMic commit.
+- **The bundled example project is outdated.** `projects/smartmic_poc` does not
+  follow current practice; an update is planned.
+- **Not a ZEISS product.** SmartMic is independent of and not endorsed by Carl
+  Zeiss AG.
+
+## Requirements
+
+- A ZEISS microscope controlled by ZEN (blue) with the ZEN-API gateway running
+  (ZEN-API needs ZEN 3.11 or later; SmartMic was tested on 3.13), and a ZEN-API
+  control token.
+- The ZEISS `zen_api` Python package, from the
+  [ZEISS OAD repository](https://github.com/zeiss-microscopy/OAD/tree/master/ZEN-API).
+  It is not included here.
+- [pixi](https://pixi.sh) to install the Python environment.
+- An AI coding agent to write experiments (optional, but this is the point).
+
+## Setup
+
+**1. Clone SmartMic and install the environment.**
+
+    git clone https://github.com/Mike587/SmartMic.git
+    cd SmartMic
+    pixi install -e smartmic
+
+**2. Make the ZEISS `zen_api` package findable.** `zeiss_paths.py` adds the ZEISS
+folder to `sys.path` when it is imported, so every module that uses `zen_api`
+imports `zeiss_paths` first. It looks in the ZEN-API `python_examples` folder,
+by default:
 
     C:/Users/zeiss/Zeiss_OAD/OAD/ZEN-API/python_examples
 
-If that folder moves, either edit `ZEISS_EXAMPLES` in `zeiss_paths.py` or set the
-environment variable:
+and in the versioned packages next to it, `ZEN-API/python_packages/zen_api-<version>/src`
+(`python_package/` in older OAD checkouts; both names are searched). The
+simplest way to get them is to clone the
+[ZEISS OAD repository](https://github.com/zeiss-microscopy/OAD) to
+`C:/Users/zeiss/Zeiss_OAD/OAD`. If your copy is somewhere else, set:
 
-    SMARTMIC_ZEISS_EXAMPLES=<path-to-python_examples>
+    SMARTMIC_ZEISS_EXAMPLES=<path-to-ZEN-API/python_examples>
 
-## Configuration (`config.ini`)
+To pin one of several package versions, set `SMARTMIC_ZEN_API_VERSION` (for
+example `2025.10.1`).
 
-The ZEN-API connection settings live in `config.ini`, which is **git-ignored**
-because it holds a machine-specific control-token (a secret). It is **not** in
-the repo — you must create it before running anything.
+**3. Create `config.ini`.** The connection settings hold a machine-specific
+control token (a secret), so `config.ini` is git-ignored. Copy the template:
 
-Copy the template and fill in your own values:
+    copy config.ini.example config.ini
 
-    copy config.ini.example config.ini   # Windows
-    # cp config.ini.example config.ini   # macOS/Linux
-
-Then edit `config.ini`:
+and fill it in:
 
     [api]
     host = 127.0.0.1
@@ -99,38 +166,128 @@ Then edit `config.ini`:
     cert_file = C:\ProgramData\Carl Zeiss\ZenApiGateway\Certificates\ZenApiPersonalSigningRootCA.pem
     control-token = <paste-your-ZEN-API-control-token-here>
 
-The `control-token` is issued by the ZEN application (ZEN-API gateway). Never
-commit `config.ini` — only `config.ini.example` is tracked.
+The control token is issued by the ZEN-API gateway. Never commit `config.ini`.
+
+**4. Check the connection** (read-only, moves nothing):
+
+    pixi run -e smartmic python verify_zen_api.py
+
+It imports every module and makes a few read-only queries (carrier, objective,
+stage and Z position). Run it again after any ZEN or `zen_api` update.
+
+Other optional environment variables: `SMARTMIC_OUTPUT_ROOT` (default output
+folder), `SMARTMIC_ROOT` (repo location for project scripts),
+`SMARTMIC_ZEN_LOGGING_DIR` and `SMARTMIC_ZEN_API_GATEWAY_EXE` (if ZEN is not
+installed in the standard location).
 
 ## Running
 
-Use the existing `smartmic` pixi environment:
+A project script imports the synchronous entry point and calls plain functions:
+
+```python
+import MS_CD7_API_LoA as ms
+from MS_run_log import setup_run_logger, write_run_info
+
+log, log_file = setup_run_logger()
+write_run_info(log_file, log)                         # versions of everything in use
+ms.require_preflight("Multichamber 384", log)         # expected carrier; raises on failure
+x, y = ms.get_current_xy_stage_position()             # metres
+```
+
+Lengths are in metres throughout; `.czexp` and `.czi` files store µm, and
+conversion happens only at that boundary.
+
+The bundled (outdated) proof of concept runs with:
 
     pixi run -e smartmic poc
 
-or run the script directly:
-
-    pixi run -e smartmic python projects/smartmic_poc/MS_SmartMic_PoC.py
-
 ## Testing
 
-There are two tiers of tests: fast **offline** unit tests (no microscope) and
-**hardware** tests that run against the live ZEN-API gateway with the 384-well
-plate loaded. Hardware tests are skipped unless you pass `--run-hardware`, so a
-plain run never moves the scope:
+Two tiers: fast offline unit tests, and hardware tests that run against the live
+ZEN-API with a 384-well plate loaded. Hardware tests are skipped unless you pass
+`--run-hardware`, so a plain run never moves the microscope.
 
-    pixi run -e smartmic test        # offline unit tests only
-    pixi run -e smartmic test-hw     # hardware tests (on the scope, opt-in)
+    pixi run -e smartmic test        # offline unit tests
+    pixi run -e smartmic test-hw     # hardware tests (on the microscope, opt-in)
 
-See [`tests/README.md`](tests/README.md) for the full step-by-step guide and
-[`tests/TEST_PLAN.md`](tests/TEST_PLAN.md) for the design.
+See [`tests/README.md`](tests/README.md) for the safe order to run the hardware
+tiers, and [`tests/TEST_PLAN.md`](tests/TEST_PLAN.md) for the design.
+
+## Repository layout
+
+The repo root holds the reusable library; example pipelines live under
+`projects/`, one folder each.
+
+| File | Role |
+|------|------|
+| `MS_CD7_API_LoA.py` | Synchronous entry point: wraps the async ZEN gRPC calls and adds checks and guards |
+| `MS_zenapi_focus.py` | DefiniteFocus / FocusService (Z-drive) |
+| `MS_zenapi_swaf.py` | Software autofocus |
+| `MS_zenapi_objectivechanger.py` | Objective and optovar |
+| `MS_zenapi_stage_LM.py` | XY stage |
+| `MS_zenapi_sample_carrier.py` | Sample-carrier info; container (slide position) moves |
+| `MS_zenapi_live_scan.py` | Tray load / eject and prescan configuration (use the guarded versions in `MS_CD7_API_LoA.py`) |
+| `MS_zenapi_experiment_methods.py` | Run an experiment by name, path or XML; status of a running experiment |
+| `MS_zenapi_experiment_smoke.py` | Smoke test of the ExperimentService; not an acquisition path |
+| `MS_czexp_editor.py` | Read and modify `.czexp` files (positions, z-stack, scan crop); refuses unrunnable or unsafe files |
+| `MS_limits.py` | Range checks for positions and changer numbers |
+| `MS_run_log.py` | Run log, per-run version record, JSONL records, default output folder |
+| `MS_metadata.py` | Metadata from `.czexp` / `.czi`: positions, carrier, focus and stage position |
+| `MS_image_metrics.py` | Focus score and signal level of a `.czi` |
+| `MS_image_analysis.py` | Launches external image-analysis scripts; reads back their results |
+| `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files |
+| `MS_zenapi_helpers.py` | Vendored ZEN-API glue: channel setup with call time limits, logging, objective lookups |
+| `MS_Helper_function.py` | Compatibility module (old name) |
+| `zeiss_paths.py` | Path bootstrap and version identities (SmartMic, ZEN, gateway, `zen_api`) |
+| `verify_zen_api.py` | Read-only connection check |
+| `projects/smartmic_poc/` | Proof-of-concept pipeline (outdated) |
+
+Project scripts find the library through the `SMARTMIC_ROOT` environment
+variable (default: the standard checkout location), so a project can live
+anywhere on disk. `config.ini` stays at the repo root and is shared by all
+projects.
+
+## Image analysis
+
+Analysis code lives in separate, self-contained repositories, each with its own
+pixi environment, so its dependencies never conflict with the ZEN-API
+environment. `MS_image_analysis.py` runs such a project as a subprocess: it
+passes a CZI, an output folder and a `--prefix`, and reads back
+`<prefix>_targets.json`, a list of detected targets with absolute stage
+coordinates. The reference example is the nuclei-detection scaffold
+[Mike587/ia_PoC_002](https://github.com/Mike587/ia_PoC_002), which also
+documents this contract.
+
+## Citing SmartMic
+
+A preprint is in preparation. Until then, please cite this repository and the
+LM User Day 2026 talk "Agent-Coded Smart Microscopy" (M. Stebler, ScopeM, ETH
+Zurich, 4 November 2026).
+
+Background on smart microscopy:
+
+- Rates A, Passmore JB, Norlin N, Kapitein LC. Smart microscopy: adaptive
+  microscope control to improve the way we see life. *npj Imaging* 4, 14
+  (2026). doi:10.1038/s44303-026-00145-y
+- Hinderling L et al. Smart microscopy: current implementations and a roadmap
+  for interoperability. *Methods in Microscopy* (2026).
+  doi:10.1515/mim-2025-0029
+
+## Acknowledgements
+
+Marc Alexander Höll and Markus Stoffel (IMHS, ETH Zurich) for the spheroid
+projects; Sebastian Rhode (ZEISS) for the ZEN-API and its example code; Claude
+(Anthropic), the AI agent that wrote most of the code; and the ScopeM team.
+
+Contact: Michael Stebler, ScopeM, ETH Zurich, michael.stebler@scopem.ethz.ch.
+If you would like to run your experiment with SmartMic, get in touch.
 
 ## License
 
 SmartMic is released under the [MIT License](LICENSE), © 2026 ETH Zurich
-(ScopeM).
+(ScopeM). It comes without warranty of any kind.
 
-A few `MS_zenapi_*` modules are derived from the Zeiss ZEN-API example scripts
-and retain their original `Copyright(c) 2025 Carl Zeiss AG` header and
-permission notice, as required by Zeiss's grant. Those per-file notices stand
-alongside the repository's MIT license — keep them in place in any derivative.
+Some `MS_zenapi_*` modules are derived from the ZEISS ZEN-API example scripts
+and keep their original `Copyright(c) 2025 Carl Zeiss AG` header and permission
+notice, as ZEISS's grant requires. Those notices stand alongside the MIT
+license; keep them in any derivative.
