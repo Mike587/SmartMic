@@ -68,6 +68,37 @@ retired. Code that turns out to be generally useful is moved into SmartMic.
 Image analysis lives in separate repositories with their own environments (see
 [Image analysis](#image-analysis)).
 
+## Example: the proof of concept
+
+[`projects/smartmic_poc`](projects/smartmic_poc/MS_SmartMic_PoC.py) is a small,
+complete project and the reference layout for new ones. On a Multichamber 384
+plate at 20x/0.95 + 2x it does, for each used position of a ZEN position file:
+
+1. **Move and focus:** DefiniteFocus (one `DefiniteFocusTracker` for the whole run,
+   which starts each search just below the last surface), then software autofocus
+   coarse + fine on the widefield channel.
+2. **Overview:** one widefield DAPI image.
+3. **Find nuclei:** [ia_PoC_004](https://github.com/Mike587/ia_PoC_004) runs in its
+   own environment and returns the nuclei as stage positions.
+4. **Image a few:** at up to 3 nuclei (random, but the same ones on a rerun):
+   move, focus again with the confocal-channel autofocus (widefield and confocal
+   focus differ by about 3 µm), one confocal plane, then a confocal z-stack
+   (11 planes, 2 µm apart).
+
+The experiments are plain ZEN `.czexp` files in `base_experiments/`, run by path.
+The configuration is one block at the top of the script (carrier, optics,
+experiments, `RUN_NAME`, output folder). Each run writes a log, a version record
+and one line per position to `<run>/<run>_positions.jsonl`; a rerun with the same
+`RUN_NAME` continues where it stopped. The run stops after 3 failed positions in
+a row or a DefiniteFocus fault, and stops ZEN's experiment on a crash or Ctrl-C.
+
+    pixi run -e smartmic test-poc    # offline dry run: fake microscope, fake analysis
+    pixi run -e smartmic poc         # on the scope
+
+For a first run, set `POSITIONS_TO_RUN` to one or two positions and stay at the
+microscope. The current version (rewritten 2026-11-11 on the current library)
+has passed its offline dry run but not yet a run on the scope.
+
 ## Applications so far
 
 All on a ZEISS Celldiscoverer 7 at ScopeM. The project code is kept outside
@@ -199,11 +230,8 @@ x, y = ms.get_current_xy_stage_position()             # metres
 Lengths are in metres throughout; `.czexp` and `.czi` files store µm, and
 conversion happens only at that boundary.
 
-The bundled proof of concept (`projects/smartmic_poc`: overview → nuclei →
-confocal z-stacks at a few of them, on a Multichamber 384) runs with:
-
-    pixi run -e smartmic poc         # on the scope
-    pixi run -e smartmic test-poc    # offline dry run with a fake microscope
+The bundled proof of concept runs with `pixi run -e smartmic poc` (see
+[Example: the proof of concept](#example-the-proof-of-concept)).
 
 ## Testing
 
