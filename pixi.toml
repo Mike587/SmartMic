@@ -6,111 +6,50 @@ version = "0.1.0"
 license = "MIT"
 license-file = "LICENSE"
 
-[tasks]
-
+# ---------------------------------------------------------------------------
+# Core: what the library (repo-root MS_*.py, zeiss_paths.py) and its tests
+# need. zen_api itself only imports betterproto + grpclib.
+# Image analysis does NOT run here: each ia_* repo has its own pixi env and
+# MS_image_analysis.run_analysis calls it in a subprocess.
+# ---------------------------------------------------------------------------
 [dependencies]
-cellpose = ">=4.0.9,<5"
-
-[feature.smartmic]
-channels = ["pytorch", "nvidia", "conda-forge", "nodefaults", "https://conda.anaconda.org/pytorch"]
-
-[feature.smartmic.dependencies]
 python = "3.11.*"
-colormap = "*"
-czifile = "*"
-cudnn = "9.13.1.26.*"
-dask = "*"
-dask-image = "*"
-docker-py = "*"
-docutils = "*"
-fastapi = "*"
-flask = "*"
-fsspec = "*"
-ipyfilechooser = "*"
-ipykernel = "*"
-magicgui = "*"
-marimo = "*"
-matplotlib = "*"
-napari = ">=0.6.5"
-numpy = "*"
-ome-zarr = "*"
-#opencv = "*"
-pandas = "*"
-pip = "*"
-plotly = "*"
-pooch = "*"
-#pyqt = "5.*"
-pyqtgraph = "*"
+numpy = ">=2"
+pywin32 = "*"        # win32api in zeiss_paths.py (ZEN version from the exe)
 pytest = "*"
 pytest-cov = "*"
-pytorch = { version = "2.5.1.*", channel = "pytorch" }
-pytorch-cuda = { version = "12.4.*", channel = "pytorch" }
-python-box = "*"
-python-dateutil = "*"
-qasync = "*"
-requests = "*"
-scikit-image = ">=0.19.3"
-seaborn = "*"
-setuptools = "*"
-shapely = "*"
-superqt = "*"
-#torchvision = { channel = "pytorch" }
-tqdm = "*"
-validators = "*"
-wheel = "*"
-xarray = "*"
-xmltodict = "*"
-zarr = "*"
-pillow = ">=9.3.0"
-#opencv-python = { pypi = true }  # Explicit PyPI source
-#torchvision = { version = "==2.5.1" }  # Fix WARN - exact version
-#pyqt = { pypi = true }              # PyPI pyqt5
-pyqt = "*"
+python-dateutil = ">=2.8,<3"   # betterproto 2.0.0b7 needs <3; conda-forge would pick 4.x
 
-[feature.smartmic.pypi-dependencies]
-aicspylibczi = ">=3.3.1"
-betterproto = "==2.0.0b7"
-bioio = "*"
-bioio-czi = "*"
-bioio-imageio = "*"
-bioio-ome-tiff = "*"
-bioio-ome-zarr = "*"
-czmodel = "*"
-cztile = "*"
-czitools = "*"
+[pypi-dependencies]
+betterproto = "==2.0.0b7"   # pinned by the Zeiss zen_api package
 grpclib = "*"
-loguru = "*"
-mowidget = "*"
-napari-assistant = "*"
-napari-brightness-contrast = "*"
-napari-clusters-plotter = "*"
-napari-crop = "*"
-napari-czann-segment = "*"
-napari-czitools = "*"
-napari-layer-details-display = "*"
-napari-ome-zarr = "*"
-napari-plugin-search = "*"
-napari-simpleitk-image-processing = "*"
-napari-skimage-regionprops = "*"
-napari-orthogonal-views = "*"
-ngff-zarr = "*"
-onnxruntime-gpu = "==1.19.0"
-pylibczirw = "*"
-ryomen = "*"
-tiler = "*"
-wigglystuff = "*"
-gputil = "*"
-psutil = "*"
-opencv-python = "*"
-torchvision = "*"
+pylibczirw = ">=5.1,<6"     # CZI metadata reading (MS_metadata, MS_image_metrics)
 
-#zen-api = { path = "C:/Users/zeiss/Zeiss_OAD/OAD/ZEN-API/python_package/zen_api-2025.10.1/src/zen_api" }
+# ---------------------------------------------------------------------------
+# Extras used only by the local projects (projects/*) and sandbox scripts.
+# ---------------------------------------------------------------------------
+[feature.projects.dependencies]
+scipy = "*"          # Marc_SM_002, Slide_Search, DF_Exploration
+matplotlib = "*"     # DF_Exploration, Marc_SM, sandbox
+tifffile = "*"       # Slide_Search
+markdown = "*"       # Marc_SM_002 report
+lxml = "*"           # Marc_SM (via python-pptx)
+reportlab = "*"      # DF_Exploration report
+python-pptx = "*"    # Marc_SM make_pptx.py
 
+[feature.projects.pypi-dependencies]
+opencv-python = "*"   # Slide_Search make_search_movie.py
+aicspylibczi = "*"    # Marc_SM_002 (imports ia_Marc_002/czi_mosaic in-process)
+bioio = "*"           # sandbox
+bioio-czi = ">=2.4,<3"
 
 [environments]
-smartmic = { features = ["smartmic"], no-default-feature = true }
+# `smartmic` keeps its name so every existing `pixi run -e smartmic ...`
+# command keeps working. `default` is the bare library + tests.
+default = { solve-group = "main" }
+smartmic = { features = ["projects"], solve-group = "main" }
 
-[feature.smartmic.tasks]
+[tasks]
 # Run the SmartMic proof-of-concept pipeline.
 poc = "python projects/smartmic_poc/MS_SmartMic_PoC.py"
 
@@ -120,9 +59,3 @@ test = "pytest tests/unit -q"
 test-hw = "pytest tests/hardware -q --run-hardware"
 # Everything + coverage.
 test-all = "pytest -q --run-hardware --cov"
-
-
-
-
-
-

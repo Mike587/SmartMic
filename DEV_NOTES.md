@@ -989,8 +989,8 @@ ARE available, just not through the gRPC API:**
 - **`zeiss_paths.zen_api_gateway_version()`** — the FileVersion of
   `ZenApiGateway.exe` itself (path: `zeiss_paths.ZEN_API_GATEWAY_EXE`, overridable
   via `SMARTMIC_ZEN_API_GATEWAY_EXE`), read via the Win32 file-version resource
-  (`win32api.GetFileVersionInfo` — already present transitively in the `smartmic`
-  env via napari/magicgui's Windows deps, no new dependency needed). This is
+  (`win32api.GetFileVersionInfo`; `pywin32` is an explicit core dependency since
+  the 2026-11-11 env slim-down — before that it only came in transitively via napari). This is
   arguably the MORE useful of the two: it's the version of the actual gRPC service
   SmartMic talks to, so it tracks the API contract more directly than the ZEN
   *application* version does (the gateway can be serviced somewhat independently
@@ -1479,6 +1479,36 @@ plan are in its own `TODO.md`.
 **SmartMic does NOT depend on ia_common.** It keeps its own small CZI readers
 in `MS_Helper_function` (stage/Z positions). They overlap with ia_common on
 purpose, so that the library needs no image-analysis env.
+
+### Dependency history: the pixi environment slimmed (2026-11-11)
+
+The original `pixi.toml` (commit `be27744`, 2026-06-02) was the ZEN-API/OAD
+examples environment copied over unchanged: ~90 deps (napari + plugins,
+torch/CUDA, marimo, fastapi, dask, zarr, …), a 449 KB lock. An import audit of
+the library, tests, every `projects/*` folder and `sandbox/` showed almost none
+of it was used. Now:
+
+- **Core (default feature):** python 3.11, numpy, pywin32, pytest, pytest-cov,
+  python-dateutil, and from pypi betterproto 2.0.0b7, grpclib, pylibczirw 5.x.
+  zen_api itself imports only betterproto + grpclib.
+- **`projects` feature:** scipy, matplotlib, tifffile, markdown, lxml, reportlab,
+  python-pptx, opencv-python, aicspylibczi, bioio, bioio-czi 2.x — only what
+  the local projects and sandbox import. `reportlab` and `python-pptx` were
+  imported by DF_Exploration / Marc_SM but missing before.
+- **Environments:** `default` = core only; `smartmic` = core + projects (kept
+  under its old name so every `pixi run -e smartmic …` still works). One solve
+  group, so both have the same versions.
+- **`python-dateutil>=2.8,<3` is pinned on purpose:** betterproto 2.0.0b7
+  requires `<3`, and without the pin the conda solve picks 4.x and the pypi
+  solve fails.
+- **Dropped:** torch/CUDA/cellpose (cellpose wasn't even installed in the old
+  `smartmic` env; `sandbox/MS_cellpose.py` couldn't run) and napari. Image
+  analysis and viewing belong in the `ia_*` repos' own envs. The old
+  `pixi.toml`/`pixi.lock` are in git history (`d65af0d`) if anything turns up.
+- Verified: 493 offline tests in both envs, Marc_SM_003 + DF_Exploration tests
+  (44), in-process imports of `ia_Slide_Search/tissue_detect` and
+  `ia_Marc_002/czi_mosaic`, and `verify_zen_api.py` all green against the scope.
+  Lock 449 KB → 127 KB.
 
 ### Dependency history: `zen_api_utils` vendored out
 

@@ -135,6 +135,10 @@ you use it.
     cd SmartMic
     pixi install -e smartmic
 
+`smartmic` = the library + the few extras the local projects use (scipy,
+matplotlib, opencv, …). `default` is the bare library + tests (`pixi run test`).
+Image analysis has its own envs in the `ia_*` repos (see below).
+
 **2. Make the ZEISS `zen_api` package findable.** `zeiss_paths.py` adds the ZEISS
 folder to `sys.path` when it is imported, so every module that uses `zen_api`
 imports `zeiss_paths` first. It looks in the ZEN-API `python_examples` folder,
