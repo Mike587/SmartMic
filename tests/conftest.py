@@ -289,7 +289,7 @@ def _restore_scope(ms, snap):
     """
     obj, opt = snap["optics"]
     steps = (
-        ("optics", lambda: ms.set_objective_set_optovar_sync(obj, opt)),
+        ("optics", lambda: ms.set_optics_verified(obj, opt)),
         ("XY", lambda: ms.move_stage_to_new_xy_position(snap["xy"][0], snap["xy"][1])),
         ("Z", lambda: ms.move_focus_to_new_z_position(snap["z"])),
     )

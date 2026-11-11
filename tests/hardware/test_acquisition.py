@@ -42,14 +42,6 @@ def test_zstack_from_path(scope, czexp_dir, out_dir, run_tag):
         assert zr["step_um"] > 0
 
 
-def test_from_xml(scope, czexp_dir, out_dir, run_tag):
-    # The XML comes from the repo (utf-8-sig drops the BOM; the wrapper also
-    # normalizes a BOM / <?xml?> prolog) — fully self-contained.
-    xml = (czexp_dir / "snap_single.czexp").read_text(encoding="utf-8-sig")
-    result = scope.run_experiment_from_xml(xml, out_dir, f"test_xml_{run_tag}")
-    _assert_czi(result)
-
-
 def test_status_idle_after_acquisition(scope, czexp_dir, out_dir, run_tag):
     scope.run_experiment_from_path(czexp_dir / "snap_single.czexp", out_dir, f"test_idle_{run_tag}")
     status = scope.get_running_experiment_status()

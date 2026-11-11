@@ -74,7 +74,7 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
     - At 50x + 2x, `compute_focus_score` (raw Laplacian) only sees pixel noise. Bin 4×4 first.
   - **Switching to the 50x over the API applies the water automatically.** `set_optics_verified(4, …)` took 70 s: ImmersionAdapter "Creating", pump cycles, `IsImmersionApplied = True`.
   - **Library change (2026-11-09):**
-    - `definite_focus_find_surface` / `run_definite_focus_find_surface` do StoreFocus only with `store_focus=True` (default False). Use it only before `run_definite_focus_recall`.
+    - `definite_focus_find_surface` / `df_find_surface` do StoreFocus only with `store_focus=True` (default False). Use it only before `df_recall_focus`.
     - After a failed search they do not store anything. Before this change, they stored the current Z, and an offset recorded at a random Z sends a later RecallFocus to an incorrect Z.
     - The automatic StoreFocus after each search cost 0.45 to 1.8 s. On the 5x it also did a +414 µm sweep.
   - Seen, not confirmed: the surface drifted about +1.5–3 µm/h, and the first FindSurface right after an objective change was 3–4 µm off (2 cases).
@@ -412,18 +412,14 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   `MS_czexp_editor` LSM/crop functions can't run against them — the unit tests use
   synthetic XML for that exact-value coverage.
 
-- **SWAF can load by path or by name.** `run_swaf_from_path` /
-  `run_software_autofocus_from_path` load a standalone `.czexp` (portable). The
-  by-name `run_swaf` / `run_software_autofocus` still require the experiment to exist
-  in ZEN's stored library.
+- **SWAF and experiments load by path only** (since 2026-11-11). `swaf_find_focus`
+  and `run_experiment_from_path` load a standalone `.czexp`. The by-name and
+  from-XML variants were removed (no caller; an imported tile/region experiment is
+  not runnable anyway).
 
-- **`check_experiment_api` imports an experiment ZEN can't unload.** ZEN's
-  `ExperimentService` exposes no delete-by-id or unload (`delete` takes only an
-  experiment *name*, and an imported experiment has none), so each
-  `check_experiment_api` call leaves one imported experiment loaded in ZEN.
-  Acceptable because it is now an occasional smoke test, not a per-image call
-  (the per-image path is the lean `run_experiment_by_name`). Revisit if/when ZEN
-  adds an unload API.
+- **An imported experiment can't be unloaded.** ZEN's `ExperimentService` has no
+  delete-by-id or unload (`delete` takes only an experiment *name*, and an imported
+  experiment has none). This is why nothing in the library imports experiments.
 
 - **Units.** Internally everything is in **metres**; `.czexp` and `.czi` store
   **µm**. Conversions happen at the boundary (`× 1e6` / `÷ 1e6`).
@@ -1237,8 +1233,8 @@ The old names still work: `MS_Helper_function` re-exports its three modules, and
   unreadable `<X>` / `<Y>`. Before, the value became 0.0. A missing `<Z>` is
   still 0.0.
 - **`set_stage_motion` raises** for a percent that is not in [0, 100].
-- **A bad argument is not a failed search.** `run_definite_focus_find_surface`
-  and `set_objective_set_optovar_sync` let `ValueError` / `TypeError` through.
+- **A bad argument is not a failed search.** `df_find_surface` and
+  `set_optics_verified` let `ValueError` / `TypeError` through.
 - **The czexp locators ignore an embedded autofocus experiment.**
   `find_lsm_detector`, `find_tile_regions`, `find_stitch_regions`,
   `find_processing_steps`, `is_stitching_configured`, `get_focus_strategy`,
@@ -1310,6 +1306,16 @@ approximately Z = 0). The LoA has a second set of functions that follow the rule
   `DefiniteFocusFault`: one failed search can be skipped; a fault stops the run.
 - `PreflightFailed` has the last error line of `preflight` (the check that
   stopped it) in its message.
+
+**Update 2026-11-11: the legacy column is gone.** No backward compatibility is
+needed (Mike); concise beats compatible. The logic moved into the right-hand
+functions, the legacy ones were deleted: `df_find_surface` / `df_recall_focus` call
+the async layer directly, there is one `swaf_find_focus(czexp_path)` (the
+by-name and `_from_path` variants are gone), `set_objective_set_optovar_sync`
+became the private `_change_optics` step of `set_optics_verified`, and `preflight`
+itself raises `PreflightFailed` (`require_preflight` and its `_ErrorTap` are
+gone). Experiments run by path only (`run_experiment_from_path`). Projects that
+used the old API are frozen at tag `freeze-2026-11-11`.
 - `DefiniteFocusTracker.find_surface` still returns `None` for one failed
   position. This is its contract (the pipeline skips the position), and it
   raises `DefiniteFocusFault` after repeated failures.

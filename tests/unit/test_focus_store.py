@@ -107,8 +107,8 @@ def test_negative_result_is_failure_and_not_stored(monkeypatch):
     assert calls["store"] == 0
 
 
-@pytest.mark.parametrize("store_focus, expected", [(False, None), (True, True)])
-def test_loa_wrapper_passes_store_focus(monkeypatch, store_focus, expected):
+@pytest.mark.parametrize("store_focus", [False, True])
+def test_loa_wrapper_passes_store_focus(monkeypatch, store_focus):
     seen = {}
 
     async def fake(**kwargs):
@@ -116,6 +116,6 @@ def test_loa_wrapper_passes_store_focus(monkeypatch, store_focus, expected):
         return True, 1
 
     monkeypatch.setattr(focus, "definite_focus_find_surface", fake)
-    ok, _, _ = ms.run_definite_focus_find_surface(store_focus=store_focus)
-    assert ok is True
-    assert seen.get("store_focus") is expected
+    monkeypatch.setattr(ms, "get_current_z_position", lambda: 1.2e-3)
+    assert ms.df_find_surface(store_focus=store_focus) == 1.2e-3
+    assert seen["store_focus"] is store_focus

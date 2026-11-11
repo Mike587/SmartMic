@@ -194,7 +194,7 @@ from MS_run_log import setup_run_logger, write_run_info
 
 log, log_file = setup_run_logger()
 write_run_info(log_file, log)                         # versions of everything in use
-ms.require_preflight("Multichamber 384", log)         # expected carrier; raises on failure
+ms.preflight("Multichamber 384", log)                 # expected carrier; raises on failure
 x, y = ms.get_current_xy_stage_position()             # metres
 ```
 
@@ -231,8 +231,7 @@ The repo root holds the reusable library; example pipelines live under
 | `MS_zenapi_stage_LM.py` | XY stage |
 | `MS_zenapi_sample_carrier.py` | Sample-carrier info; container (slide position) moves |
 | `MS_zenapi_live_scan.py` | Tray load / eject and prescan configuration (use the guarded versions in `MS_CD7_API_LoA.py`) |
-| `MS_zenapi_experiment_methods.py` | Run an experiment by name, path or XML; status of a running experiment |
-| `MS_zenapi_experiment_smoke.py` | Smoke test of the ExperimentService; not an acquisition path |
+| `MS_zenapi_experiment_methods.py` | Run a `.czexp` by path; status / stop of a running experiment |
 | `MS_czexp_editor.py` | Read and modify `.czexp` files (positions, z-stack, scan crop); refuses unrunnable or unsafe files |
 | `MS_limits.py` | Range checks for positions and changer numbers |
 | `MS_run_log.py` | Run log, per-run version record, JSONL records, default output folder |

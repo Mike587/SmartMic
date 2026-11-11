@@ -25,37 +25,20 @@ Rules
 * Synchronous only. Each call makes its own event loop and its own gRPC
   channel: do not call these functions from async code.
 * Lengths are METRES. The exceptions have the unit in a name or a key:
-  carrier thickness is µm (``thickness_um``). The legacy functions ``run_swaf``
-  / ``run_swaf_from_path`` / ``run_definite_focus_recall`` return µm; use
-  ``swaf_find_focus`` / ``df_recall_focus`` (metres) in new code.
+  carrier thickness is µm (``thickness_um``).
 * A bad argument raises ``ValueError`` / ``TypeError`` before any hardware call.
-  The range checks are in ``MS_limits``; the async moves and the ``.czexp``
-  writers use the same ones.
+  The range checks are in ``MS_limits``.
 * A call that gets no answer raises ``TimeoutError`` after 60 s (reads) or
   300 s (moves); an acquisition has no limit (``MS_zenapi_helpers``).
-* A failure RAISES (DEV_NOTES "Rule: a failure raises"). Use these functions
-  in new code:
-
-      df_find_surface, df_recall_focus       -> FocusSearchFailed
-      swaf_find_focus, swaf_find_focus_from_path -> FocusSearchFailed
-      set_optics_verified                    -> RuntimeError
-      require_preflight                      -> PreflightFailed
-
-  The legacy functions report a failure in the return value, and a caller that
-  does not examine it continues with no error:
-  ``run_definite_focus_find_surface`` (``(False, message, attempts)``),
-  ``run_definite_focus_recall`` / ``run_swaf`` (``(None, attempts)``),
-  ``set_objective_set_optovar_sync`` / ``preflight`` (``False``). They stay for
-  the existing projects and are not changed.
+* A failure RAISES (DEV_NOTES "Rule: a failure raises"). The one exception:
   ``DefiniteFocusTracker.find_surface`` returns None for one failed position
-  on purpose (the pipeline skips it) and raises after repeated failures.
+  (the pipeline skips it) and raises after repeated failures.
 
 Public functions
 ----------------
 Start of a run
-    require_preflight               -- carrier, busy state, stage motion, versions;
+    preflight                       -- carrier, busy state, stage motion, versions;
                                        raises PreflightFailed
-    preflight                       -- legacy: the same, returns False on failure
     is_microscope_busy              -- True while an experiment or acquisition runs
     get_running_experiment_status   -- status of that experiment, or None
     stop_experiment                 -- stop it (for a crash / Ctrl-C handler)
@@ -65,12 +48,9 @@ Focus (Z-drive, DefiniteFocus, software autofocus)
     move_focus_to_new_z_position    -- absolute Z move, range-checked
     df_find_surface                 -- DF FindSurface with retries -> Z (m)
     df_recall_focus                 -- DF RecallFocus -> Z (m)
-    swaf_find_focus / swaf_find_focus_from_path
-                                    -- software autofocus by name / path -> Z (m)
     DefiniteFocusTracker            -- FindSurface with an adaptive start and a
                                        fault after repeated failures
-    run_definite_focus_find_surface, run_definite_focus_recall, run_swaf,
-    run_swaf_from_path              -- legacy: failure in the return value, µm
+    swaf_find_focus                 -- software autofocus from a .czexp -> Z (m)
 
 Stage
     get_current_xy_stage_position   -- [x, y] in metres
@@ -81,9 +61,7 @@ Stage
 Optics
     get_current_objective_and_optovar / _names -- position indices / names
     check_immersion_guard           -- API immersion types against the known slot
-    set_optics_verified             -- change, then require a stable read-back;
-                                       raises if it does not settle
-    set_objective_set_optovar_sync  -- legacy: returns False on a timeout
+    set_optics_verified             -- change, then require a stable read-back
 
 Sample carrier and tray
     get_sample_carrier_info / get_sample_carrier_name
@@ -95,9 +73,7 @@ Sample carrier and tray
     eject_tray / load_tray_and_prescan         -- guarded tray moves
 
 Acquisition
-    run_experiment                  -- by name, from ZEN's experiment library
-    run_experiment_from_path        -- a ``.czexp`` by path
-    run_experiment_from_xml         -- an experiment XML string
+    run_experiment_from_path        -- run a ``.czexp`` file
 
 Checks (return ``(ok, message)``; the moves call them)
     validate_objective_number, validate_optovar_number, validate_z_position,
@@ -179,91 +155,16 @@ class CarrierBottom(TypedDict):
     refractive_index: NotRequired[float]   # not in the DF log event
 
 
-def run_definite_focus_find_surface(max_retries: int = 3,
-                                    start_z_m: Optional[float] = None,
-                                    store_focus: bool = False) -> Tuple[bool, str, int]:
-    """
-    Run definite focus find surface with retry logic.
-
-    Legacy: a failed search is in the return value, not an exception. New code:
-    df_find_surface (raises FocusSearchFailed, returns the surface Z in metres).
-
-    Args:
-        max_retries:          Maximum number of retry attempts (default: 3).
-        start_z_m:            Z position in metres to move to before searching.
-                                    None → use the async function's default (−300 µm).
-                                    Pass last_surface_z − 100e-6 to speed up subsequent DFs.
-        store_focus:         Do StoreFocus after a successful search (default
-                                    False). Set it only if you use
-                                    run_definite_focus_recall later.
-
-    Returns:
-        (success, message, attempts_used)
-
-    Raises:
-        ValueError, TypeError: For a bad argument (e.g. max_retries < 1). Only
-            a failed search gives (False, message, attempts).
-    """
-    kwargs = {"max_retries": max_retries}
-    if start_z_m is not None:
-        kwargs["start_z_m"] = start_z_m
-    if store_focus:
-        kwargs["store_focus"] = True
-    try:
-        # definite_focus_find_surface only ever returns on success — it raises
-        # (with attempts_used attached) after exhausting max_retries — so there
-        # is no separate "clean" False outcome to branch on here.
-        success, attempts = asyncio.run(
-            MS_zenapi_focus.definite_focus_find_surface(**kwargs)
-        )
-        return True, "Definite focus successful", attempts
-    except (ValueError, TypeError):
-        # A bad argument is a programming error, not a failed search: the
-        # tracker must not count it as a DF failure and carry on.
-        raise
-    except Exception as e:
-        attempts_used = getattr(e, "attempts_used", max_retries)
-        return False, f"Definite focus failed with exception: {e}", attempts_used
-
-
-def run_definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], int]:
-    """
-    Run DefiniteFocus RecallFocus: go back to the stored distance from the reflex.
-
-    This is a fast operation (0.7 to 2 s) that requires a previous FindSurface +
-    StoreFocus to have been executed first:
-    run_definite_focus_find_surface(store_focus=True).
-
-    Measured on the CD7 on 2026-11-09 (DEV_NOTES "What each DF RPC does"):
-    - 20x and 50x objectives: Recall goes to the reflex plus the stored offset
-      (±0.15 µm), also after a new FindSurface.
-    - 5x objective: Recall goes to the reflex. It does not use the stored offset,
-      because StoreFocus on the 5x records no offset.
-    - After an objective change: Recall does a full FindSurface. The stored offset
-      is not used. On the 50x objective this is a search without a seed (see
-      DEV_NOTES "50x: DF locks onto the plate UNDERSIDE").
-
-    Legacy: the Z is in MICROMETRES and a failure is ``(None, attempts)``. New
-    code: df_recall_focus (metres, raises FocusSearchFailed).
-
-    Returns:
-        Tuple (z_um, attempts_used).  z_um is None if all attempts fail.
-    """
-    return asyncio.run(MS_zenapi_focus.definite_focus_recall(max_retries))
-
-
 def df_find_surface(max_retries: int = 3, start_z_m: Optional[float] = None,
                     store_focus: bool = False) -> float:
     """
-    Run DefiniteFocus FindSurface and return the surface Z in metres.
-
-    The same search as run_definite_focus_find_surface (same arguments, same
-    retries). The difference: a failed search raises.
+    Run DefiniteFocus FindSurface (with retries) and return the surface Z in metres.
 
     Args:
         max_retries: Maximum number of attempts.
-        start_z_m: Z in metres to start the search from. None: the default of
-            the async function (-300 µm).
+        start_z_m: Z in metres to start the search from. None: −300 µm (the
+            async default), which retracts the objective: never with the 50x
+            immersion objective (use DefiniteFocusTracker).
         store_focus: Do StoreFocus after a successful search (for
             df_recall_focus later).
 
@@ -272,11 +173,18 @@ def df_find_surface(max_retries: int = 3, start_z_m: Optional[float] = None,
 
     Raises:
         FocusSearchFailed: No surface found in max_retries attempts.
-        ValueError, TypeError: For a bad argument.
+        ValueError, TypeError: For a bad argument (not a failed search).
     """
-    ok, message, attempts = run_definite_focus_find_surface(max_retries, start_z_m, store_focus)
-    if not ok:
-        raise FocusSearchFailed("FindSurface", message, attempts)
+    kwargs: Dict[str, Any] = {"max_retries": max_retries, "store_focus": store_focus}
+    if start_z_m is not None:
+        kwargs["start_z_m"] = start_z_m
+    try:
+        asyncio.run(MS_zenapi_focus.definite_focus_find_surface(**kwargs))
+    except (ValueError, TypeError):
+        raise
+    except Exception as e:
+        raise FocusSearchFailed("FindSurface", str(e),
+                                getattr(e, "attempts_used", max_retries)) from e
     return get_current_z_position()
 
 
@@ -284,16 +192,15 @@ def df_recall_focus(max_retries: int = 3) -> float:
     """
     Run DefiniteFocus RecallFocus and return the Z in metres.
 
-    The same operation as run_definite_focus_recall (see there for what Recall
-    does on each objective). The differences: metres, and a failure raises.
-
-    Returns:
-        The Z-drive position after the recall, in metres.
+    Needs a FindSurface with ``store_focus=True`` first. 20x / 50x: back to the
+    reflex + the stored offset (±0.15 µm). 5x: the reflex only (no offset is
+    stored). After an objective change it does a full FindSurface. DEV_NOTES
+    "What each DF RPC does".
 
     Raises:
         FocusSearchFailed: All attempts failed.
     """
-    z_um, attempts = run_definite_focus_recall(max_retries)
+    z_um, attempts = asyncio.run(MS_zenapi_focus.definite_focus_recall(max_retries))
     if z_um is None:
         raise FocusSearchFailed("RecallFocus", "no focus position returned", attempts)
     return z_um * 1e-6
@@ -312,8 +219,8 @@ def get_current_z_position() -> float:
 class FocusSearchFailed(RuntimeError):
     """One focus search (DF FindSurface, DF RecallFocus or SWAF) found no focus.
 
-    Raised by df_find_surface, df_recall_focus, swaf_find_focus and
-    swaf_find_focus_from_path. A caller can skip the position or stop.
+    Raised by df_find_surface, df_recall_focus and swaf_find_focus. A caller
+    can skip the position or stop.
 
     Attributes:
         method: "FindSurface", "RecallFocus" or "SWAF".
@@ -327,7 +234,7 @@ class FocusSearchFailed(RuntimeError):
 
 
 class PreflightFailed(RuntimeError):
-    """require_preflight found a reason not to start the run (see the message)."""
+    """preflight found a reason not to start the run (see the message)."""
 
 
 class DefiniteFocusFault(RuntimeError):
@@ -453,7 +360,7 @@ def check_carrier_for_df(log: logging.Logger, expected_material: Optional[str] =
 
 
 class DefiniteFocusTracker:
-    """DefiniteFocus across many positions, on top of run_definite_focus_find_surface.
+    """DefiniteFocus across many positions, on top of df_find_surface.
 
     - Adaptive start: each search starts ``approach_margin_m`` below the last
       surface found (~4 s on the CD7, vs ~11 s for a full search from the
@@ -488,7 +395,7 @@ class DefiniteFocusTracker:
     Args:
         approach_margin_m: adaptive start distance below the last surface (m).
         max_consecutive_failures: failed searches in a row before the stop.
-        max_retries: FindSurface attempts per search (run_definite_focus_find_surface).
+        max_retries: FindSurface attempts per search (df_find_surface).
         surface_z_m: known surface to start from (e.g. from an earlier run), or None.
         carrier_check: compare the carrier bottom before each search (default True).
     """
@@ -509,8 +416,7 @@ class DefiniteFocusTracker:
         self.max_retries = max_retries
         self.last_surface_z_m = surface_z_m
         self.consecutive_failures = 0
-        self.last_message = ""
-        self.last_attempts = 0
+        self.last_message = ""   # why the last search failed ("" after a success)
         self.carrier_check = carrier_check
         self.carrier: Optional[CarrierBottom] = None
 
@@ -565,32 +471,36 @@ class DefiniteFocusTracker:
         else:
             start = self.last_surface_z_m - self.approach_margin_m
 
-        ok, msg, attempts = run_definite_focus_find_surface(self.max_retries, start)
-        total_attempts = attempts
-        if not ok and start is not None:
+        try:
+            z = df_find_surface(self.max_retries, start)
+        except FocusSearchFailed as e:
+            if start is None:
+                return self._failed(e)
             if _immersion_objective_active():
-                log.warning(f"DF from {start * 1e6:.1f} µm failed ({msg}); no full-range "
+                log.warning(f"DF from {start * 1e6:.1f} µm failed ({e}); no full-range "
                             f"retry with the immersion objective active.")
-            else:
-                log.warning(f"DF from {start * 1e6:.1f} µm failed ({msg}) — retrying "
-                            f"over the full range.")
-                ok, msg, attempts = run_definite_focus_find_surface(self.max_retries)
-                total_attempts += attempts
-        self.last_message, self.last_attempts = msg, total_attempts
-
-        if not ok:
-            self.consecutive_failures += 1
-            log.warning(f"DF failed ({self.consecutive_failures} in a row): {msg}")
-            if self.consecutive_failures >= self.max_consecutive_failures:
-                raise DefiniteFocusFault(
-                    f"DefiniteFocus failed at {self.consecutive_failures} positions in a "
-                    f"row (last: {msg}) — treating it as a hardware fault.")
-            return None
-
+                return self._failed(e)
+            log.warning(f"DF from {start * 1e6:.1f} µm failed ({e}) — retrying "
+                        f"over the full range.")
+            try:
+                z = df_find_surface(self.max_retries)
+            except FocusSearchFailed as e2:
+                return self._failed(e2)
         self.consecutive_failures = 0
-        z = get_current_z_position()
+        self.last_message = ""
         self.last_surface_z_m = z
         return z
+
+    def _failed(self, e: FocusSearchFailed) -> None:
+        """Count one failed search; raise DefiniteFocusFault at the limit."""
+        self.consecutive_failures += 1
+        self.last_message = str(e)
+        set_logging().warning(f"DF failed ({self.consecutive_failures} in a row): {e}")
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            raise DefiniteFocusFault(
+                f"DefiniteFocus failed at {self.consecutive_failures} positions in a "
+                f"row (last: {e}) — treating it as a hardware fault.")
+        return None
 
 
 def _immersion_objective_active() -> bool:
@@ -817,69 +727,27 @@ def set_stage_motion_sync(speed_percent: Optional[float] = None,
     )
 
 
-def run_experiment(experiment_name: str,
-                   custom_folder: Optional[Path] = None,
-                   custom_filename: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Run an experiment by name (from ZEN's experiment library).
-
-    Load the named experiment, run it, collect the result. This is the
-    acquisition path. The smoke test of the whole experiment API is
-    ``MS_zenapi_experiment_smoke.check_experiment_api``.
-
-    Args:
-        experiment_name: Name of the experiment to run
-        custom_folder: Custom output folder. Uses DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
-        custom_filename: Custom filename for output
-
-    Returns:
-        Experiment results ({exp_result_path, snap_path,
-        experiment_id}).
-
-    Raises:
-        ValueError: If experiment_name is empty or invalid
-    """
-    if not experiment_name or not isinstance(experiment_name, str):
-        raise ValueError(f"Invalid experiment name: {experiment_name}")
-
-    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_by_name(
-        experiment_name=experiment_name,
-        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
-        custom_filename=custom_filename,
-    ))
-    set_logging().info(f"Experiment results: {result}")
-    return result
-
-
 def run_experiment_from_path(czexp_path: Union[str, Path],
                              custom_folder: Optional[Path] = None,
-                             custom_filename: Optional[str] = None) -> Dict[str, Any]:
+                             custom_filename: Optional[str] = None
+                             ) -> MS_zenapi_experiment_methods.ExperimentResult:
     """
-    Run an experiment from a .czexp file path (instead of by name).
+    Run a ``.czexp`` file and move the ``.czi`` to ``custom_folder``.
 
-    LOADS the experiment via ExperimentService.Load (which accepts a full path,
-    not just a name in ZEN's experiment folder) and runs the loaded id — so any
-    path works, including a per-run modified experiment generated on the fly. It
-    does NOT import the XML and run the imported id: an imported experiment is not
-    runnable and ZEN throws at run for tile/region experiments (use
-    run_experiment_from_xml for the Import path).
+    The file is LOADED by path (not imported), so a per-run edited copy works.
+    See MS_zenapi_experiment_methods.run_experiment_from_path.
 
     Args:
-        czexp_path:           Path to the .czexp file to run.
-        custom_folder:  Output folder. Uses
-                                         DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
-        custom_filename: Output base filename (without .czi).
+        czexp_path: The ``.czexp`` file.
+        custom_folder: Output folder; None → DEFAULT_EXPERIMENT_OUTPUT_FOLDER.
+        custom_filename: Output base name (without .czi).
 
     Returns:
-        {exp_result_path, snap_path, experiment_id}
+        {exp_result_path, experiment_id}
 
     Raises:
         FileNotFoundError: If czexp_path does not exist.
     """
-    czexp_path = Path(czexp_path)
-    if not czexp_path.exists():
-        raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
-
     result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_path(
         czexp_path=czexp_path,
         custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
@@ -889,146 +757,43 @@ def run_experiment_from_path(czexp_path: Union[str, Path],
     return result
 
 
-def run_experiment_from_xml(xml: str,
-                            custom_folder: Optional[Path] = None,
-                            custom_filename: Optional[str] = None) -> Dict[str, Any]:
+def swaf_find_focus(czexp_path: Union[str, Path], timeout: int = 30,
+                    max_retries: int = 2) -> float:
     """
-    Run an experiment from an XML string (instead of a name or file path).
-
-    Imports the experiment XML into ZEN via ExperimentService.Import and runs
-    it.  Accepts a raw <HardwareExperiment> string (e.g. built on the fly) or
-    full .czexp content — a leading BOM / <?xml ...?> prolog is normalized away.
-    Use this to run a per-spheroid experiment without writing it to disk.
+    Run software autofocus from a SWAF ``.czexp``; return the focus Z in metres.
 
     Args:
-        xml:                       The experiment XML string.
-        custom_folder:  Output folder. Uses
-                                         DEFAULT_EXPERIMENT_OUTPUT_FOLDER if None.
-        custom_filename: Output base filename (without .czi).
-
-    Returns:
-        {exp_result_path, snap_path, experiment_id}
-    """
-    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_xml(
-        xml=xml,
-        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
-        custom_filename=custom_filename,
-    ))
-    set_logging().info(f"Experiment results: {result}")
-    return result
-
-
-def run_swaf(swaf_experiment_name: str, timeout: int = 30) -> Tuple[Optional[float], int]:
-    """
-    Run software autofocus (SWAF) using the named experiment.
-
-    Args:
-        swaf_experiment_name: Name of the SWAF experiment (without .czexp extension).
-        timeout:              Search timeout in seconds (default 30).
-
-    Legacy: the focus position is in MICROMETRES and a failure is
-    ``(None, attempts)``. New code: swaf_find_focus (metres, raises
-    FocusSearchFailed).
-
-    Returns:
-        Tuple (focus_pos_um, attempts_used).
-        focus_pos_um is None if all attempts failed.
-    """
-    return asyncio.run(MS_zenapi_swaf.run_software_autofocus(swaf_experiment_name, timeout=timeout))
-
-
-def run_swaf_from_path(czexp_path: Union[str, Path], timeout: int = 30) -> Tuple[Optional[float], int]:
-    """
-    Run software autofocus (SWAF) from a standalone ``.czexp`` file path.
-
-    The portable counterpart to :func:`run_swaf`: the SWAF experiment is loaded
-    by path rather than by a name that must already exist in ZEN's library, so
-    the call is self-contained (used by the test suite and any caller that ships
-    its own experiment files).
-
-    Args:
-        czexp_path: Path to the SWAF ``.czexp`` file to load and run.
-        timeout:    Search timeout in seconds (default 30).
-
-    Legacy: the focus position is in MICROMETRES and a failure is
-    ``(None, attempts)``. New code: swaf_find_focus_from_path (metres, raises
-    FocusSearchFailed).
-
-    Returns:
-        Tuple (focus_pos_um, attempts_used).
-        focus_pos_um is None if all attempts failed.
-    """
-    return asyncio.run(MS_zenapi_swaf.run_software_autofocus_from_path(czexp_path, timeout=timeout))
-
-
-def swaf_find_focus(swaf_experiment_name: str, timeout: int = 30) -> float:
-    """
-    Run software autofocus with a named experiment; return the focus Z in metres.
-
-    The same search as run_swaf. The differences: metres, and a failure raises.
-
-    Args:
-        swaf_experiment_name: Name of the SWAF experiment (without .czexp).
-        timeout: Search timeout in seconds, for ZEN.
-
-    Returns:
-        The focus position that ZEN found, in metres.
+        czexp_path: The SWAF ``.czexp`` file.
+        timeout: Seconds ZEN may spend on one search.
+        max_retries: Attempts including the first.
 
     Raises:
         FocusSearchFailed: All attempts failed.
+        FileNotFoundError: czexp_path does not exist.
     """
-    focus_um, attempts = run_swaf(swaf_experiment_name, timeout=timeout)
-    if focus_um is None:
-        raise FocusSearchFailed("SWAF", f"no focus found with '{swaf_experiment_name}'", attempts)
-    return focus_um * 1e-6
-
-
-def swaf_find_focus_from_path(czexp_path: Union[str, Path], timeout: int = 30) -> float:
-    """
-    Run software autofocus from a ``.czexp`` path; return the focus Z in metres.
-
-    The same search as run_swaf_from_path. The differences: metres, and a
-    failure raises.
-
-    Args:
-        czexp_path: Path to the SWAF ``.czexp`` file.
-        timeout: Search timeout in seconds, for ZEN.
-
-    Returns:
-        The focus position that ZEN found, in metres.
-
-    Raises:
-        FocusSearchFailed: All attempts failed.
-    """
-    focus_um, attempts = run_swaf_from_path(czexp_path, timeout=timeout)
+    focus_um, attempts = asyncio.run(MS_zenapi_swaf.run_software_autofocus(
+        czexp_path, timeout=timeout, max_retries=max_retries))
     if focus_um is None:
         raise FocusSearchFailed("SWAF", f"no focus found with {czexp_path}", attempts)
     return focus_um * 1e-6
 
 
-def set_objective_set_optovar_sync(objective_nr: int, optovar_nr: int,
-                                   timeout_seconds: float = 30.0,
-                                   poll_interval: float = OBJECTIVE_POLL_INTERVAL,
-                                   max_retries: int = MAX_IMMERSION_RETRIES) -> bool:
+def _change_optics(objective_nr: int, optovar_nr: int,
+                   timeout_seconds: float = 30.0,
+                   poll_interval: float = OBJECTIVE_POLL_INTERVAL,
+                   max_retries: int = MAX_IMMERSION_RETRIES) -> bool:
     """
-    Change the objective and optovar, and wait for the hardware to complete the change.
+    Send the objective + optovar change and poll until the changer reports it.
 
-    Legacy: a timeout is ``False`` in the return value, not an exception. New
-    code: set_optics_verified (raises if the optics do not settle).
-
-    Args:
-        objective_nr: Objective position (1-4)
-        optovar_nr: Optovar position (1-3)
-        timeout_seconds: Maximum time to wait for change to complete
-        poll_interval: Time between polls of current position
-        max_retries: Maximum number of retry attempts for immersion objectives
+    For set_optics_verified only. To or from the immersion objective the timeout
+    is at least IMMERSION_OBJECTIVE_TIMEOUT, and ZEN's transient "has not been
+    set" while the water is removed gets an extra IMMERSION_RETRY_DELAY.
 
     Returns:
-        True if change completed successfully, False if timeout
+        True when the read-back shows the target, False after max_retries timeouts.
 
     Raises:
-        ValueError: If objective_nr or optovar_nr are invalid, or the changer
-            reports a position that is not in its inventory (not retried).
+        ValueError: A position is invalid, or not in the changer's inventory.
     """
     _require_valid(validate_objective_number(objective_nr), "objective number")
     _require_valid(validate_optovar_number(optovar_nr), "optovar number")
@@ -1118,7 +883,7 @@ def set_optics_verified(objective_nr: int, optovar_nr: int,
     from the CURRENT optics at run time; a scan launched right after the change
     was once tiled for the stale config (HD_Nuclei_from_slide, run_20260629_122403,
     leaving the 50x immersion objective: doubled/ghosted mosaic). Steps:
-      1. change the optics (set_objective_set_optovar_sync);
+      1. change the optics (_change_optics);
       2. poll the read-back until it shows the target;
       3. wait settle_s;
       4. check again — abort if it never settles within timeout_s.
@@ -1146,7 +911,7 @@ def set_optics_verified(objective_nr: int, optovar_nr: int,
     target = (objective_nr, optovar_nr)
     # Validates the positions (ValueError). A False return (changer timeout) is
     # not fatal by itself: the read-back below is the check.
-    if not set_objective_set_optovar_sync(objective_nr, optovar_nr):
+    if not _change_optics(objective_nr, optovar_nr):
         log.warning(f"Optics change to {target} not confirmed by the changer — "
                     f"verifying the read-back.")
     deadline = time.monotonic() + timeout_s
@@ -1474,16 +1239,19 @@ def is_microscope_busy() -> bool:
     return bool(status["is_experiment_running"] or status["is_acquisition_running"])
 
 
+def _fail(log: logging.Logger, msg: str) -> None:
+    """Log a preflight failure and raise PreflightFailed with the same text."""
+    log.error(msg)
+    raise PreflightFailed(f"Preflight failed: {msg}")
+
+
 def preflight(expected_carrier: str, log: logging.Logger,
               stage_speed_percent: Optional[float] = None,
               stage_acceleration_percent: Optional[float] = None,
               expected_material: Optional[str] = None,
-              thickness_range_um: Optional[Tuple[float, float]] = None) -> bool:
+              thickness_range_um: Optional[Tuple[float, float]] = None) -> None:
     """
     Standard start-of-run preflight — run this before ANY hardware action.
-
-    Legacy: a failed check is ``False`` in the return value. New code:
-    require_preflight (same checks and arguments, raises PreflightFailed).
 
     Checks, in order:
       1. the ZEN-API gateway is responsive (a live carrier query that doubles as
@@ -1515,9 +1283,9 @@ def preflight(expected_carrier: str, log: logging.Logger,
         thickness_range_um ((float, float), optional): Allowed carrier bottom
             thickness in µm, e.g. (150, 190). None: not checked.
 
-    Returns:
-        True if all checks pass and stage motion was set; False otherwise
-        (the reason is logged via ``log.error``). Callers should abort on False.
+    Raises:
+        PreflightFailed: A check failed (the reason is also logged with
+            ``log.error``). Nothing has moved.
     """
     # 0. Record version identity: none of this is available over the gRPC API
     # itself (no version/about service), so each piece is recovered out-of-band
@@ -1549,8 +1317,7 @@ def preflight(expected_carrier: str, log: logging.Logger,
     try:
         carrier = get_sample_carrier_name()
     except Exception as e:
-        log.error(f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
-        return False
+        _fail(log, f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
 
     # 1b. Record the live-scan (tray load / prescan) configuration: carrier
     # template, bottom material / RI, which prescan steps a load runs. Log only,
@@ -1568,24 +1335,21 @@ def preflight(expected_carrier: str, log: logging.Logger,
 
     # 2. Microscope idle.
     try:
-        if is_microscope_busy():
-            log.error("Microscope is busy (an experiment is already running) — aborting.")
-            return False
+        busy = is_microscope_busy()
     except Exception as e:
-        log.error(f"Could not query microscope status ({e}) — aborting.")
-        return False
+        _fail(log, f"Could not query microscope status ({e}) — aborting.")
+    if busy:
+        _fail(log, "Microscope is busy (an experiment is already running) — aborting.")
 
     # 3. Correct carrier.
     if carrier != expected_carrier:
-        log.error(f"Wrong sample carrier: '{carrier}' "
+        _fail(log, f"Wrong sample carrier: '{carrier}' "
                   f"(expected '{expected_carrier}') — aborting.")
-        return False
 
     # 3b. The carrier bottom that DF uses (thickness, material). A wrong value
     # moves the DF focus on the dry objectives with no error from DF.
     if check_carrier_for_df(log, expected_material, thickness_range_um) is None:
-        log.error("DF carrier check failed — aborting.")
-        return False
+        _fail(log, "DF carrier check failed — aborting.")
 
     # 4. Stage speed + acceleration (set once for the run).
     #
@@ -1609,8 +1373,7 @@ def preflight(expected_carrier: str, log: logging.Logger,
         motion = set_stage_motion_sync(stage_speed_percent, stage_acceleration_percent)
     except Exception as e:
         if throttle_requested:
-            log.error(f"Could not set requested stage acceleration ({e}) — aborting.")
-            return False
+            _fail(log, f"Could not set requested stage acceleration ({e}) — aborting.")
         log.warning(f"Stage acceleration not set ({e}); the device may not support "
                     f"this knob. No throttle was requested, so proceeding at the stage's "
                     f"current motion settings (full speed).")
@@ -1624,42 +1387,3 @@ def preflight(expected_carrier: str, log: logging.Logger,
         motion_str = (f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
                       f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%")
     log.info(f"Preflight OK: gateway responsive, microscope idle, carrier '{carrier}', {motion_str}.")
-    return True
-
-
-class _ErrorTap:
-    """A logger proxy that also keeps the ``error`` messages (for require_preflight)."""
-
-    def __init__(self, log: logging.Logger) -> None:
-        self._log = log
-        self.errors: List[str] = []
-
-    def error(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self.errors.append(str(msg))
-        self._log.error(msg, *args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._log, name)
-
-
-def require_preflight(expected_carrier: str, log: logging.Logger,
-                      stage_speed_percent: Optional[float] = None,
-                      stage_acceleration_percent: Optional[float] = None,
-                      expected_material: Optional[str] = None,
-                      thickness_range_um: Optional[Tuple[float, float]] = None) -> None:
-    """
-    Run the start-of-run preflight; raise if a check fails.
-
-    The same checks, arguments and log lines as preflight. The difference: a
-    failed check raises, so a pipeline cannot continue by accident.
-
-    Raises:
-        PreflightFailed: A check failed. The message has the reason(s) that
-            preflight logged as errors.
-    """
-    tap = _ErrorTap(log)
-    if not preflight(expected_carrier, tap, stage_speed_percent, stage_acceleration_percent,
-                     expected_material, thickness_range_um):
-        # The last error line is the check that stopped the preflight.
-        reason = tap.errors[-1] if tap.errors else "see the run log"
-        raise PreflightFailed(f"Preflight failed: {reason}")

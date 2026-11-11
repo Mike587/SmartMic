@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for MS_CD7_API_LoA.DefiniteFocusTracker.
 
-The tracker sits on top of run_definite_focus_find_surface (mocked here):
+The tracker sits on top of df_find_surface (mocked here):
 adaptive start below the last surface, one full-range fallback, a
 hardware-fault stop after N failed searches in a row, reset on a slide change,
 and no full-range search (start −300 µm) with the immersion objective active.
@@ -18,7 +18,7 @@ SURFACE = 1.35e-3
 
 
 class FakeDF:
-    """Stand-in for run_definite_focus_find_surface + the Z read-back.
+    """Stand-in for df_find_surface (returns the surface or raises FocusSearchFailed).
 
     outcomes: one bool per FindSurface call (True = surface found). Records the
     start Z of every call (None = full range from the −300 µm default).
@@ -30,16 +30,16 @@ class FakeDF:
 
     def find(self, max_retries=3, start_z_m=None):
         self.starts.append(start_z_m)
-        ok = self.outcomes.pop(0)
-        return (ok, "ok" if ok else "surface not found", 1 if ok else max_retries)
+        if not self.outcomes.pop(0):
+            raise ms.FocusSearchFailed("FindSurface", "surface not found", max_retries)
+        return self.surface
 
 
 @pytest.fixture
 def df(monkeypatch):
     def install(outcomes, objective=3, surface=SURFACE):
         fake = FakeDF(outcomes, surface)
-        monkeypatch.setattr(ms, "run_definite_focus_find_surface", fake.find)
-        monkeypatch.setattr(ms, "get_current_z_position", lambda: fake.surface)
+        monkeypatch.setattr(ms, "df_find_surface", fake.find)
         monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: (objective, 1))
         monkeypatch.setattr(ms, "_immersion_objective_active",
                             lambda: objective == stage.IMMERSION_OBJECTIVE_POSITION)

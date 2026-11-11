@@ -28,17 +28,14 @@ def test_full_chain_one_position(restore_state, hw, czexp_dir, out_dir, run_tag)
     scope.move_stage_to_new_xy_position(p0["x_m"], p0["y_m"])
 
     # 2. Set the focus optics (20×/0.95) the SWAF experiments are tuned for.
-    assert scope.set_objective_set_optovar_sync(hw.focus_obj, hw.focus_opt) is True
+    scope.set_optics_verified(hw.focus_obj, hw.focus_opt)
 
     # 3. DefiniteFocus FindSurface.
-    ok, msg, _ = scope.run_definite_focus_find_surface()
-    assert ok is True, msg
+    scope.df_find_surface()
 
     # 4. SWAF coarse + fine, both from bundled paths.
-    coarse_um, _ = scope.run_swaf_from_path(czexp_dir / "swaf_coarse_20x.czexp")
-    assert coarse_um is not None, "SWAF coarse failed"
-    fine_um, _ = scope.run_swaf_from_path(czexp_dir / "swaf_fine_20x.czexp")
-    assert fine_um is not None, "SWAF fine failed"
+    scope.swaf_find_focus(czexp_dir / "swaf_coarse_20x.czexp")
+    scope.swaf_find_focus(czexp_dir / "swaf_fine_20x.czexp")
 
     # 5. Acquire an overview image.
     ov = scope.run_experiment_from_path(czexp_dir / "snap_single.czexp", out_dir, f"e2e_overview_{run_tag}")

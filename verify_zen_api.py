@@ -62,7 +62,6 @@ def _import_all():
     import MS_czexp_editor           # noqa: F401
     import MS_zenapi_helpers         # noqa: F401
     import MS_limits                 # noqa: F401
-    import MS_zenapi_experiment_smoke  # noqa: F401
     import MS_Helper_function        # noqa: F401  (re-exports run_log / metadata / image_metrics)
     import MS_zen_logs               # noqa: F401
     import zen_api                   # noqa: F401

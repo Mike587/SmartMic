@@ -122,7 +122,7 @@ async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -
         ValueError: If *max_retries* < 1.
         Exception: The last attempt's exception once all attempts have failed,
             with the real attempt count attached as ``.attempts_used`` (read by
-            ``MS_CD7_API_LoA.run_definite_focus_find_surface`` for accurate
+            ``MS_CD7_API_LoA.df_find_surface`` for accurate
             retry telemetry).  Nothing is stored after a failure.
     """
     if max_retries < 1:

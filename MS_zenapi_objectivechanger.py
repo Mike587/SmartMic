@@ -80,7 +80,7 @@ def _require(lookup_fn: Callable[[Any, int], Any],
     lookup_fn returns None for a position not present in the reported
     inventory; dereferencing that None would otherwise surface as a generic
     AttributeError, which a caller's broad except/retry (see
-    MS_CD7_API_LoA.set_objective_set_optovar_sync) would then mask as just
+    MS_CD7_API_LoA._change_optics) would then mask as just
     another transient failure instead of the real config/hardware mismatch.
     """
     item = lookup_fn(inventory, position)

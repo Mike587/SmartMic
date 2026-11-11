@@ -141,7 +141,8 @@ def test_preflight_aborts_on_carrier_check(carrier, monkeypatch):
     monkeypatch.setattr(ms, "set_stage_motion_sync",
                         lambda s=None, a=None: motion.append(1) or {})
     log = _Log()
-    assert ms.preflight("PLATE", log, expected_material="Glass") is False
+    with pytest.raises(ms.PreflightFailed, match="DF carrier check failed"):
+        ms.preflight("PLATE", log, expected_material="Glass")
     assert motion == []          # nothing is set when a check fails
 
 
@@ -154,11 +155,10 @@ def tracker_env(monkeypatch):
 
     def find(max_retries=3, start_z_m=None):
         state["searches"] += 1
-        return True, "ok", 1
+        return 1.2e-3
 
     monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: dict(state["carrier"]))
-    monkeypatch.setattr(ms, "run_definite_focus_find_surface", find)
-    monkeypatch.setattr(ms, "get_current_z_position", lambda: 1.2e-3)
+    monkeypatch.setattr(ms, "df_find_surface", find)
     monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: (1, 1))
     return state
 

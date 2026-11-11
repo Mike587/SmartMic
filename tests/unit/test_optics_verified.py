@@ -40,7 +40,7 @@ def _optics(monkeypatch, readbacks, change_ok=True):
     def read():
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    monkeypatch.setattr(ms, "set_objective_set_optovar_sync", change)
+    monkeypatch.setattr(ms, "_change_optics", change)
     monkeypatch.setattr(ms, "get_current_objective_and_optovar", read)
     return calls
 

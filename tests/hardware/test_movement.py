@@ -45,8 +45,7 @@ def test_z_round_trip(restore_state, hw):
 
 def test_objective_optovar_change(restore_state, hw):
     scope = restore_state
-    ok = scope.set_objective_set_optovar_sync(hw.safe_obj, hw.safe_opt)
-    assert ok is True
+    scope.set_optics_verified(hw.safe_obj, hw.safe_opt)
     assert scope.get_current_objective_and_optovar() == (hw.safe_obj, hw.safe_opt)
 
 
@@ -63,4 +62,4 @@ def test_invalid_xy_raises(scope):
 
 def test_invalid_objective_raises(scope):
     with pytest.raises(ValueError):
-        scope.set_objective_set_optovar_sync(99, 1)
+        scope.set_optics_verified(99, 1)

@@ -17,9 +17,9 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Wraps the ZEN gRPC ExperimentService (acquisition.v1beta): run an
-# experiment (by name, by .czexp path, or from an XML string), collect
-# the result image, and query the status of a running experiment.
+# Wraps the ZEN gRPC ExperimentService (acquisition.v1beta): run a
+# .czexp by path, collect the result image, query / stop the running
+# experiment.
 #################################################################
 
 """
@@ -29,16 +29,9 @@ This module wraps the ZEN gRPC ``ExperimentService`` (acquisition.v1beta).
 
 Public functions
 ----------------
-run_experiment_by_name        -- Load an experiment from ZEN's library and run it
 run_experiment_from_path      -- Load a ``.czexp`` file by path and run it
-run_experiment_from_xml       -- Import an experiment XML string and run it
 get_running_experiment_status -- Status of the active experiment, or None (idle)
 stop_running_experiment       -- Stop the active experiment (for a crash / Ctrl-C handler)
-
-The three ``run_*`` functions differ only in HOW they get a runnable experiment
-id; everything else is one shared sequence (``_acquire``).  The full API smoke
-test (clone / save / export / import / delete, snap, live, continuous) is not an
-acquisition path and lives in ``MS_zenapi_experiment_smoke``.
 
 Image-output strategy
 ---------------------
@@ -54,7 +47,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional, TypedDict, Union
+from typing import Any, Dict, Optional, TypedDict, Union
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from grpclib import GRPCError
@@ -68,7 +61,6 @@ from zeiss_paths import CONFIG_PATH as config_path  # config.ini at the repo roo
 from zen_api.acquisition.v1beta import (
     ExperimentServiceGetImageOutputPathRequest,
     ExperimentServiceGetStatusRequest,
-    ExperimentServiceImportRequest,
     ExperimentServiceLoadRequest,
     ExperimentServiceRunExperimentRequest,
     ExperimentServiceStopRequest,
@@ -76,13 +68,12 @@ from zen_api.acquisition.v1beta import (
 )
 
 class ExperimentResult(TypedDict):
-    """Result of a ``run_*`` function."""
+    """Result of ``run_experiment_from_path``."""
     exp_result_path: Path          # the acquired .czi, in its final folder
-    snap_path: Optional[Path]      # always None here; the smoke test fills it
     experiment_id: str
 
 
-# Id of the experiment the latest run_* call of this process started (or None).
+# Id of the experiment the latest run of this process started (or None).
 # stop_running_experiment uses it: a handler for a crash or Ctrl-C does not
 # have the id.
 _last_started_experiment_id: Optional[str] = None
@@ -237,37 +228,38 @@ async def _run_experiment_and_collect(
     return _move_result_and_cleanup(exp_result, default_image_folder, image_folder, logger)
 
 
-async def _acquire(
-    get_experiment_id: Callable[..., Awaitable[str]],
-    configfile: Union[str, Path, None],
-    custom_image_folder: Union[str, Path, None],
-    custom_filename: Optional[str],
-) -> ExperimentResult:
-    """The one acquisition sequence behind every public ``run_*`` function.
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-    Opens a channel, resolves the output folder and name, gets a runnable
-    experiment id from ``get_experiment_id(exp_service, logger)``, runs it, and
-    moves the result out of ZEN's default folder.
+async def run_experiment_from_path(
+    czexp_path: Union[str, Path],
+    custom_image_folder: Union[str, Path, None] = None,
+    custom_filename: Optional[str] = None,
+) -> ExperimentResult:
+    """Load a ``.czexp`` file by path, run it, and move the result out of ZEN's folder.
+
+    ``ExperimentService.Load`` takes a full path WITHOUT the ``.czexp`` suffix.
+    Never Import + run instead: an imported tile/region experiment is not
+    runnable (ZEN throws NullReferenceException at run).
 
     Args:
-        get_experiment_id: ``async (exp_service, logger) -> experiment_id``. The
-            only step in which the public functions differ (load by name, load
-            by path, import XML).
-        configfile: ZEN API ``config.ini``; None → the one at the repo root.
+        czexp_path: The ``.czexp`` file.
         custom_image_folder: Folder the ``.czi`` is moved to; None →
-            ``DEFAULT_EXPERIMENT_OUTPUT_FOLDER``.
-        custom_filename: Output base name (with or without ``.czi``); None → a
-            generated ``zenapi_<8 hex>`` name.
-
-    Returns:
-        ``{"exp_result_path": Path, "snap_path": None, "experiment_id": str}``.
+            ``DEFAULT_EXPERIMENT_OUTPUT_FOLDER``. ZEN's own default folder is
+            refused (``_refuse_zen_default_folder``).
+        custom_filename: Output base name; None → ``zenapi_<8 hex>``. An
+            existing file gets a counter.
 
     Raises:
-        ValueError: The output folder is ZEN's default image folder (nothing is
-            loaded or run then; see ``_refuse_zen_default_folder``).
+        FileNotFoundError: *czexp_path* does not exist (before any RPC).
+        ValueError: The output folder is ZEN's default folder (nothing is run).
     """
+    czexp_path = Path(czexp_path)
+    if not czexp_path.exists():
+        raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
     logger = set_logging()
-    async with open_zen_channel(configfile or config_path) as (channel, metadata):
+    async with open_zen_channel(config_path) as (channel, metadata):
         exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
 
         default_image_folder = await _get_default_image_folder(exp_service, logger)
@@ -275,135 +267,16 @@ async def _acquire(
         _refuse_zen_default_folder(image_folder, default_image_folder)
         czi_name = _make_czi_basename(custom_filename)
 
-        experiment_id = await get_experiment_id(exp_service, logger)
+        load_arg = str(czexp_path.with_suffix(""))
+        logger.info("Loading Experiment from path: " + load_arg)
+        loaded = await exp_service.load(ExperimentServiceLoadRequest(experiment_name=load_arg))
+        experiment_id = loaded.experiment_id
         logger.info("Experiment reference id: " + experiment_id)
 
         result_path = await _run_experiment_and_collect(
             exp_service, experiment_id, default_image_folder, image_folder, czi_name, logger,
         )
-        return {"exp_result_path": result_path, "snap_path": None,
-                "experiment_id": experiment_id}
-
-
-async def _load_experiment(exp_service: ExperimentServiceStub, name_or_path: str) -> str:
-    """``ExperimentService.Load`` → the id of a runnable experiment.
-
-    ``name_or_path`` is a name in ZEN's experiment library, or a full path
-    WITHOUT the ``.czexp`` extension (ZEN accepts both in ``experiment_name``).
-    """
-    loaded = await exp_service.load(ExperimentServiceLoadRequest(experiment_name=name_or_path))
-    return loaded.experiment_id
-
-
-def _normalize_experiment_xml(xml: str) -> str:
-    """Strip a UTF-8 BOM and the ``<?xml ...?>`` declaration from experiment XML.
-
-    ZEN's ``ExperimentService.Import`` expects the string to start at
-    ``<HardwareExperiment>`` (that is how ``Export`` returns it).  On-disk
-    ``.czexp`` files prepend a BOM and an ``<?xml ...?>`` prolog, which the
-    importer rejects with ``INVALID_ARGUMENT``.  This makes either form work.
-    """
-    if xml and xml[0] == "\ufeff":      # strip BOM if present
-        xml = xml[1:]
-    idx = xml.find("<HardwareExperiment")
-    if idx > 0:
-        xml = xml[idx:]
-    return xml
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-async def run_experiment_by_name(
-    experiment_name: str,
-    configfile: Union[str, Path, None] = None,
-    custom_image_folder: Union[str, Path, None] = None,
-    custom_filename: Optional[str] = None,
-) -> ExperimentResult:
-    """Load an experiment by name from ZEN's experiment library and run it.
-
-    Args:
-        experiment_name: Name of the experiment (without the ``.czexp`` extension).
-        configfile, custom_image_folder, custom_filename: see ``_acquire``.
-
-    Returns:
-        ``{"exp_result_path", "snap_path" (None), "experiment_id"}``.
-    """
-    async def load(exp_service: ExperimentServiceStub, logger: logging.Logger) -> str:
-        logger.info("Loading Experiment by name: " + experiment_name)
-        return await _load_experiment(exp_service, experiment_name)
-
-    return await _acquire(load, configfile, custom_image_folder, custom_filename)
-
-
-async def run_experiment_from_path(
-    czexp_path: Union[str, Path],
-    configfile: Union[str, Path, None] = None,
-    custom_image_folder: Union[str, Path, None] = None,
-    custom_filename: Optional[str] = None,
-) -> ExperimentResult:
-    """Load an experiment from a ``.czexp`` file path and run it.
-
-    ZEN's ``ExperimentService.Load`` accepts a FULL PATH (without the ``.czexp``
-    extension), not just a name inside ZEN's experiment folder — so a per-run
-    modified experiment at any path can be loaded and run directly.
-
-    IMPORTANT: this LOADS the experiment and runs the loaded id.  It does NOT
-    import the XML and run the imported id — an imported experiment is not in a
-    runnable state and ZEN throws a NullReferenceException ("Object reference
-    not set to an instance of an object") at run for tile/regions experiments.
-
-    Args:
-        czexp_path: Path to the ``.czexp`` file to load and run.
-        configfile, custom_image_folder, custom_filename: see ``_acquire``.
-
-    Returns:
-        ``{"exp_result_path", "snap_path" (None), "experiment_id"}``.
-
-    Raises:
-        FileNotFoundError: if *czexp_path* does not exist (before any RPC).
-    """
-    czexp_path = Path(czexp_path)
-    if not czexp_path.exists():
-        raise FileNotFoundError(f"Experiment file not found: {czexp_path}")
-
-    async def load(exp_service: ExperimentServiceStub, logger: logging.Logger) -> str:
-        load_arg = str(czexp_path.with_suffix(""))
-        logger.info("Loading Experiment from path: " + load_arg)
-        return await _load_experiment(exp_service, load_arg)
-
-    return await _acquire(load, configfile, custom_image_folder, custom_filename)
-
-
-async def run_experiment_from_xml(
-    xml: str,
-    configfile: Union[str, Path, None] = None,
-    custom_image_folder: Union[str, Path, None] = None,
-    custom_filename: Optional[str] = None,
-) -> ExperimentResult:
-    """Import an experiment from an XML string and run it.
-
-    The XML may be the raw ``<HardwareExperiment>`` string (as returned by
-    ``Export`` or built on the fly) or full ``.czexp`` file content — a leading
-    BOM / ``<?xml ...?>`` prolog is normalized away.  For a tile/regions
-    experiment use ``run_experiment_from_path`` (see there).
-
-    Args:
-        xml: The experiment XML string.
-        configfile, custom_image_folder, custom_filename: see ``_acquire``.
-
-    Returns:
-        ``{"exp_result_path", "snap_path" (None), "experiment_id"}``.
-    """
-    xml = _normalize_experiment_xml(xml)
-
-    async def import_xml(exp_service: ExperimentServiceStub, logger: logging.Logger) -> str:
-        logger.info("Importing Experiment from XML string ...")
-        imported = await exp_service.import_(ExperimentServiceImportRequest(xml))
-        return imported.experiment_id
-
-    return await _acquire(import_xml, configfile, custom_image_folder, custom_filename)
+        return {"exp_result_path": result_path, "experiment_id": experiment_id}
 
 
 async def get_running_experiment_status() -> Optional[Dict[str, Any]]:
@@ -470,7 +343,7 @@ async def stop_running_experiment() -> bool:
     For the handler of a crash or of Ctrl-C: the pipeline stops, but ZEN
     continues an acquisition that is already started. Sends
     ``ExperimentService.Stop`` with the id of the experiment the latest
-    ``run_*`` call of this process started. If this process started none, the
+    ``run_experiment_from_path`` call of this process started. If this process started none, the
     request has no id (ZEN's ``GetStatus`` reads the active experiment that
     way; that ``Stop`` does the same is NOT verified on the scope).
 

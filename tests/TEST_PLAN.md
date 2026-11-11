@@ -133,19 +133,14 @@ These are the bulk of the value. Grouped by module.
 
 ### `tests/unit/test_loa_wrappers.py` — sync wrappers with the async layer **mocked**
 Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a scope:
-- `run_definite_focus_find_surface`: success path returns `(True, msg, attempts)`.
-  The async fn never returns a clean failure — it raises after exhausting
-  retries, with the real attempt count attached as `.attempts_used`. A caught
-  exception carrying that attribute reports the real count; one without it
-  (an unrelated/unexpected exception) falls back to `max_retries`.
-- `set_objective_set_optovar_sync`: validates inputs first (raises before any
-  async call); happy path confirms on the first poll against a mocked
-  `get_current_objective_and_optovar`. (The retry loop and the immersion
-  timeout selection inside `_set_and_wait` are not exercised by this file —
-  a coverage gap, not a passing test.)
-- `run_experiment`: calls `run_experiment_by_name` with the default output
-  folder; it has no `do_snap_and_live` switch (removed 2026-11-10; the smoke
-  test is `MS_zenapi_experiment_smoke.check_experiment_api`).
+- `df_find_surface`: returns the read-back Z (m). The async fn raises after
+  exhausting retries, with the real attempt count attached as `.attempts_used`;
+  that becomes `FocusSearchFailed.attempts` (no attribute → `max_retries`). A bad
+  argument (`ValueError`/`TypeError`) passes through unchanged.
+- `_change_optics` (the changer step of `set_optics_verified`): validates inputs
+  first; confirms on the first poll; a config error is not retried, a transient
+  one is; an API immersion slot gets the long timeout.
+- `run_experiment_from_path`: passes the default output folder.
 - `move_focus_to_new_z_position` / `move_stage_to_new_xy_position`: raise on invalid
   input *before* any async call (assert the async mock is never awaited).
 - `preflight`: happy path sets stage motion and logs no errors; wrong carrier /
@@ -250,10 +245,8 @@ tunable after a first real run (proposed starting values below — please sanity
 ZEN's stored library — another machine with the same scope won't have the same named
 experiments, so a name-based run is not portable. Every experiment a test runs comes
 from a **`.czexp` (or its XML) bundled in `tests/fixtures/`**, executed via the
-from-path / from-xml entry points: `run_experiment_from_path`,
-`run_experiment_from_xml`, and `run_swaf_from_path` (added 2026-06-22 — see §11). The
-remaining name-only entry points (`run_experiment` by name and `check_experiment_api`)
-get special handling: see the run-by-name note (Tier 3).
+by-path entry points `run_experiment_from_path` and `swaf_find_focus` (the only
+ones since 2026-11-11; the by-name and from-XML variants were removed).
 
 ### Tier 0 — `tests/hardware/test_readonly.py` (moves nothing)
 Pytest-ified `verify_zen_api.py`:
@@ -271,7 +264,7 @@ doesn't poison the next.
   positions fixture → read back within `STAGE_TOL_M` → return to start.
 - **Z round-trip:** read Z → `move_focus_to_new_z_position(z + small Δ)` → read back
   within `Z_TOL_M` → return.
-- **Objective/optovar:** `set_objective_set_optovar_sync(SAFE_OBJ, SAFE_OPT)` →
+- **Objective/optovar:** `set_optics_verified(SAFE_OBJ, SAFE_OPT)` →
   `get_current_objective_and_optovar` confirms → restore.
 - **Guard tests (still no risky motion):** invalid objective/Z/XY raise before any
   motion (mirrors the unit guard, confirmed against the real validators).
@@ -283,15 +276,14 @@ used by the movement tier — the bundled SWAF experiments (`swaf_coarse_20x` /
 `swaf_fine_20x`) are tuned for the 20× objective, so the fixture sets 20×/0.95 before
 any DF/SWAF here. (20×/0.95 is high-NA with a short working distance; DF FindSurface
 drives toward the sample, exactly as the PoC does — adaptive start-Z keeps it safe.)
-- **DF FindSurface:** succeeds; resulting Z within the safe range; `attempts` ≥ 1.
+- **DF FindSurface:** `df_find_surface` succeeds; resulting Z within the safe range.
 - **DF repeatability:** two consecutive FindSurface calls agree within `DF_REPEAT_TOL_M`
   (a real regression signal for focus drift/instability).
-- **DF recall:** after a FindSurface+store, `run_definite_focus_recall` returns a
-  Z (µm) close to the stored surface.
-- **SWAF (from path):** `run_swaf_from_path(<swaf_coarse_20x.czexp>)` (and
-  `swaf_fine_20x`) returns a focus position within range; `None`-handling path is
-  exercised if a SWAF legitimately fails. Self-contained — loaded from the bundled
-  `.czexp`, not from a name in ZEN's library (resolved 2026-06-22; see §11).
+- **DF recall:** after `df_find_surface(store_focus=True)`, `df_recall_focus`
+  returns a Z (m) within 1 µm of the stored surface.
+- **SWAF (from path):** `swaf_find_focus(<swaf_coarse_20x.czexp>)` returns a focus
+  position (m) within range; a failed search raises `FocusSearchFailed`.
+  Self-contained — loaded from the bundled `.czexp`.
 
 ### Tier 3 — `tests/hardware/test_acquisition.py`
 Writes to a per-test output folder and **keeps the produced CZIs for inspection** by
@@ -302,20 +294,11 @@ a **bundled standalone `.czexp` / XML** — never a name assumed to be in ZEN's 
   dict has `exp_result_path`; the CZI exists and is non-empty.
 - **Z-stack (by path):** `run_experiment_from_path(<zstack.czexp>, …)` → CZI exists;
   `get_zstack_z_range` reports the expected plane count / step from the czexp.
-- **By XML:** read a bundled `.czexp`'s text and feed it to
-  `run_experiment_from_xml(<xml>, …)` → CZI exists. Self-contained — the XML comes
-  from the repo, not from ZEN.
 - **Result handling:** assert the result was moved out of ZEN's default folder and
   the collision counter produces a fresh name when the target already exists
   (the `_move_result_and_cleanup` / `_unique_czi_name` regression from TODO.md).
 - **Status:** `get_running_experiment_status` is non-`None` during a run (if timing
   allows) and `None` when idle.
-- **Run-by-name — deliberately *not* in the portable suite.** `run_experiment(name)`
-  and the `check_experiment_api` smoke test resolve an experiment by *name* from ZEN's
-  stored library, which another machine won't have. The by-path and by-XML tests
-  above cover the same load→run→collect tail from repo-owned files instead. An
-  optional `@pytest.mark.local` test can still exercise run-by-name on a machine where
-  the named experiment exists — skipped by default.
 
 ### Tier 4 — `tests/hardware/test_smoke_e2e.py` — the "overall test"
 One well, the full PoC chain hardened into a single test, **with the external
@@ -328,7 +311,7 @@ integration test that proves the wrappers compose correctly end-to-end.
 
 All acquisitions here use the **bundled `.czexp` files** (via `run_experiment_from_path`),
 not named experiments — same portability rule as Tier 3. SWAF runs the bundled
-`swaf_coarse_20x` / `swaf_fine_20x` via `run_swaf_from_path` with the 20×/0.95 focus
+`swaf_coarse_20x` / `swaf_fine_20x` via `swaf_find_focus` with the 20×/0.95 focus
 optics set (FOCUS_OBJ/FOCUS_OPT; see Tier 2).
 
 ---
@@ -372,7 +355,7 @@ Keep them small so they're comfortable in git. ✅ = present, ⏳ = still to add
    z-range geometry tests. Run by path.
 4. ✅ **`swaf_coarse_20x.czexp`** + **`swaf_fine_20x.czexp`** — the SWAF experiments,
    **tuned for the 20×/0.95 objective** (so the focus tier sets `FOCUS_OBJ/FOCUS_OPT`
-   = pos 3/1 before running them). Loaded **by path** via `run_swaf_from_path` — no
+   = pos 3/1 before running them). Loaded **by path** via `swaf_find_focus` — no
    dependence on ZEN's stored library (see §11).
 5. ✅ *(editor coverage)* **`stitch_region.czexp`** — has a `TileRegion`/stitch +
    processing step, so `find_stitch_regions`, `set_tile_region_center`,
@@ -564,6 +547,6 @@ isn't lost:
 - `test_validation.py`: `MS_limits.require_*`.
 - Hardware tests to add: Stop during a run; the guard on the 50x (refusal only).
 - `test_loa_wrappers.py` (rule "a failure raises"): `df_find_surface`,
-  `df_recall_focus`, `swaf_find_focus*` return metres and raise
-  `FocusSearchFailed`; `require_preflight` raises `PreflightFailed` with the
+  `df_recall_focus`, `swaf_find_focus` return metres and raise
+  `FocusSearchFailed`; `preflight` raises `PreflightFailed` with the
   reason of the check that stopped it.
