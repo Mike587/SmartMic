@@ -231,6 +231,11 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   `test_smoke_e2e.py` all passed the same day. So for such plates set the material
   by the optical behaviour, not the nominal bottom material;
   `preflight(..., expected_material="Glass")` can enforce it.
+  **Reproduced by switching back (same plate, same day, 15:30):** material set to
+  Polystyrene again (196 µm, n = 1.594) → `test_df_find_surface` failed again, 3/3
+  attempts, `error code = Oscillation`. So on this plate the material setting alone
+  turns DF on and off (Glass: works; Polystyrene: Oscillation). Why DF reacts this
+  way is still not understood.
 
 - **With immersion, DF can lock onto the WRONG surface and still report
   quality 99.** Same run (New-03.czi, 50x/1.2 W, ibidi 96-well, 170 µm glass
