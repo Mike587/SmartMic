@@ -220,6 +220,10 @@ Open tasks live in `TODO.md`; licensing/attribution decisions live in
   reflex plus the bottom-thickness offset by design ("Dry objectives: DF finds the
   plate UNDERSIDE and adds an offset"). Cause still open (polystyrene bottom? TODO
   "A real polystyrene plate"). The DF and SWAF hardware tests cannot run on this plate.
+  **Update (Mike, same day):** DF failed the same way when run manually in ZEN on this
+  plate, so it is not the API path. With a glass-bottom plate DF works again. Cause
+  still not understood (this plate / polystyrene / the 3 mm skirt?): investigate
+  later (TODO).
 
 - **With immersion, DF can lock onto the WRONG surface and still report
   quality 99.** Same run (New-03.czi, 50x/1.2 W, ibidi 96-well, 170 µm glass
