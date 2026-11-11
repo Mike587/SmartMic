@@ -135,10 +135,6 @@ def test_find_zstack_setup_real(lsm_root):
     assert zs.find("First") is not None and zs.find("Last") is not None
 
 
-def test_find_processing_steps_returns_list(lsm_root):
-    assert isinstance(cz.find_processing_steps(lsm_root), list)
-
-
 @pytest.mark.parametrize("xml,expected", [
     ("<HardwareExperiment/>", True),
     ('<HardwareExperiment><ExperimentRemoteProcessingSetup IsActivated="false">'
@@ -441,31 +437,28 @@ def _focus_xml(method="None", search="None", surface="None",
             f'</FocusStrategy></FocusSetup></HardwareExperiment>')
 
 
-def test_has_focus_strategy_active_method():
+def test_focus_strategy_active_method():
     # find_tissue / find_thickness shape: a real SearchAction is configured.
     root = ET.fromstring(_focus_xml(method="FollowAction",
                                     search="DefiniteFocusFindSurface"))
-    assert cz.has_focus_strategy(root) is True
     assert cz.get_focus_strategy(root)["search_action"] == "DefiniteFocusFindSurface"
 
 
-def test_has_focus_strategy_all_none_is_off():
+def test_focus_strategy_all_none_is_off():
     # find_nuclei / image_nuclei shape: Method/SearchAction/SurfaceMode all None.
-    root = ET.fromstring(_focus_xml())
-    assert cz.has_focus_strategy(root) is False
-    assert cz.get_focus_strategy(root) is None
+    assert cz.get_focus_strategy(ET.fromstring(_focus_xml())) is None
 
 
-def test_has_focus_strategy_missing_setup():
-    assert cz.has_focus_strategy(ET.fromstring("<HardwareExperiment/>")) is False
+def test_focus_strategy_missing_setup():
+    assert cz.get_focus_strategy(ET.fromstring("<HardwareExperiment/>")) is None
 
 
-def test_has_focus_strategy_deactivated_setup_or_strategy():
+def test_focus_strategy_deactivated_setup_or_strategy():
     # An otherwise-real strategy that is deactivated does not count.
     off_setup = ET.fromstring(_focus_xml(method="FollowAction", setup_act="false"))
     off_strat = ET.fromstring(_focus_xml(method="FollowAction", strategy_act="false"))
-    assert cz.has_focus_strategy(off_setup) is False
-    assert cz.has_focus_strategy(off_strat) is False
+    assert cz.get_focus_strategy(off_setup) is None
+    assert cz.get_focus_strategy(off_strat) is None
 
 
 # --------------------------------------------------------------------------
@@ -776,7 +769,6 @@ def test_locators_ignore_embedded_autofocus_experiment():
     root = ET.fromstring(EMBEDDED_SWAF)
     assert cz.find_tile_regions(root) == []
     assert cz.find_stitch_regions(root) == []
-    assert cz.find_processing_steps(root) == []
     assert cz.find_lsm_detector(root).findtext("FrameSize") == "1024,1024"
     # The unconfigured step belongs to the autofocus run, not to this experiment.
     assert cz.is_stitching_configured(root) is True

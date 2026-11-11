@@ -81,12 +81,6 @@ def test_current_names_unknown_position_raises(changer):
         asyncio.run(oc.get_current_objective_and_optovar_names())
 
 
-def test_list_inventory_moves_nothing(changer):
-    assert asyncio.run(oc.list_objectives_and_optovars()) == (
-        [("5x", 2), ("20x", 3)], [("2x", 1), ("1x", 2)])
-    assert changer["rpc"] == ["get_objectives", "get_optovars"]
-
-
 def test_set_moves_both(changer):
     asyncio.run(oc.set_objective_set_optovar(3, 2))
     assert (changer["obj"], changer["opt"]) == (3, 2)

@@ -211,17 +211,6 @@ async def get_current_objective_and_optovar() -> Tuple[int, int]:
         return await _read_positions(*_services(channel, metadata))
 
 
-async def list_objectives_and_optovars(
-) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
-    """Return ``(objectives, optovars)``, each a list of ``(name, position)``. Read-only."""
-    async with open_zen_channel(config_path) as (channel, metadata):
-        objectives, optovars = await _read_inventory(*_services(channel, metadata))
-
-    obj_list = [(o.name, o.position) for o in objectives.objectives]
-    opt_list = [(o.name, o.position) for o in optovars.optovars]
-    return obj_list, opt_list
-
-
 async def get_current_objective_and_optovar_names(
 ) -> Tuple[Tuple[str, int], Tuple[str, int]]:
     """Return ``((obj_name, obj_position), (opt_name, opt_position))``.

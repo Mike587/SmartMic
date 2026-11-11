@@ -102,7 +102,7 @@ These are the bulk of the value. Grouped by module.
   unused regions skipped, missing flag = used, file order; duplicate used names
   and a region without Name/CenterPosition raise.
 
-### `tests/unit/test_run_log_metadata.py` — `MS_run_log`, `MS_metadata`, `MS_image_metrics`
+### `tests/unit/test_run_log_metadata.py` — `MS_run_log`, `MS_metadata`
 - `load_positions_from_czexp`: parse the positions fixture; assert well names,
   position counts, µm→m conversion, and the **`IsUsedForAcquisition` default-True**
   rule (a position with the tag missing is treated as used).
@@ -116,11 +116,6 @@ These are the bulk of the value. Grouped by module.
   repo in tmp; skipped without git). `zeiss_paths.git_state` itself is tested
   in `test_zeiss_paths.py` (clean, dirty + untracked, subfolder → enclosing
   repo, not a repo, git missing).
-- `compute_focus_score`: sharp-CZI score **>** blurry-CZI score; returns a float;
-  `None`/graceful on a non-CZI path.
-- `get_focus_position_from_czi`: extracts the embedded `FocusPosition` (µm) from a
-  fixture CZI; `None` when absent.
-- `get_zstack_z_range`: plane count, step, first/center/last from a z-stack CZI.
 - `append_jsonl` / `read_jsonl` *(added 2026-10-14)*: round-trip; missing file →
   `[]`; a line cut off by a crash is skipped on read AND the next append starts
   on a new line (not glued onto the fragment); blank lines ignored.
@@ -292,8 +287,7 @@ a **bundled standalone `.czexp` / XML** — never a name assumed to be in ZEN's 
 — so the suite is portable to any machine with the scope.
 - **Snap (by path):** `run_experiment_from_path(<snap.czexp>, out, name)` → result
   dict has `exp_result_path`; the CZI exists and is non-empty.
-- **Z-stack (by path):** `run_experiment_from_path(<zstack.czexp>, …)` → CZI exists;
-  `get_zstack_z_range` reports the expected plane count / step from the czexp.
+- **Z-stack (by path):** `run_experiment_from_path(<zstack.czexp>, …)` → CZI exists.
 - **Result handling:** assert the result was moved out of ZEN's default folder and
   the collision counter produces a fresh name when the target already exists
   (the `_move_result_and_cleanup` / `_unique_czi_name` regression from TODO.md).
@@ -366,12 +360,9 @@ Keep them small so they're comfortable in git. ✅ = present, ⏳ = still to add
    this is what exercises `find_lsm_detector`, `get_lsm_pixel_size_um`, `fit_lsm_crop`,
    `summarize`, `set_lsm_scan_speed_max`, `set_lsm_sampling_mode_user`. Added 2026-06-22.
 
-### `tests/fixtures/czi/`
-7. ✅ **`sharp_small.czi`** — an in-focus single-plane image (high focus score). ~7.7 MB.
-8. ✅ **`blurry_small.czi`** — an out-of-focus single-plane image (low focus score). ~7.7 MB.
-   Together they prove `compute_focus_score` orders sharpness correctly.
-9. ✅ **`zstack.czi`** — a small z-stack with an embedded `FocusPosition`, for
-   `get_zstack_z_range` and best-plane scoring. ~9.3 MB.
+### `tests/fixtures/czi/` — removed 2026-11-11
+SmartMic no longer reads CZIs (ia_common does), so the CZI fixtures and their
+focus-score / CZI-metadata tests went with the readers.
 
 > Space: switched the focus-scoring fixtures to the `*_small` variants (~7.7 MB vs
 > ~25 MB each, ~35 MB saved). The original `sharp.czi` / `blurry.czi` are superseded

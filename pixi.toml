@@ -23,7 +23,6 @@ python-dateutil = ">=2.8,<3"   # betterproto 2.0.0b7 needs <3; conda-forge would
 [pypi-dependencies]
 betterproto = "==2.0.0b7"   # pinned by the Zeiss zen_api package
 grpclib = "*"
-pylibczirw = ">=5.1,<6"     # CZI metadata reading (MS_metadata, MS_image_metrics)
 
 # ---------------------------------------------------------------------------
 # Extras used only by the local projects (projects/*) and sandbox scripts.
@@ -39,6 +38,7 @@ python-pptx = "*"    # Marc_SM make_pptx.py
 
 [feature.projects.pypi-dependencies]
 opencv-python = "*"   # Slide_Search make_search_movie.py
+pylibczirw = ">=5.1,<6"  # CZI reading in frozen projects / ia_* modules imported in-process
 aicspylibczi = "*"    # Marc_SM_002 (imports ia_Marc_002/czi_mosaic in-process)
 bioio = "*"           # sandbox
 bioio-czi = ">=2.4,<3"

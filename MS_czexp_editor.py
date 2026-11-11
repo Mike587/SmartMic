@@ -180,11 +180,6 @@ def find_zstack_setup(root: ET.Element) -> ET.Element:
     raise ValueError("ZStackSetup with First/Last not found")
 
 
-def find_processing_steps(root: ET.Element) -> List[ET.Element]:
-    """Return all <ProcessingStep> elements (remote-processing / stitching steps)."""
-    return _iter_own(root, "ProcessingStep")
-
-
 def is_stitching_configured(root: ET.Element) -> bool:
     """False only if an ACTIVE remote-processing step is the empty placeholder.
 
@@ -213,7 +208,11 @@ def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
     """Return the active focus strategy, or None if there is none.
 
     Returns {"method", "search_action", "surface_mode"} from
-    <FocusSetup><FocusStrategy>. See has_focus_strategy for what counts.
+    <FocusSetup><FocusStrategy>. The strategy is OFF when <Method>,
+    <SearchAction> and <SurfaceMode> are all "None", even though
+    <FocusStrategy> keeps IsActivated="true". ZEN can silently (re)add a
+    strategy when an experiment is re-saved: check before running a file that
+    sets Z itself.
     """
     setup = next(iter(_iter_own(root, "FocusSetup")), None)
     if setup is None or (setup.get("IsActivated") or "true").lower() == "false":
@@ -230,17 +229,6 @@ def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
             "surface_mode": fields["SurfaceMode"]}
 
 
-def has_focus_strategy(root: ET.Element) -> bool:
-    """True if an ACTIVE focus strategy is configured in the experiment.
-
-    ZEN can silently (re)add a strategy when an experiment is re-saved; check
-    before running a file that sets Z itself. The strategy is OFF when
-    <Method>, <SearchAction> and <SurfaceMode> are all "None", even though
-    <FocusStrategy> keeps IsActivated="true".
-    """
-    return get_focus_strategy(root) is not None
-
-
 # ---------------------------------------------------------------------------
 # Run-safety checks (raise before a generated .czexp is run)
 # ---------------------------------------------------------------------------
@@ -251,7 +239,7 @@ def require_no_focus_search(root: ET.Element, path: Optional[PathLike] = None,
 
     For runs that set Z themselves. A strategy WITHOUT a search action is
     allowed (e.g. FollowSurface + SearchAction=None uses each region's stored
-    Z); has_focus_strategy refuses any strategy.
+    Z); ``get_focus_strategy(root) is None`` refuses any strategy.
 
     reason: text appended to the error. Returns the strategy dict or None.
 

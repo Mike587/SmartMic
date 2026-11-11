@@ -110,11 +110,6 @@ def czexp_dir() -> Path:
 
 
 @pytest.fixture(scope="session")
-def czi_dir() -> Path:
-    return FIXTURES_DIR / "czi"
-
-
-@pytest.fixture(scope="session")
 def keep_images(request) -> bool:
     """True when acquired CZIs should be kept (the default)."""
     return not request.config.getoption("--clean-images")

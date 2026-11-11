@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for MS_run_log, MS_metadata and MS_image_metrics.
-
-The focus-scoring tests read the bundled CZIs (need pylibCZIrw, present in the
-smartmic env); they importorskip so the suite still runs where it is absent.
-"""
+"""Unit tests for MS_run_log and MS_metadata (.czexp readers, carrier check)."""
 import logging
 
 import pytest
 
-import MS_image_metrics as image_metrics
 import MS_metadata as metadata
 import MS_run_log as run_log
 
@@ -172,130 +167,6 @@ def test_write_run_info_other_log_name(tmp_path, fake_versions):
 
 
 # --------------------------------------------------------------------------
-# Focus scoring / CZI metadata (need pylibCZIrw + the bundled CZIs)
-# --------------------------------------------------------------------------
-@pytest.fixture
-def sharp(czi_dir):
-    return czi_dir / "sharp_small.czi"
-
-
-@pytest.fixture
-def blurry(czi_dir):
-    return czi_dir / "blurry_small.czi"
-
-
-@pytest.fixture
-def zstack_czi(czi_dir):
-    return czi_dir / "zstack.czi"
-
-
-def test_compute_focus_score_sharp_gt_blurry(sharp, blurry):
-    pytest.importorskip("pylibCZIrw")
-    s = image_metrics.compute_focus_score(sharp)
-    b = image_metrics.compute_focus_score(blurry)
-    assert s is not None and b is not None
-    assert s > b
-
-
-def test_compute_focus_score_bad_path_returns_none(tmp_path):
-    assert image_metrics.compute_focus_score(tmp_path / "nope.czi") is None
-
-
-def test_get_focus_position_from_czi(zstack_czi):
-    fp = metadata.get_focus_position_from_czi(zstack_czi)
-    assert fp is None or isinstance(fp, float)
-
-
-def test_get_focus_position_missing_returns_none(tmp_path):
-    assert metadata.get_focus_position_from_czi(tmp_path / "nope.czi") is None
-
-
-def test_get_zstack_z_range(zstack_czi):
-    pytest.importorskip("pylibCZIrw")
-    zr = metadata.get_zstack_z_range(zstack_czi)
-    assert zr is not None
-    assert set(zr) == {"first_um", "center_um", "last_um", "n_z", "step_um"}
-    assert zr["n_z"] > 1
-    assert zr["step_um"] > 0
-    assert zr["last_um"] == pytest.approx(zr["first_um"] + (zr["n_z"] - 1) * zr["step_um"])
-
-
-def test_get_zstack_z_range_single_plane_is_none(sharp):
-    pytest.importorskip("pylibCZIrw")
-    assert metadata.get_zstack_z_range(sharp) is None
-
-
-# --------------------------------------------------------------------------
-# Stage position from CZI (get_stage_position_from_czi / get_xy_position_from_czi)
-# --------------------------------------------------------------------------
-def test_get_stage_position_from_czi_shape(zstack_czi):
-    pytest.importorskip("pylibCZIrw")
-    info = metadata.get_stage_position_from_czi(zstack_czi)
-    assert info is not None
-    assert set(info) == {"actual_x_m", "actual_y_m",
-                         "planned_x_m", "planned_y_m", "z_m"}
-    # All five fields are present in this fixture; values are plausible stage
-    # coordinates in metres (this scope's travel is well under 0.2 m).
-    for k, v in info.items():
-        assert isinstance(v, float)
-        assert abs(v) < 0.2
-
-
-def test_get_stage_position_from_czi_missing_returns_none(tmp_path):
-    assert metadata.get_stage_position_from_czi(tmp_path / "nope.czi") is None
-
-
-def test_get_xy_position_prefers_planned_vs_actual(zstack_czi):
-    pytest.importorskip("pylibCZIrw")
-    info = metadata.get_stage_position_from_czi(zstack_czi)
-    # planned (scene CenterPosition) is the reliable "where imaged" field and the
-    # default; actual (MTBStageAxis encoder) is the parked position. In this
-    # fixture the two differ, so each prefer-mode must return its own pair.
-    assert metadata.get_xy_position_from_czi(zstack_czi) == (
-        info["planned_x_m"], info["planned_y_m"])
-    assert metadata.get_xy_position_from_czi(zstack_czi, prefer="planned") == (
-        info["planned_x_m"], info["planned_y_m"])
-    assert metadata.get_xy_position_from_czi(zstack_czi, prefer="actual") == (
-        info["actual_x_m"], info["actual_y_m"])
-
-
-def test_get_xy_position_from_czi_missing_returns_none(tmp_path):
-    assert metadata.get_xy_position_from_czi(tmp_path / "nope.czi") is None
-
-
-# --------------------------------------------------------------------------
-# Signal level / empty-stack guard
-# --------------------------------------------------------------------------
-def test_signal_level_from_czi_real_image(sharp):
-    pytest.importorskip("pylibCZIrw")
-    level = image_metrics.signal_level_from_czi(sharp)
-    # A real (non-empty) image: signal well above the empty threshold, ≤ 1.
-    assert level is not None
-    assert image_metrics.EMPTY_STACK_SIGNAL_FRAC < level <= 1.0
-
-
-def test_signal_level_from_czi_missing_returns_none(tmp_path):
-    assert image_metrics.signal_level_from_czi(tmp_path / "nope.czi") is None
-
-
-def test_is_czi_effectively_empty_false_for_real_image(sharp):
-    pytest.importorskip("pylibCZIrw")
-    # Default threshold: a real image is not empty.
-    assert image_metrics.is_czi_effectively_empty(sharp) is False
-
-
-def test_is_czi_effectively_empty_true_above_signal(sharp):
-    pytest.importorskip("pylibCZIrw")
-    # Force the empty branch with a frac above this image's signal level
-    # (no all-black fixture available) — exercises the comparison.
-    assert image_metrics.is_czi_effectively_empty(sharp, frac=1.0) is True
-
-
-def test_is_czi_effectively_empty_missing_returns_none(tmp_path):
-    assert image_metrics.is_czi_effectively_empty(tmp_path / "nope.czi") is None
-
-
-# --------------------------------------------------------------------------
 # append_jsonl / read_jsonl (resumable run records)
 # --------------------------------------------------------------------------
 def test_jsonl_roundtrip(tmp_path):
@@ -329,22 +200,8 @@ def test_read_jsonl_skips_blank_lines(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Sample carrier (SampleHolder Template) from .czi / .czexp
+# Sample carrier (SampleHolder Template) from .czexp
 # --------------------------------------------------------------------------
-def test_sample_carrier_from_czi_plate(sharp):
-    pytest.importorskip("pylibCZIrw")
-    c = metadata.get_sample_carrier_from_czi(sharp)
-    assert c["name"] == "Multichamber 384"
-    assert c["category"] == "Multichamber"
-    assert (c["rows"], c["columns"]) == (16, 24)
-    # µm in the file → m: 4.5 mm pitch, SBS footprint 127.8 × 85.5 mm.
-    assert c["pitch_x_m"] == pytest.approx(4.5e-3)
-    assert c["pitch_y_m"] == pytest.approx(4.5e-3)
-    assert c["bounds_size_m"] == pytest.approx((0.1278, 0.0855))
-    assert c["insert_type"] == "Default"
-    assert c["is_part_of_insert"] is False
-
-
 def test_sample_carrier_from_czexp_96well(czexp_dir):
     c = metadata.get_sample_carrier_from_czexp(czexp_dir / "zstack_LSM.czexp")
     assert c["name"] == "Multiwell 96"
@@ -433,7 +290,6 @@ def test_sample_carrier_none_without_template(tmp_path):
 
 def test_sample_carrier_missing_files_return_none(tmp_path):
     assert metadata.get_sample_carrier_from_czexp(tmp_path / "nope.czexp") is None
-    assert metadata.get_sample_carrier_from_czi(tmp_path / "nope.czi") is None
 
 
 def test_check_sample_carrier_plate():

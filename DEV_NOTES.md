@@ -1234,7 +1234,7 @@ Old entries in this file use the old names. Do not rewrite them; use this table.
 |-----|-----|
 | `MS_run_log.setup_run_logger`, `write_run_info`, `append_jsonl`, `read_jsonl`, `DEFAULT_EXPERIMENT_OUTPUT_FOLDER` | `MS_run_log` |
 | `MS_metadata.load_positions_from_czexp`, `get_sample_carrier_from_czi` / `_czexp`, `check_sample_carrier`, `get_focus_position_from_czi`, `get_zstack_z_range`, `get_stage_position_from_czi`, `get_xy_position_from_czi` | `MS_metadata` |
-| `MS_image_metrics.compute_focus_score`, `signal_level_from_czi`, `is_czi_effectively_empty` | `MS_image_metrics` |
+| `MS_image_metrics.compute_focus_score`, `signal_level_from_czi`, `is_czi_effectively_empty` | `MS_image_metrics` (deleted 2026-11-11, see "SmartMic does NOT depend on ia_common") |
 | `zeiss_paths.zen_app_version`, `zen_df_bottom`, `zen_auto_immersion_settings`, `format_auto_immersion_settings`, `zen_user_options_path`, `zen_service_immersion_options` | `MS_zen_logs` |
 | `MS_zenapi_experiment_methods.check_experiment_api` | `MS_zenapi_experiment_smoke` |
 | `ms.run_experiment(..., do_snap_and_live=True)` | removed; call the smoke test directly |
@@ -1504,10 +1504,22 @@ coordinate conventions, display helpers and the script/CLI contract of
 `run_analysis`. The detection algorithms stay per project. The survey and
 plan are in its own `TODO.md`.
 
-**SmartMic does NOT depend on ia_common.** It keeps its own small CZI readers
-in `MS_metadata` (stage/Z positions). They overlap with ia_common on
-purpose, so that the library needs no image-analysis env. (Revisit: TODO C2
-step 3 moves the CZI readers to ia_common once it is published.)
+**SmartMic does NOT depend on ia_common, and reads no CZI itself (since
+2026-11-11).** SmartMic keeps what a pipeline needs before or during an
+acquisition: the `.czexp` readers (`MS_metadata.load_positions_from_czexp`,
+`get_sample_carrier_from_czexp`) and `check_sample_carrier`. Reading a CZI is
+ia_common's job (published: https://github.com/Mike587/ia_common), and a pipeline
+gets anything from a CZI through its analysis script (`run_analysis_json`).
+Removed from SmartMic: `get_sample_carrier_from_czi` (→ `ia_common.czi.meta.
+sample_carrier`, same dict), `get_focus_position_from_czi` / `get_zstack_z_range` /
+`get_stage_position_from_czi` / `get_xy_position_from_czi` (ia_common has
+`recorded_focus_m`, `z_relative_m` / `z_step_m`, `planned_scene_centres_m`,
+`recorded_stage_xy_m`), and the whole `MS_image_metrics` (`compute_focus_score`,
+`signal_level_from_czi`, `is_czi_effectively_empty`; DF_Exploration has a better
+binned LoG score). Also removed as unused: `MS_czexp_editor.find_processing_steps`
+/ `has_focus_strategy` (use `get_focus_strategy(root) is None`) and
+`MS_zenapi_objectivechanger.list_objectives_and_optovars`. pylibczirw left the
+core env (it stays in the `projects` feature for the frozen projects).
 
 ### Dependency history: the pixi environment slimmed (2026-11-11)
 
@@ -1518,7 +1530,8 @@ the library, tests, every `projects/*` folder and `sandbox/` showed almost none
 of it was used. Now:
 
 - **Core (default feature):** python 3.11, numpy, pywin32, pytest, pytest-cov,
-  python-dateutil, and from pypi betterproto 2.0.0b7, grpclib, pylibczirw 5.x.
+  python-dateutil, and from pypi betterproto 2.0.0b7, grpclib. (pylibczirw 5.x
+  moved to `projects` later that day, when SmartMic stopped reading CZIs.)
   zen_api itself imports only betterproto + grpclib.
 - **`projects` feature:** scipy, matplotlib, tifffile, markdown, lxml, reportlab,
   python-pptx, opencv-python, aicspylibczi, bioio, bioio-czi 2.x — only what
