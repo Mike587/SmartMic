@@ -505,20 +505,12 @@ Running the hardware tiers against the live scope (Multichamber 384, 20×/0.95):
   `custom_folder` may be any path. Production (PoC writes to `F:\…`, same drive as
   ZEN's temp) was unaffected either way.
 
-### Deferred — NOT to be worked on now (noted for later)
+### PoC (resolved 2026-11-11)
 
-Per the 2026-06-22 decision, leave the PoC alone for the moment. Recorded so it
-isn't lost:
-- **Migrate the PoC's SWAF calls to `run_swaf_from_path`** (currently
-  `ms.run_swaf("DV_001_swaf_001")` etc. in `MS_SmartMic_PoC.py:219`) so the
-  production pipeline is also free of named-experiment dependencies.
-- **Same wart for the PoC's experiment acquisitions** — `ms.run_experiment("DAPI_GFP_001", …)`
-  loads by name. If full PoC portability is wanted, switch these to
-  `run_experiment_from_path` against committed `.czexp` files. Bigger change; treat
-  separately from the SWAF item.
-- Decide where the PoC's canonical `.czexp` files should live if/when migrated
-  (repo vs. machine-local). --> in a subfolder of the PoC
-- check the 'demo' part of the code. what is it for? 
+The PoC was rewritten: every experiment and SWAF runs by path from
+`projects/smartmic_poc/base_experiments/`, and it has its own offline dry run
+(`projects/smartmic_poc/tests/test_pipeline.py`, `pixi run -e smartmic test-poc`):
+fake microscope + fake analysis, the real position file.
 
 ## Added 2026-11-10 (safety round)
 

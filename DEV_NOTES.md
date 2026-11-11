@@ -1480,12 +1480,12 @@ SmartMic-side consumer must agree on the result-JSON filename:
 
 | Analysis repo | Result file(s) | SmartMic consumer |
 |---------------|----------------|-------------------|
-| [Mike587/ia_PoC_002](https://github.com/Mike587/ia_PoC_002) (nuclei) | `<prefix>_targets.json` | `projects/smartmic_poc/MS_SmartMic_PoC.py` (public) |
+| [Mike587/ia_PoC_004](https://github.com/Mike587/ia_PoC_004) (nuclei, on ia_common; replaces ia_PoC_002 since 2026-11-11) | `<prefix>_targets.json` (a dict: `found`, `n_nuclei`, `targets[]` with `x_m`/`y_m`, provenance) | `projects/smartmic_poc/MS_SmartMic_PoC.py` (public) |
 | `ia_Marc` (spheroids, local) | `<prefix>_spheroids.json`, `<prefix>_spheroid_3d.json` | `projects/Marc_SM/MS_Marc_SM.py` (local-only) |
 | `ia_NfS` (tissue/thickness/nuclei, local) | `<prefix>_tissue.json`, `<prefix>_thickness.json`, `<prefix>_nuclei.json` | `projects/HD_Nuclei_from_slide/MS_HD_Nuclei_from_slide.py` (local-only) |
 | `ia_Marc_002` (OV nuclei, recentre, mid-plane; local) | `<prefix>_ov_summary.json` + `<well>/<prefix>_<well>_ov_nuclei.json`, `<tag>_recentre.json`, `<tag>_midplane.json` | `projects/Marc_SM_002/MS_Marc_SM_002.py` (local-only) |
 
-Note: `targets.json` is the contract for analyses built from the ia_PoC_002 scaffold;
+Note: `targets.json` started as the ia_PoC_002 scaffold's list contract (ia_PoC_004 now writes a dict, read with `run_analysis_json(..., "targets")`);
 Marc's pair predates it and keeps its own names. Not enforced globally — each
 producer/consumer pair just has to match.
 

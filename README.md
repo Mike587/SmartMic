@@ -111,8 +111,6 @@ you use it.
   `DEV_NOTES.md`.
 - **No releases yet.** The API can still change. Each run logs the exact
   SmartMic commit.
-- **The bundled example project is outdated.** `projects/smartmic_poc` does not
-  follow current practice; an update is planned.
 - **Not a ZEISS product.** SmartMic is independent of and not endorsed by Carl
   Zeiss AG.
 
@@ -201,9 +199,11 @@ x, y = ms.get_current_xy_stage_position()             # metres
 Lengths are in metres throughout; `.czexp` and `.czi` files store µm, and
 conversion happens only at that boundary.
 
-The bundled (outdated) proof of concept runs with:
+The bundled proof of concept (`projects/smartmic_poc`: overview → nuclei →
+confocal z-stacks at a few of them, on a Multichamber 384) runs with:
 
-    pixi run -e smartmic poc
+    pixi run -e smartmic poc         # on the scope
+    pixi run -e smartmic test-poc    # offline dry run with a fake microscope
 
 ## Testing
 
@@ -241,7 +241,7 @@ The repo root holds the reusable library; example pipelines live under
 | `MS_zenapi_helpers.py` | Vendored ZEN-API glue: channel setup with call time limits, logging, objective lookups |
 | `zeiss_paths.py` | Path bootstrap and version identities (SmartMic, ZEN, gateway, `zen_api`) |
 | `verify_zen_api.py` | Read-only connection check |
-| `projects/smartmic_poc/` | Proof-of-concept pipeline (outdated) |
+| `projects/smartmic_poc/` | Proof-of-concept pipeline; the reference layout for a project |
 
 Project scripts find the library through the `SMARTMIC_ROOT` environment
 variable (default: the standard checkout location), so a project can live
@@ -253,11 +253,12 @@ projects.
 Analysis code lives in separate, self-contained repositories, each with its own
 pixi environment, so its dependencies never conflict with the ZEN-API
 environment. `MS_image_analysis.py` runs such a project as a subprocess: it
-passes a CZI, an output folder and a `--prefix`, and reads back
-`<prefix>_targets.json`, a list of detected targets with absolute stage
-coordinates. The reference example is the nuclei-detection scaffold
-[Mike587/ia_PoC_002](https://github.com/Mike587/ia_PoC_002), which also
-documents this contract.
+passes a CZI, an output folder and a `--prefix`, and
+`run_analysis_json` reads back `<prefix>_<suffix>.json`. Analyses are built on
+[Mike587/ia_common](https://github.com/Mike587/ia_common) (CZI reading, pixel ↔
+stage, and this script contract; start from its `templates/analyze_template.py`).
+The PoC's analysis, [Mike587/ia_PoC_004](https://github.com/Mike587/ia_PoC_004),
+is the reference example: nuclei → `<prefix>_targets.json` with stage positions.
 
 ## Citing SmartMic
 
