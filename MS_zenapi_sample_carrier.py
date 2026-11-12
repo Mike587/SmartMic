@@ -12,11 +12,12 @@
 # as long as this copyright notice remains part of the code.
 #################################################################
 
-"""SampleCarrierService helpers: carrier info and containers.
+"""Helper functions for the ``SampleCarrierService``: carrier data and containers.
 
-Containers (ZEN UI: "Scan Positions") are the sub-units of a carrier, indices
-from 0. Stage XY is relative to the selected container; GetCurrentContainer
-answers NOT_FOUND on the CD7 (DEV_NOTES "Multi-slide carriers").
+A container is a sub-unit of a carrier. The ZEN user interface calls it a
+"Scan Position". The container indices start at 0. The stage XY position is
+relative to the selected container. On the CD7, ``GetCurrentContainer`` always
+answers NOT_FOUND (DEV_NOTES "Multi-slide carriers").
 """
 
 import asyncio
@@ -40,12 +41,14 @@ from zeiss_paths import CONFIG_PATH as config_path
 
 
 async def get_sample_carrier_info() -> Dict[str, Any]:
-    """Return the configured sample carrier (``SampleCarrierService.GetInfo``) as a dict.
+    """Get the configured sample carrier from ``SampleCarrierService.GetInfo``.
 
-    Keys: name, rows, columns, material, thickness, skirt, refractive_index.
-    ``thickness`` is in µm although the proto says metres (DEV_NOTES "Dry
-    objectives: DF finds the plate UNDERSIDE"); the measured value if measured
-    at load. ``skirt`` is on the same scale (µm expected, not confirmed).
+    Returns:
+        A dict with these keys: name, rows, columns, material, thickness,
+        skirt, refractive_index. ``thickness`` is in µm, although the proto
+        file says metres (DEV_NOTES "Dry objectives: DF finds the plate
+        UNDERSIDE"). It is the measured value if ZEN measured it at the load.
+        ``skirt`` uses the same scale. We expect µm, but this is not confirmed.
     """
     logger = set_logging()
 
@@ -70,11 +73,16 @@ async def get_sample_carrier_info() -> Dict[str, Any]:
 
 
 async def get_current_container() -> Optional[Tuple[int, int]]:
-    """(row_index, column_index) of the container the stage is in, or None (NOT_FOUND). Read-only."""
+    """Get the container that the stage is in. This function is read-only.
+
+    Returns:
+        ``(row_index, column_index)``, or ``None`` if ZEN answers NOT_FOUND.
+    """
     async with open_zen_channel(config_path) as (channel, metadata):
         service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
         try:
-            c = await service.get_current_container(SampleCarrierServiceGetCurrentContainerRequest())
+            c = await service.get_current_container(
+                SampleCarrierServiceGetCurrentContainerRequest())
         except GRPCError as e:
             if e.status == Status.NOT_FOUND:
                 return None
@@ -83,29 +91,32 @@ async def get_current_container() -> Optional[Tuple[int, int]]:
 
 
 async def move_to_container(row_index: int, column_index: int) -> None:
-    """Lower Z to 0, then let ZEN move the stage to a container (indices from 0).
+    """Lower Z to 0, then let ZEN move the stage to a container.
 
-    ZEN restores the Z it had when called (the old slide's height, possibly
-    past focus on the new one), so Z is lowered to 0 first and ends near 0:
-    re-focus before acquiring (DEV_NOTES "Multi-slide carriers").
+    The container indices start at 0. ZEN puts Z back to the value that it had
+    at the call. That value is the height of the old slide, which can be above
+    the focus on the new slide. Thus this function lowers Z to 0 first, and Z
+    ends near 0. Focus again before you acquire (DEV_NOTES "Multi-slide
+    carriers").
 
     Raises:
         MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The
-            immersion objective is active; the Z=0 lower would break the
-            immersion bridge. Nothing is moved.
+            immersion objective is active. A move of Z to 0 breaks the
+            immersion bridge. The function moves nothing.
     """
     logger = set_logging()
 
-    # Immersion guard — BEFORE the Z=0 lower (see move_stage_to_new_xy_position).
+    # The immersion guard must run BEFORE the move of Z to 0.
+    # See move_stage_to_new_xy_position.
     await MS_zenapi_stage_LM.refuse_if_immersion_active("container move")
 
-    # ZEN restores the CURRENT Z after the switch: lower first.
+    # ZEN puts the CURRENT Z back after the switch. Thus lower Z first.
     await MS_zenapi_focus.move_focus_to_new_z_position(0)
 
     async with open_zen_channel(config_path) as (channel, metadata):
         service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
-        await service.move_to_container(
-            SampleCarrierServiceMoveToContainerRequest(row_index=row_index, column_index=column_index))
+        await service.move_to_container(SampleCarrierServiceMoveToContainerRequest(
+            row_index=row_index, column_index=column_index))
     logger.info(f"Moved to sample-carrier container (row {row_index}, column {column_index}).")
 
     await asyncio.sleep(MS_zenapi_stage_LM.STAGE_SETTLE_SECONDS)

@@ -12,16 +12,19 @@
 # as long as this copyright notice remains part of the code.
 #################################################################
 
-"""SmartMic bootstrap: puts this repo and the Zeiss ``zen_api`` tree on ``sys.path``.
+"""The start-up module of SmartMic.
 
-Import this FIRST, before any MS_* / zen_api import (otherwise ``zen_api``
-fails or a test silently skips)::
+This module puts this repository and the Zeiss ``zen_api`` tree on
+``sys.path``. Import it FIRST, before each import of an ``MS_*`` module or of
+``zen_api``. If you do not, ``zen_api`` fails, or a test skips and gives no
+message::
 
-    import zeiss_paths  # noqa: F401  (side effect: extends sys.path)
+    import zeiss_paths  # noqa: F401  (the side effect extends sys.path)
 
-Also: ``CONFIG_PATH``, and the identity of the code in use (``zen_api_version``,
-``zen_api_gateway_version``, ``smartmic_version``, ``git_state``).
-``zeiss_paths.<name>`` also resolves the ``MS_zen_logs`` readers.
+The module also gives ``CONFIG_PATH`` and the identity of the code in use:
+``zen_api_version``, ``zen_api_gateway_version``, ``smartmic_version`` and
+``git_state``. ``zeiss_paths.<name>`` also finds the readers in
+``MS_zen_logs``.
 """
 
 import os
@@ -30,7 +33,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
-# The ZEN-API python_examples folder (OLD layout: zen_api loose here).
+# The ZEN-API python_examples folder. In the OLD layout, zen_api is directly
+# in this folder.
 ZEISS_EXAMPLES = Path(
     os.environ.get(
         "SMARTMIC_ZEISS_EXAMPLES",
@@ -40,10 +44,12 @@ ZEISS_EXAMPLES = Path(
 
 THIS_DIR = Path(__file__).resolve().parent
 
-# The one config.ini path (absolute, repo root) for every MS_zenapi_* module.
+# The one config.ini path for each MS_zenapi_* module. It is an absolute path
+# at the root of the repository.
 CONFIG_PATH = THIS_DIR / "config.ini"
 
-# ZEN logs and the gateway exe, for facts the API does not expose.
+# The ZEN logs and the gateway program, for the data that the API does not
+# give.
 ZEN_LOGGING_DIR = Path(
     os.environ.get("SMARTMIC_ZEN_LOGGING_DIR", r"C:/ProgramData/Carl Zeiss/Logging")
 )
@@ -54,8 +60,9 @@ ZEN_API_GATEWAY_EXE = Path(
     )
 )
 
-# Order matters: THIS_DIR at the FRONT, ZEISS_EXAMPLES at the BACK, so old
-# MS_* copies in the Zeiss folder never shadow this repo's.
+# The order is important. THIS_DIR goes at the FRONT, and ZEISS_EXAMPLES at
+# the BACK. Thus an old copy of an MS_* file in the Zeiss folder never hides
+# the file in this repository.
 _this = str(THIS_DIR)
 if _this in sys.path:
     sys.path.remove(_this)
@@ -65,10 +72,13 @@ _zeiss = str(ZEISS_EXAMPLES)
 if _zeiss not in sys.path:
     sys.path.append(_zeiss)
 
-def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
-    """Numeric (not lexical: 2025.10 > 2025.9) sort key for ``.../zen_api-<version>/src``.
 
-    An unparsable name gives ``(-1,)``, so it never wins "newest".
+def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
+    """Make a sort key for a ``.../zen_api-<version>/src`` path.
+
+    The key is numeric, not alphabetic. Thus 2025.10 is above 2025.9. A name
+    that the function cannot read gives ``(-1,)``. Thus such a name is never
+    the newest.
     """
     version = src_path.parent.name[len("zen_api-"):]
     try:
@@ -77,13 +87,18 @@ def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
         return (-1,)
 
 
-# Folder of the versioned packages (ZEN-API/<folder>/zen_api-<version>/src/);
-# the name depends on the OAD clone, so both are searched.
+# The folder of the packages that have a version, at
+# ZEN-API/<folder>/zen_api-<version>/src/. The name of the folder depends on
+# the OAD clone. Thus the code searches both names.
 ZEN_API_PACKAGE_DIRS = ("python_package", "python_packages")
 
 
 def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> list:
-    """All ``<ZEN_API_PACKAGE_DIRS>/zen_api-<version>/src`` next to ``python_examples``, newest last."""
+    """Find each ``zen_api-<version>/src`` folder next to ``python_examples``.
+
+    The function looks in each folder in ``ZEN_API_PACKAGE_DIRS``. The newest
+    folder is last in the result.
+    """
     root = Path(examples_dir).parent
     found = []
     for name in ZEN_API_PACKAGE_DIRS:
@@ -91,19 +106,22 @@ def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> list:
     return sorted(found, key=_zen_api_src_version_key)
 
 
-# NEW layout: add the newest zen_api-<version>/src, so no pip install is needed.
+# In the NEW layout, add the newest zen_api-<version>/src. Then you do not
+# need a pip install.
 _zen_api_srcs = _find_zen_api_srcs(ZEISS_EXAMPLES)
-# The newest may be ahead of the gateway: pin with SMARTMIC_ZEN_API_VERSION.
+# The newest version can be more recent than the gateway. To select one
+# version, set SMARTMIC_ZEN_API_VERSION.
 _pin = os.environ.get("SMARTMIC_ZEN_API_VERSION")
 if _pin:
     _pinned = [s for s in _zen_api_srcs if s.parent.name == f"zen_api-{_pin}"]
     _zen_api_srcs = _pinned or _zen_api_srcs
 if _zen_api_srcs:
-    _src = str(_zen_api_srcs[-1])  # numeric version sort (see _zen_api_src_version_key); newest is last
+    # The sort is numeric (see _zen_api_src_version_key), thus the newest is last.
+    _src = str(_zen_api_srcs[-1])
     if _src not in sys.path:
         sys.path.append(_src)
 
-# Warn only if zen_api isn't resolvable from ANY location we added.
+# Give a warning only if zen_api is in NONE of the locations that we added.
 _zen_api_locations = [ZEISS_EXAMPLES, *_zen_api_srcs]
 if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
     sys.stderr.write(
@@ -114,11 +132,12 @@ if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
 
 
 def zen_api_version() -> Tuple[Optional[str], Optional[str]]:
-    """``(version, path)`` of the resolved ``zen_api`` stubs, for logging.
+    """Get the ``(version, path)`` of the ``zen_api`` stubs in use, for the log.
 
-    The version comes only from a ``zen_api-<version>`` folder name (None in
-    the OLD loose layout); ``path`` is None if unimportable. Log ``path`` too: a
-    loose copy can shadow a versioned package.
+    The version comes only from a ``zen_api-<version>`` folder name. The OLD
+    layout has no such folder, thus the version is ``None``. ``path`` is
+    ``None`` if Python cannot import ``zen_api``. Write ``path`` to the log
+    too, because a loose copy can hide a package that has a version.
     """
     try:
         import zen_api
@@ -129,7 +148,11 @@ def zen_api_version() -> Tuple[Optional[str], Optional[str]]:
 
 
 def _zen_api_version_from_dir(pkg_dir: Union[str, Path]) -> Optional[str]:
-    """Version from a ``zen_api-<version>`` ancestor of a package dir, or None. No I/O."""
+    """Get the version from a ``zen_api-<version>`` parent folder of a package folder.
+
+    The function does no file operation. It gives ``None`` if there is no such
+    parent folder.
+    """
     for parent in Path(pkg_dir).parents:
         if parent.name.startswith("zen_api-"):
             return parent.name[len("zen_api-"):]
@@ -137,9 +160,11 @@ def _zen_api_version_from_dir(pkg_dir: Union[str, Path]) -> Optional[str]:
 
 
 def zen_api_gateway_version() -> Optional[str]:
-    """FileVersion of ``ZenApiGateway.exe`` (e.g. ``"3.6.25262.3"``), or None, for logging.
+    """Get the FileVersion of ``ZenApiGateway.exe``, or ``None``, for the log.
 
-    The gateway version tracks the API contract best. Read via ``win32api``.
+    An example of a version is ``"3.6.25262.3"``. The version of the gateway is
+    the best indication of the API contract. The function uses ``win32api`` to
+    read it.
     """
     try:
         import win32api
@@ -150,14 +175,17 @@ def zen_api_gateway_version() -> Optional[str]:
         ms, ls = info["FileVersionMS"], info["FileVersionLS"]
     except Exception:
         return None
-    return f"{win32api.HIWORD(ms)}.{win32api.LOWORD(ms)}.{win32api.HIWORD(ls)}.{win32api.LOWORD(ls)}"
+    return (f"{win32api.HIWORD(ms)}.{win32api.LOWORD(ms)}."
+            f"{win32api.HIWORD(ls)}.{win32api.LOWORD(ls)}")
 
 
 def smartmic_version() -> Optional[str]:
-    """``git describe --tags --always --dirty`` of SmartMic (THIS_DIR, not the CWD), for logging.
+    """Get the version of SmartMic for the log.
 
-    E.g. ``"3bf63cf-dirty"``; None if git is unavailable or THIS_DIR is not in
-    a repo (a vendored copy).
+    The function runs ``git describe --tags --always --dirty`` on THIS_DIR, not
+    on the working directory. An example of a result is ``"3bf63cf-dirty"``.
+    The result is ``None`` if git is not available, or if THIS_DIR is not in a
+    repository, for example in a copy that someone vendored.
     """
     try:
         result = subprocess.run(
@@ -172,12 +200,15 @@ def smartmic_version() -> Optional[str]:
 
 
 def git_state(repo: Union[str, Path]) -> Dict[str, Any]:
-    """Code state of the git checkout containing ``repo``, for run records.
+    """Get the state of the git checkout that holds ``repo``, for a run record.
 
-    Returns ``{"root", "commit", "dirty_files"}``: ``root`` is the checkout git
-    reported on (can be an ENCLOSING repo); ``commit`` the full hash or None
-    (no git / no repo / no commit); ``dirty_files`` the ``git status
-    --porcelain`` paths relative to ``root`` (``[]`` if clean or unknown).
+    Returns:
+        A dict with the keys ``root``, ``commit`` and ``dirty_files``.
+        ``root`` is the checkout that git reported on. It can be a repository
+        that ENCLOSES ``repo``. ``commit`` is the full hash. It is ``None`` if
+        there is no git, no repository or no commit. ``dirty_files`` holds the
+        ``git status --porcelain`` paths, relative to ``root``. It is ``[]``
+        if the checkout is clean, or if the function cannot read the state.
     """
     def git(*args: str) -> Optional[str]:
         try:
@@ -196,7 +227,10 @@ def git_state(repo: Union[str, Path]) -> Dict[str, Any]:
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve ``MS_zen_logs`` names on this module (lazy: it imports this module)."""
+    """Find a name of ``MS_zen_logs`` on this module.
+
+    The import is in the function, because ``MS_zen_logs`` imports this module.
+    """
     if name.startswith("__"):
         raise AttributeError(name)
     import MS_zen_logs

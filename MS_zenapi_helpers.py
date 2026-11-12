@@ -18,10 +18,12 @@
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #################################################################
 
-"""Vendored ``zen_api_utils`` helpers: logging, channel setup, RPC time limits,
-objective / optovar lookups.
+"""Helper functions copied from ``zen_api_utils``.
 
-Stdlib + ``grpclib`` only: importing this does NOT need the Zeiss tree.
+This module gives the logging set-up, the channel set-up, the default RPC time
+limits, and the objective and optovar lookups. It uses only the standard
+library and ``grpclib``. Thus an import of this module does NOT need the Zeiss
+tree.
 """
 
 import asyncio
@@ -36,17 +38,19 @@ from typing import Any, AsyncIterator, List, Optional, Tuple, Union
 
 from grpclib.client import Channel
 
-# Shared with MS_run_log.setup_run_logger: both configure the SAME logger.
+# MS_run_log.setup_run_logger uses these names too. Both configure the SAME
+# logger.
 LOGGER_NAME = "smartmic"
 LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
 LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 
 
 def ensure_utf8_stdout() -> None:
-    """Best-effort: make ``sys.stdout`` UTF-8 (µ on a cp1252 console).
+    """Try to make ``sys.stdout`` UTF-8, for example to print µ on a cp1252 console.
 
-    ``reconfigure`` in place, not a new ``TextIOWrapper`` (that would close the
-    shared buffer when dropped).
+    The function calls ``reconfigure`` on the stream. It does not make a new
+    ``TextIOWrapper``, because a new wrapper closes the shared buffer when
+    Python releases it.
     """
     try:
         if hasattr(sys.stdout, "reconfigure"):
@@ -56,10 +60,11 @@ def ensure_utf8_stdout() -> None:
 
 
 def set_logging(name: str = LOGGER_NAME) -> logging.Logger:
-    """Return the shared stdlib logger; attach a UTF-8 stdout handler if it has none.
+    """Get the shared logger of the standard library.
 
-    A logger already set up by ``MS_run_log.setup_run_logger`` is returned
-    untouched. Idempotent.
+    If the logger has no handler, the function attaches a UTF-8 stdout handler.
+    If ``MS_run_log.setup_run_logger`` set the logger up before, the function
+    returns it with no change. You can call this function more than once.
     """
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
@@ -72,34 +77,40 @@ def set_logging(name: str = LOGGER_NAME) -> logging.Logger:
 
 
 # ---------------------------------------------------------------------------
-# Default time limits for the gRPC calls
+# The default time limits for the gRPC calls
 # ---------------------------------------------------------------------------
-# Applied to every call without a caller ``timeout`` (the caller's always wins).
-# A guard against a hung gateway, not a tuned value (DEV_NOTES "Default time
-# limits for the gRPC calls").
+# These limits apply to each call for which the caller gives no ``timeout``.
+# A ``timeout`` from the caller always wins. The limits are a guard against a
+# gateway that does not answer. They are not tuned values (DEV_NOTES "Default
+# time limits for the gRPC calls").
 RPC_TIMEOUT_S: float = 60.0         # reads, settings, load / import / save
 MOVE_RPC_TIMEOUT_S: float = 300.0   # stage, Z, objective, optovar, container, DF
 
-# Methods that move hardware (matched on the method name of the route).
+# These methods move hardware. The code matches the method name of the route.
 _MOVE_RPC_METHODS = frozenset({
     "MoveTo", "MoveToContainer", "FindSurface", "RecallFocus", "LockFocus",
 })
-# No default limit: acquisitions are unbounded; "Register..." calls are streams.
+# These methods get no default limit. An acquisition has no known duration,
+# and a "Register..." call is a stream.
 _UNLIMITED_RPC_METHODS = frozenset({
     "RunExperiment", "RunSnap", "StartExperiment", "StartSnap", "StartLive",
     "StartContinuous",
 })
-# No default: the caller sets the limit (tray), or ZEN does (SWAF ``timeout``).
+# These services get no default limit. For the tray, the caller sets the limit.
+# For SWAF, ZEN sets it from its own ``timeout`` argument.
 _UNLIMITED_RPC_SERVICES = frozenset({"LiveScanService", "ExperimentSwAutofocusService"})
 
 
 def default_rpc_timeout(route: str) -> Optional[float]:
-    """The default time limit (s) for a route such as
+    """Get the default time limit in seconds for one route.
+
+    An example of a route is
     ``"/zen_api.lm.hardware.v2.StageService/MoveTo"``.
 
     Returns:
-        None for an acquisition, a stream, a tray or a SWAF RPC;
-        ``MOVE_RPC_TIMEOUT_S`` for a hardware move; else ``RPC_TIMEOUT_S``.
+        ``None`` for an acquisition, a stream, a tray RPC or a SWAF RPC.
+        ``MOVE_RPC_TIMEOUT_S`` for a hardware move. ``RPC_TIMEOUT_S`` for all
+        the other routes.
     """
     service_path, _, method = route.rpartition("/")
     service = service_path.rsplit(".", 1)[-1]
@@ -112,10 +123,10 @@ def default_rpc_timeout(route: str) -> Optional[float]:
 
 
 class ZenChannel(Channel):
-    """A grpclib Channel that gives each call a default time limit.
+    """A grpclib ``Channel`` that gives each call a default time limit.
 
-    ``last_route`` / ``last_timeout`` name the latest call, for the timeout
-    message in ``open_zen_channel``.
+    ``last_route`` and ``last_timeout`` hold the data of the most recent call.
+    ``open_zen_channel`` uses them in its timeout message.
     """
 
     last_route: Optional[str] = None
@@ -134,16 +145,17 @@ class ZenChannel(Channel):
 def initialize_zenapi(
     config_file: Union[str, Path] = "config.ini",
 ) -> Tuple[Channel, List[Tuple[str, str]]]:
-    """Create a :class:`ZenChannel` + control-token metadata from a config.ini.
+    """Make a :class:`ZenChannel` and the control-token metadata from a config.ini.
 
-    A relative *config_file* is resolved against the CWD; a relative
-    ``cert_file`` against the config file.
+    If *config_file* is a relative path, the function resolves it against the
+    working directory. If ``cert_file`` is a relative path, the function
+    resolves it against the configuration file.
 
     Returns:
         ``(channel, [("control-token", <token>)])``.
 
     Raises:
-        FileNotFoundError: if the configuration file does not exist.
+        FileNotFoundError: The configuration file does not exist.
     """
     config_path = Path(config_file).resolve()
     if not config_path.exists():
@@ -157,10 +169,14 @@ def initialize_zenapi(
 @functools.lru_cache(maxsize=8)
 def _connection_settings(config_path: str, mtime_ns: int,
                          ) -> Tuple[str, int, str, ssl.SSLContext]:
-    """Parse config.ini and build the TLS context: ``(host, port, token, context)``.
+    """Read config.ini and make the TLS context.
 
-    Cached (every call opens a channel). ``mtime_ns`` is only a cache key, so an
-    edited config.ini is re-read; a changed certificate file needs a new process.
+    The function caches the result, because each call opens a channel.
+    ``mtime_ns`` is only a cache key. Thus the function reads a config.ini that
+    you edited again. A changed certificate file needs a new process.
+
+    Returns:
+        ``(host, port, token, context)``.
     """
     config = configparser.ConfigParser()
     config.read(config_path)
@@ -175,7 +191,7 @@ def _connection_settings(config_path: str, mtime_ns: int,
     context.load_verify_locations(cafile=str(cert_file))
     context.verify_mode = ssl.CERT_REQUIRED
     context.check_hostname = True
-    # ZEN-API speaks HTTP/2 (h2) over TLS.
+    # ZEN-API uses HTTP/2 (h2) on TLS.
     context.set_alpn_protocols(["h2"])
 
     return api["host"], int(api["port"]), api["control-token"], context
@@ -184,19 +200,21 @@ def _connection_settings(config_path: str, mtime_ns: int,
 @asynccontextmanager
 async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
                            ) -> AsyncIterator[Tuple[Channel, List[Tuple[str, str]]]]:
-    """Async context manager: yield ``(channel, metadata)``, ALWAYS close the channel.
+    """Give ``(channel, metadata)``, and ALWAYS close the channel at the end.
+
+    This function is an asynchronous context manager.
 
     Raises:
-        TimeoutError: A call did not answer within its time limit
-            (:func:`default_rpc_timeout` or the caller's). The message names
-            the call. ZEN may still carry out the request: a timeout stops the
-            wait, not the hardware.
+        TimeoutError: A call did not answer in its time limit. The limit comes
+            from :func:`default_rpc_timeout` or from the caller. The message
+            gives the name of the call. ZEN can still do the request, because
+            a timeout stops the wait, not the hardware.
     """
     channel, metadata = initialize_zenapi(config_file)
     try:
         yield channel, metadata
     except asyncio.TimeoutError as e:
-        if "ZEN-API gateway" in str(e):     # already named by an inner channel
+        if "ZEN-API gateway" in str(e):     # An inner channel named it already.
             raise
         route = getattr(channel, "last_route", None) or "a ZEN-API call"
         limit = getattr(channel, "last_timeout", None)
@@ -211,13 +229,14 @@ async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
 
 
 # ---------------------------------------------------------------------------
-# Objective / optovar position lookups (from zen_api_utils.objective)
+# The objective and optovar position lookups, from zen_api_utils.objective
 # ---------------------------------------------------------------------------
-# Duck-typed on ``.objectives`` / ``.optovars`` items with ``.position``.
+# These functions accept any object that has an ``.objectives`` or
+# ``.optovars`` list whose items have a ``.position``.
 
 
 def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
-    """Return the objective at *position* in a GetObjectives response, or ``None``."""
+    """Get the objective at *position* in a GetObjectives response, or ``None``."""
     for obj in objectives.objectives:
         if obj.position == position:
             return obj
@@ -225,7 +244,7 @@ def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
 
 
 def get_optovar_by_position(optovars: Any, position: int) -> Optional[Any]:
-    """Return the optovar at *position* in a GetOptovars response, or ``None``."""
+    """Get the optovar at *position* in a GetOptovars response, or ``None``."""
     for opt in optovars.optovars:
         if opt.position == position:
             return opt
@@ -233,10 +252,10 @@ def get_optovar_by_position(optovars: Any, position: int) -> Optional[Any]:
 
 
 def get_used_objective_positions(objectives: Any) -> List[int]:
-    """Return the list of all objective positions reported by the hardware."""
+    """Get the list of all the objective positions that the hardware reports."""
     return [obj.position for obj in objectives.objectives]
 
 
 def get_used_optovar_positions(optovars: Any) -> List[int]:
-    """Return the list of all optovar positions reported by the hardware."""
+    """Get the list of all the optovar positions that the hardware reports."""
     return [opt.position for opt in optovars.optovars]

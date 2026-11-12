@@ -13,10 +13,11 @@
 #################################################################
 
 """
-Run records: the per-run log file, the version record and JSONL records.
+The records of a run: the log file, the version record and the JSONL records.
 
-No ZEN API here. ``DEFAULT_EXPERIMENT_OUTPUT_FOLDER`` is machine-specific:
-override it with the ``SMARTMIC_OUTPUT_ROOT`` environment variable.
+This module uses no ZEN API. ``DEFAULT_EXPERIMENT_OUTPUT_FOLDER`` is different
+on each machine. To change it, set the ``SMARTMIC_OUTPUT_ROOT`` environment
+variable.
 """
 
 import json
@@ -30,8 +31,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from MS_zenapi_helpers import (LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME,
                                ensure_utf8_stdout, set_logging)
 
-# Keep it on the drive of ZEN's default image folder: the move of each result
-# is then a fast rename (DEV_NOTES).
+# Keep this folder on the drive of the default image folder of ZEN. The move
+# of each result is then a fast rename (DEV_NOTES).
 DEFAULT_EXPERIMENT_OUTPUT_FOLDER = Path(
     os.environ.get("SMARTMIC_OUTPUT_ROOT", "F:/UserData/mike/api"))
 
@@ -43,16 +44,17 @@ def setup_run_logger(
     name: str = LOGGER_NAME,
 ) -> Tuple[logging.Logger, Path]:
     """
-    Attach a timestamped ``run_<ts>.log`` file and stdout to the shared logger.
+    Attach a ``run_<timestamp>.log`` file and stdout to the shared logger.
 
-    Call once at the start of a run; the wrappers' ``set_logging`` then returns
-    this logger, so their output lands in the run log too. Existing handlers
-    are replaced.
+    Call this function one time at the start of a run. The ``set_logging``
+    function of the wrappers then returns this logger. Thus the output of the
+    wrappers also goes into the run log. The function replaces the handlers
+    that are already there.
 
     Args:
-        log_folder: Defaults to DEFAULT_LOG_FOLDER.
-        name:       Logger name; use another name for an independent script in
-                    the same process.
+        log_folder: The default is DEFAULT_LOG_FOLDER.
+        name:       The name of the logger. Use a different name for a
+                    separate script in the same process.
 
     Returns:
         ``(logger, log_file)``.
@@ -63,12 +65,12 @@ def setup_run_logger(
     log_folder.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file  = log_folder / f"run_{timestamp}.log"
+    log_file = log_folder / f"run_{timestamp}.log"
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
 
-    # No duplicate handlers on a second call.
+    # Prevent two sets of handlers if you call this function again.
     logger.handlers.clear()
 
     fmt = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
@@ -77,7 +79,7 @@ def setup_run_logger(
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    ensure_utf8_stdout()   # µ etc. must not crash a Windows cp1252 terminal
+    ensure_utf8_stdout()   # A character such as µ must not stop a cp1252 terminal.
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     logger.addHandler(sh)
@@ -91,26 +93,31 @@ def write_run_info(log_file: Path, log: logging.Logger,
                    extra: Optional[Dict[str, Any]] = None,
                    script: Optional[Path] = None) -> Path:
     """
-    Write the run's version record, ``run_info_<ts>.json``, next to its run log.
+    Write the version record of the run next to its log file.
 
-    Records the commit + uncommitted files of SmartMic and of each repo in
-    ``repos``, and the ZEN app, ZenApiGateway and ``zen_api`` versions (the
-    gRPC API reports none of them; see ``zeiss_paths``). Each repo's commit is
-    logged, with a WARNING for uncommitted files. Call once per run, right
-    after ``setup_run_logger``.
+    The name of the record is ``run_info_<timestamp>.json``. The record holds
+    the commit and the files that are not committed, for SmartMic and for each
+    repository in ``repos``. It also holds the versions of the ZEN
+    application, of ZenApiGateway and of ``zen_api``. The gRPC API reports none
+    of these versions. See ``zeiss_paths``. The function writes the commit of
+    each repository to the log, and a WARNING for the files that are not
+    committed. Call this function one time for each run, directly after
+    ``setup_run_logger``.
 
     Args:
-        log_file: The ``run_<ts>.log`` from ``setup_run_logger`` (another
-                  ``<stem>.log`` gives ``<stem>_run_info.json``).
-        repos:    ``{name: path}`` of further git repos; a non-git path
-                  records ``commit: None``.
-        extra:    JSON-serialisable dict stored under ``"extra"``.
-        script:   Defaults to ``sys.argv[0]``.
+        log_file: The ``run_<timestamp>.log`` file from ``setup_run_logger``.
+                  A different ``<stem>.log`` gives ``<stem>_run_info.json``.
+        repos:    ``{name: path}`` of the other git repositories. A path that
+                  is not a git checkout records ``commit: None``.
+        extra:    A dict that JSON can write. It goes under ``"extra"``.
+        script:   The default is ``sys.argv[0]``.
 
     Returns:
-        Path of the written JSON file.
+        The path of the JSON file that the function wrote.
     """
-    import zeiss_paths   # lazy: keeps this module importable without the Zeiss tree
+    # Import these here, not at the top of the module. Thus you can import
+    # this module without the Zeiss tree.
+    import zeiss_paths
     import MS_zen_logs
 
     if script is None and sys.argv and sys.argv[0]:
@@ -150,18 +157,25 @@ def write_run_info(log_file: Path, log: logging.Logger,
 
 def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     """
-    Append one record as a JSON line (crash-safe log of a resumable run).
+    Add one record to a file as a JSON line.
 
-    Flushed and fsync'ed: a crash loses at most the line being written. A
-    cut-off last line gets a newline first, so it does not swallow this record.
+    This gives a log of a run that you can continue after a crash. The function
+    flushes the data and calls fsync. Thus a crash loses only the line that the
+    function writes at that moment. If the last line in the file is not
+    complete, the function writes a newline first. Thus the incomplete line
+    does not take in this record.
 
     Args:
-        path:   Created, with its folder, if absent.
-        record: JSON-serializable dict (convert numpy scalars first).
+        path:   The function makes the file and its folder if they do not
+                exist.
+        record: A dict that JSON can write. Change numpy scalars to Python
+                values first.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(record) + "\n"   # ASCII-only (ensure_ascii) → a cut can't split a UTF-8 char
+    # json.dumps uses ensure_ascii, thus the line holds ASCII only. A cut
+    # cannot divide a UTF-8 character.
+    line = json.dumps(record) + "\n"
     with open(path, "a+b") as f:
         f.seek(0, os.SEEK_END)
         if f.tell() > 0:
@@ -175,12 +189,14 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
     """
-    Read the records written by append_jsonl.
+    Read the records that ``append_jsonl`` wrote.
 
-    Invalid lines (cut off by a crash) are skipped with a warning.
+    If a line is not valid, because a crash cut it, the function writes a
+    warning and ignores that line.
 
     Returns:
-        The records in file order; [] if the file does not exist.
+        The records in the order of the file. If the file does not exist, the
+        function returns ``[]``.
     """
     path = Path(path)
     if not path.exists():

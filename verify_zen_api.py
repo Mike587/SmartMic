@@ -13,33 +13,39 @@
 #################################################################
 
 """
-verify_zen_api.py — smoke-test SmartMic against the resolved zen_api.
+Test SmartMic against the ``zen_api`` that Python finds.
 
-Run this AFTER updating the Zeiss tree (or after pointing SMARTMIC_ZEISS_EXAMPLES
-at a new clone) to confirm nothing broke BEFORE touching the microscope:
+Run this script AFTER you update the Zeiss tree, or after you set
+SMARTMIC_ZEISS_EXAMPLES to a new clone. It shows that nothing is broken BEFORE
+you use the microscope::
 
     pixi run -e smartmic python verify_zen_api.py
 
-Checks (all read-only — safe to run any time):
-  1. Import every MS_* module → catches renamed/moved `zen_api` imports or
-     stub signatures that changed under SmartMic's vendored helpers.
-  2. A few read-only live queries → confirms the stubs still talk to the gateway
-     and the message/method shapes still match.
+The script does these checks. All of them are read-only, thus it is safe to run
+the script at any time.
 
-Exit code 0 = all green; 1 = at least one failure.
+  1. Import each MS_* module. This finds a `zen_api` import that someone
+     renamed or moved. It also finds a stub signature that changed below the
+     helper functions of SmartMic.
+  2. Send some read-only queries. This shows that the stubs can still speak to
+     the gateway, and that the messages and the methods still agree.
+
+Exit code 0 means that all the checks passed. Exit code 1 means that one check
+or more failed.
 """
 
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
-# This file lives at the SmartMic repo root.
+# This file is at the root of the SmartMic repository.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zeiss_paths  # noqa: F401 — extends sys.path so zen_api resolves
 
 _ok = True
 
 
-def check(label, fn):
+def check(label: str, fn: Callable[[], Any]) -> None:
     global _ok
     try:
         result = fn()
@@ -49,14 +55,14 @@ def check(label, fn):
         print(f"  [FAIL] {label}: {type(e).__name__}: {e}")
 
 
-# --- 1. import smoke test ---------------------------------------------------
+# --- 1. The import test -----------------------------------------------------
 print("== import smoke test ==")
 
 
-def _import_all():
-    # MS_CD7_API_LoA transitively imports every MS_zenapi_* wrapper + helpers
-    # (incl. the vendored MS_zenapi_helpers), so this exercises the whole
-    # zen_api import surface.
+def _import_all() -> str:
+    # MS_CD7_API_LoA imports each MS_zenapi_* wrapper and the helper
+    # functions, including the copied MS_zenapi_helpers. Thus this test uses
+    # all the zen_api imports.
     import MS_CD7_API_LoA            # noqa: F401
     import MS_image_analysis         # noqa: F401
     import MS_czexp_editor           # noqa: F401
@@ -69,7 +75,7 @@ def _import_all():
 
 check("imports", _import_all)
 
-# Show exactly which tree resolved (the definitive "what am I testing").
+# Print the tree that Python found. This shows what the script tests.
 try:
     import zen_api
     print(f"  zen_api : {Path(zen_api.__file__).parent}")
@@ -80,9 +86,9 @@ if not _ok:
     print("\nImports failed — fix import paths before any live test. Aborting.")
     sys.exit(1)
 
-# --- 2. read-only live queries ----------------------------------------------
+# --- 2. The read-only queries -----------------------------------------------
 print("\n== read-only live queries (gateway must be running) ==")
-import MS_CD7_API_LoA as ms
+import MS_CD7_API_LoA as ms  # noqa: E402 — only after the import check above passed
 
 check("sample carrier name", ms.get_sample_carrier_name)
 check("objective / optovar", ms.get_current_objective_and_optovar_names)

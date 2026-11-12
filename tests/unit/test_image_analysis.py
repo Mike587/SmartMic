@@ -7,8 +7,6 @@ actually launching pixi or an analysis script.
 """
 import logging
 
-import pytest
-
 import MS_image_analysis as ia
 
 

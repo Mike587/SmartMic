@@ -17,12 +17,12 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Wraps the ZEN gRPC ObjectiveChangerService and OptovarService
-# (lm.hardware.v2) to provide helpers for switching objectives and
-# optovar magnification changers.
+# This module wraps the ZEN gRPC ObjectiveChangerService and OptovarService
+# (lm.hardware.v2). It gives helper functions to change the objective and the
+# optovar magnification changer.
 #################################################################
 
-"""Objective changer and optovar helpers (ObjectiveChangerService, OptovarService)."""
+"""Helper functions for the ``ObjectiveChangerService`` and the ``OptovarService``."""
 
 from typing import Any, Callable, List, Tuple
 
@@ -54,9 +54,11 @@ from zeiss_paths import CONFIG_PATH as config_path
 def _require(lookup_fn: Callable[[Any, int], Any],
              used_positions_fn: Callable[[Any], List[int]],
              inventory: Any, position: int, context: str, kind: str) -> Any:
-    """Return ``lookup_fn(inventory, position)``; ValueError if the position is unknown.
+    """Get ``lookup_fn(inventory, position)``.
 
-    (A None would surface as an AttributeError that a retrying caller masks.)
+    The function raises ``ValueError`` if the position is not known. A result
+    of ``None`` becomes an ``AttributeError`` later, and a caller that tries
+    again hides that error.
     """
     item = lookup_fn(inventory, position)
     if item is None:
@@ -68,27 +70,27 @@ def _require(lookup_fn: Callable[[Any, int], Any],
 
 
 def _require_objective(objectives: Any, position: int, context: str) -> Any:
-    """Return the objective at *position*, or raise a clear error if unknown."""
+    """Get the objective at *position*, or raise a clear error if it is not known."""
     return _require(get_objective_by_position, get_used_objective_positions,
-                     objectives, position, context, "objective")
+                    objectives, position, context, "objective")
 
 
 def _require_optovar(optovars: Any, position: int, context: str) -> Any:
-    """Return the optovar at *position*, or raise a clear error if unknown."""
+    """Get the optovar at *position*, or raise a clear error if it is not known."""
     return _require(get_optovar_by_position, get_used_optovar_positions,
-                     optovars, position, context, "optovar")
+                    optovars, position, context, "optovar")
 
 
 def _services(channel: Any, metadata: Any,
               ) -> Tuple[ObjectiveChangerServiceStub, OptovarServiceStub]:
-    """The (objective changer, optovar) service stubs on one open channel."""
+    """Get the objective-changer stub and the optovar stub on one open channel."""
     return (ObjectiveChangerServiceStub(channel=channel, metadata=metadata),
             OptovarServiceStub(channel=channel, metadata=metadata))
 
 
 async def _read_inventory(objchanger_service: ObjectiveChangerServiceStub,
                           optovar_service: OptovarServiceStub) -> Tuple[Any, Any]:
-    """The full (objectives, optovars) inventory responses."""
+    """Get the full inventory responses for the objectives and the optovars."""
     objectives = await objchanger_service.get_objectives(
         ObjectiveChangerServiceGetObjectivesRequest()
     )
@@ -98,27 +100,31 @@ async def _read_inventory(objchanger_service: ObjectiveChangerServiceStub,
 
 async def _read_positions(objchanger_service: ObjectiveChangerServiceStub,
                           optovar_service: OptovarServiceStub) -> Tuple[int, int]:
-    """The current (objective, optovar) position indices."""
+    """Get the current position indices of the objective and the optovar."""
     pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
     pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
     return pos_obj.value, pos_optovar.value
 
 
 def is_immersion_objective(objective: Any) -> bool:
-    """True unless the ``ObjectiveData`` has ``immersion_type == AIR``.
+    """Return ``True`` if the ``immersion_type`` of the ``ObjectiveData`` is not AIR.
 
-    UNSPECIFIED counts as immersion, so an undescribed objective is treated the
-    safe way (the Z=0 lower is refused). This CD7: only the 50x/1.2 is WATER.
+    An ``immersion_type`` of UNSPECIFIED counts as immersion. Thus the code
+    uses the safe condition for an objective that has no data, and it refuses
+    the move of Z to 0. On this CD7, only the 50x/1.2 objective is WATER.
     """
     return objective.immersion_type != ObjectiveChangerImmersionTypes.AIR
 
 
 async def get_active_objective() -> Any:
-    """Return the ``ObjectiveData`` (name, position, na, magnification,
-    immersion_type) of the objective in the beam path.
+    """Get the ``ObjectiveData`` of the objective in the beam path.
+
+    The data has these fields: name, position, na, magnification and
+    immersion_type.
 
     Raises:
-        ValueError: The changer reports a position that is not in its inventory.
+        ValueError: The changer reports a position that is not in its
+            inventory.
     """
     async with open_zen_channel(config_path) as (channel, metadata):
         objchanger_service, _ = _services(channel, metadata)
@@ -130,7 +136,7 @@ async def get_active_objective() -> Any:
 
 
 async def get_immersion_objective_positions() -> List[int]:
-    """Return the sorted changer positions the inventory marks as immersion."""
+    """Get the changer positions that the inventory marks as immersion, sorted."""
     async with open_zen_channel(config_path) as (channel, metadata):
         objchanger_service, _ = _services(channel, metadata)
         objectives = await objchanger_service.get_objectives(
@@ -140,12 +146,14 @@ async def get_immersion_objective_positions() -> List[int]:
 
 
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int) -> None:
-    """Move the objective changer and optovar to 1-based position indices.
+    """Move the objective changer and the optovar to position indices that start at 1.
 
-    No immersion handling here; the inventory and positions are logged.
+    This function does nothing for immersion. It writes the inventory and the
+    positions to the log.
 
     Raises:
-        ValueError: A current or requested position is not in the inventory.
+        ValueError: A current position or a requested position is not in the
+            inventory.
     """
     logger = set_logging()
 
@@ -203,9 +211,10 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
 
 
 async def get_current_objective_and_optovar() -> Tuple[int, int]:
-    """Return ``(obj_position, opt_position)``.
+    """Get ``(obj_position, opt_position)``.
 
-    Two RPCs only: called by every move guard and in poll loops.
+    The function sends only two RPCs, because each move guard and each poll
+    loop calls it.
     """
     async with open_zen_channel(config_path) as (channel, metadata):
         return await _read_positions(*_services(channel, metadata))
@@ -213,10 +222,11 @@ async def get_current_objective_and_optovar() -> Tuple[int, int]:
 
 async def get_current_objective_and_optovar_names(
 ) -> Tuple[Tuple[str, int], Tuple[str, int]]:
-    """Return ``((obj_name, obj_position), (opt_name, opt_position))``.
+    """Get ``((obj_name, obj_position), (opt_name, opt_position))``.
 
     Raises:
-        ValueError: A current position is not in the reported inventory.
+        ValueError: A current position is not in the inventory that the
+            hardware reports.
     """
     async with open_zen_channel(config_path) as (channel, metadata):
         services = _services(channel, metadata)

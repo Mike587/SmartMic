@@ -17,13 +17,15 @@
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #
-# Wraps the ZEN gRPC ExperimentSwAutofocusService (lm.acquisition.v1)
-# to provide helpers for Software Autofocus (SWAF) operations.
+# This module wraps the ZEN gRPC ExperimentSwAutofocusService
+# (lm.acquisition.v1). It gives helper functions for the software
+# autofocus (SWAF).
 #################################################################
 
-"""Software autofocus (``ExperimentSwAutofocusService``), experiment loaded by path.
+"""Software autofocus with the ``ExperimentSwAutofocusService``.
 
-Sync, raising entry point: ``MS_CD7_API_LoA.swaf_find_focus``.
+This module loads the experiment by its path. The synchronous entry point that
+raises an exception is ``MS_CD7_API_LoA.swaf_find_focus``.
 """
 
 import asyncio
@@ -45,7 +47,7 @@ from zen_api.lm.acquisition.v1 import (
 
 from zeiss_paths import CONFIG_PATH as config_path
 
-# Wait before retry n (1-based): n x SWAF_RETRY_BACKOFF_S.
+# The wait before retry n, counted from 1, is n x SWAF_RETRY_BACKOFF_S.
 SWAF_RETRY_BACKOFF_S = 3.0
 
 
@@ -54,20 +56,22 @@ async def run_software_autofocus(
     timeout: int = 30,
     max_retries: int = 2,
 ) -> Tuple[Optional[float], int]:
-    """Load a SWAF ``.czexp`` by path and run FindAutoFocus, with retries.
+    """Load a SWAF ``.czexp`` by its path and run FindAutoFocus with retries.
 
     Args:
-        timeout: Seconds ZEN may spend on one search.
-        max_retries: Attempts including the first; a gRPC error is retried
-            after n x ``SWAF_RETRY_BACKOFF_S``.
+        timeout: The number of seconds that ZEN can use for one search.
+        max_retries: The number of attempts, including the first attempt.
+            After a gRPC error, the function waits n x
+            ``SWAF_RETRY_BACKOFF_S``, then tries again.
 
     Returns:
-        ``(focus_um, attempts)``; *focus_um* is None if every attempt failed.
-        A focus of 0.0 µm is a result, not a failure.
+        ``(focus_um, attempts)``. *focus_um* is ``None`` if all the attempts
+        failed. A focus of 0.0 µm is a result, not a failure.
 
     Raises:
-        FileNotFoundError: *czexp_path* does not exist (before any RPC).
-        ValueError: *max_retries* < 1.
+        FileNotFoundError: *czexp_path* does not exist. The function raises
+            this before it sends an RPC.
+        ValueError: *max_retries* is less than 1.
     """
     if max_retries < 1:
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")

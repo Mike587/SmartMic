@@ -13,11 +13,11 @@
 #################################################################
 
 """
-Launcher for external image-analysis scripts.
+Launcher for the external image-analysis scripts.
 
-Each analysis is a separate pixi project with its own dependencies; this
-module runs it as a subprocess in *its own* pixi environment and feeds it an
-image (DEV_NOTES "Image-analysis repos").
+Each analysis is a different pixi project with its own dependencies. This
+module runs the analysis as a subprocess in ITS OWN pixi environment, and
+gives it an image (DEV_NOTES "Image-analysis repos").
 """
 
 import json
@@ -28,8 +28,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# run_analysis_json: a result file older than the launch by more than this is a
-# stale file from an earlier run. The slack covers coarse file timestamps.
+# run_analysis_json uses this value. A result file that is older than the
+# launch by more than this value is an old file from an earlier run. The
+# tolerance covers file timestamps that are not accurate.
 _RESULT_MTIME_SLACK_S = 2.0
 
 
@@ -43,20 +44,25 @@ def run_analysis(image_path: Path,
     """
     Launch an external image-analysis script in its own pixi environment.
 
-    ``PIXI_*`` env vars are stripped so the child uses its own environment.
-    Invoked as::
+    The function removes the ``PIXI_*`` environment variables. Thus the child
+    process uses its own environment. The function runs this command::
 
-        pixi run python <analysis_script> <image_path> <output_folder> --prefix <tag> [extra_args...]
+        pixi run python <analysis_script> <image_path> <output_folder>
+            --prefix <tag> [extra_args...]
 
     Args:
-        output_folder:       Created if absent.
-        tag:                 Filename prefix (``--prefix``), e.g. "D9_P1".
-        analysis_script_dir: Subprocess cwd, so pixi finds the analysis
-                             project. Defaults to ``analysis_script.parent``.
-        extra_args:          Appended after ``--prefix <tag>`` (stringified).
+        output_folder:       The function makes this folder if it does not
+                             exist.
+        tag:                 The prefix of the file name (``--prefix``), for
+                             example "D9_P1".
+        analysis_script_dir: The working directory of the subprocess. Pixi
+                             needs it to find the analysis project. The
+                             default is ``analysis_script.parent``.
+        extra_args:          The function adds these after ``--prefix <tag>``
+                             as strings.
 
     Returns:
-        True if the script exited with code 0, False otherwise.
+        ``True`` if the script stopped with exit code 0. If not, ``False``.
     """
     image_path = Path(image_path)
     output_folder = Path(output_folder)
@@ -77,7 +83,7 @@ def run_analysis(image_path: Path,
 
     log.info(f"Starting analysis for {tag}: {image_path.name}")
 
-    # Don't inherit the caller's pixi environment.
+    # Do not inherit the pixi environment of the caller.
     env = {k: v for k, v in os.environ.items() if not k.startswith("PIXI_")}
 
     result = subprocess.run(
@@ -110,16 +116,17 @@ def run_analysis_json(image_path: Path,
                       analysis_script_dir: Optional[Path] = None,
                       extra_args: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """
-    Run an analysis (see run_analysis) and read back its result JSON.
+    Run an analysis with ``run_analysis``, then read its JSON result.
 
-    The result is ``<output_folder>/<tag>_<suffix>.json``, e.g. suffix
-    ``"targets"`` (DEV_NOTES "Image-analysis repos"). Other args: as for
-    run_analysis.
+    The result file is ``<output_folder>/<tag>_<suffix>.json``. An example of a
+    suffix is ``"targets"`` (DEV_NOTES "Image-analysis repos"). The other
+    arguments are the arguments of ``run_analysis``.
 
     Returns:
-        The parsed result, or None (with a warning logged) if the analysis
-        failed, wrote no result file, left only a stale one from an earlier run
-        (same tag), or wrote invalid JSON.
+        The result, or ``None``. The function writes a warning and returns
+        ``None`` in these conditions: the analysis failed, it wrote no result
+        file, it left only an old file from an earlier run with the same tag,
+        or it wrote JSON that is not valid.
     """
     result_path = Path(output_folder) / f"{tag}_{suffix}.json"
     script_name = Path(analysis_script).name
