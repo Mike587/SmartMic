@@ -4,7 +4,7 @@
 Measured on the CD7 on 2026-11-09 (DEV_NOTES "Dry objectives: DF finds the plate
 UNDERSIDE"): a wrong thickness or material moves the DF focus by tens of µm, and
 ZEN sends thickness 0 to DF during a tray load. Covered here:
-- zeiss_paths._last_df_bottom / zen_df_bottom: the value DF received (ZEN log),
+- MS_zen_logs._last_df_bottom / zen_df_bottom: the value DF received (ZEN log),
 - check_carrier_for_df (preflight),
 - the per-call carrier compare in DefiniteFocusTracker,
 - wait_for_df_bottom (after a tray load).
@@ -18,6 +18,7 @@ import zeiss_paths as zp  # noqa: F401  — extends sys.path so zen_api resolves
 pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_CD7_API_LoA as ms  # noqa: E402
+import MS_zen_logs           # noqa: E402
 
 
 def _event(ts, material, nm):
@@ -53,9 +54,9 @@ def test_last_df_bottom_takes_the_last_event():
     text = (_event("2026-11-09T15:23:40+01:00", "Glass", 0)
             + _event("2026-11-09T15:24:16+01:00", "Glass", 168000)
             + _event("2026-11-09T15:36:44+01:00", "Polystyrene", 176179))
-    assert zp._last_df_bottom(text) == {"timestamp": "2026-11-09T15:36:44+01:00",
+    assert MS_zen_logs._last_df_bottom(text) == {"timestamp": "2026-11-09T15:36:44+01:00",
                                         "material": "Polystyrene", "thickness_um": 176.179}
-    assert zp._last_df_bottom("<event><message>nothing</message></event>") is None
+    assert MS_zen_logs._last_df_bottom("<event><message>nothing</message></event>") is None
 
 
 def test_zen_df_bottom_searches_rotated_logs(tmp_path, monkeypatch):
@@ -70,10 +71,10 @@ def test_zen_df_bottom_searches_rotated_logs(tmp_path, monkeypatch):
     touch("ZENService.log.xml", "<event><message>nothing</message></event>\n", 3000)
     touch("ZENService.log.xml.1", _event("2026-11-09T11:00:00+01:00", "Glass", 168000), 2000)
     monkeypatch.setattr(zp, "ZEN_LOGGING_DIR", logs)
-    assert zp.zen_df_bottom()["thickness_um"] == 168.0      # newest file with the event
+    assert MS_zen_logs.zen_df_bottom()["thickness_um"] == 168.0      # newest file with the event
 
     monkeypatch.setattr(zp, "ZEN_LOGGING_DIR", tmp_path / "does_not_exist")
-    assert zp.zen_df_bottom() is None
+    assert MS_zen_logs.zen_df_bottom() is None
 
 
 # --------------------------------------------------------------------------

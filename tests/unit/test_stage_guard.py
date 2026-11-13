@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for the immersion guard, as MS_zenapi_stage_LM uses it.
 
-The guard is in MS_zenapi_objectivechanger. MS_zenapi_stage_LM exports its
-names again, and these tests reach them there.
+The guard is in MS_zenapi_objectivechanger.
 
 move_stage_to_new_xy_position lowers Z to 0 for collision safety, which breaks
 the immersion bridge on this inverted CD7. With the immersion objective active it
@@ -50,14 +49,9 @@ async def _fake_channel(cfg):
     yield (None, None)
 
 
-def test_guard_names_on_the_stage_module_are_the_objective_module_ones():
+def test_the_loa_exception_is_the_guard_exception():
     import MS_CD7_API_LoA as ms
-    assert stage.ImmersionObjectiveActive is oc.ImmersionObjectiveActive
     assert ms.ImmersionObjectiveActive is oc.ImmersionObjectiveActive
-    assert stage.refuse_if_immersion_active is oc.refuse_if_immersion_active
-    assert stage.immersion_objective_active is oc.immersion_objective_active
-    assert stage.immersion_objective_positions is oc.immersion_objective_positions
-    assert stage.IMMERSION_OBJECTIVE_POSITION == oc.IMMERSION_OBJECTIVE_POSITION
 
 
 def test_move_blocked_when_immersion_active(monkeypatch, fake_objective):
@@ -69,7 +63,7 @@ def test_move_blocked_when_immersion_active(monkeypatch, fake_objective):
 
     monkeypatch.setattr(
         oc, "get_active_objective",
-        _async_return(fake_objective(stage.IMMERSION_OBJECTIVE_POSITION, immersion=True)),
+        _async_return(fake_objective(oc.IMMERSION_OBJECTIVE_POSITION, immersion=True)),
     )
     monkeypatch.setattr(focus, "move_focus_to_new_z_position", fake_lower)
 
@@ -119,10 +113,10 @@ def _lowered(monkeypatch):
 def test_move_blocked_for_an_immersion_objective_in_another_slot(monkeypatch, fake_objective):
     """The turret changed: the API says WATER in slot 1. The guard must refuse."""
     calls = _lowered(monkeypatch)
-    assert stage.IMMERSION_OBJECTIVE_POSITION != 1
+    assert oc.IMMERSION_OBJECTIVE_POSITION != 1
     monkeypatch.setattr(oc, "get_active_objective",
                         _async_return(fake_objective(1, immersion=True, name="40x W")))
-    with pytest.raises(stage.ImmersionObjectiveActive, match="40x W"):
+    with pytest.raises(oc.ImmersionObjectiveActive, match="40x W"):
         asyncio.run(stage.move_stage_to_new_xy_position(0.01, 0.02))
     assert calls["z"] == 0
 
@@ -131,8 +125,8 @@ def test_move_blocked_in_the_known_slot_even_if_the_api_says_air(monkeypatch, fa
     """A wrong inventory entry (AIR for the 50x slot) must not switch the guard off."""
     calls = _lowered(monkeypatch)
     monkeypatch.setattr(oc, "get_active_objective",
-                        _async_return(fake_objective(stage.IMMERSION_OBJECTIVE_POSITION)))
-    with pytest.raises(stage.ImmersionObjectiveActive):
+                        _async_return(fake_objective(oc.IMMERSION_OBJECTIVE_POSITION)))
+    with pytest.raises(oc.ImmersionObjectiveActive):
         asyncio.run(stage.move_stage_to_new_xy_position(0.01, 0.02))
     assert calls["z"] == 0
 
@@ -149,8 +143,8 @@ def test_unspecified_immersion_type_counts_as_immersion(fake_objective):
 
 def test_immersion_positions_are_api_plus_known_slot(monkeypatch):
     monkeypatch.setattr(oc, "get_immersion_objective_positions", _async_return([1]))
-    assert asyncio.run(stage.immersion_objective_positions()) == sorted(
-        {1, stage.IMMERSION_OBJECTIVE_POSITION})
+    assert asyncio.run(oc.immersion_objective_positions()) == sorted(
+        {1, oc.IMMERSION_OBJECTIVE_POSITION})
 
 
 # --------------------------------------------------------------------------

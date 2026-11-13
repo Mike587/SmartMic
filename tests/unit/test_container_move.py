@@ -56,8 +56,8 @@ def events(monkeypatch):
 
 def test_container_move_refused_with_immersion(monkeypatch, events, fake_objective):
     monkeypatch.setattr(oc, "get_active_objective", _async_return(
-        fake_objective(stage.IMMERSION_OBJECTIVE_POSITION, immersion=True)))
-    with pytest.raises(stage.ImmersionObjectiveActive, match="immersion"):
+        fake_objective(oc.IMMERSION_OBJECTIVE_POSITION, immersion=True)))
+    with pytest.raises(oc.ImmersionObjectiveActive, match="immersion"):
         asyncio.run(sc.move_to_container(0, 1))
     assert events == []   # neither Z nor the stage moved
 
@@ -70,7 +70,7 @@ def test_container_move_lowers_z_first(monkeypatch, events, fake_objective):
 
 def test_immersion_refusal_is_a_runtime_error():
     # Existing callers catch RuntimeError; the dedicated type must stay one.
-    assert issubclass(stage.ImmersionObjectiveActive, RuntimeError)
+    assert issubclass(oc.ImmersionObjectiveActive, RuntimeError)
 
 
 # --------------------------------------------------------------------------
@@ -106,10 +106,10 @@ def test_loa_move_to_container_resets_tracker(monkeypatch):
 
 def test_loa_move_to_container_resets_tracker_even_if_refused(monkeypatch):
     async def refused(r, c):
-        raise stage.ImmersionObjectiveActive("immersion")
+        raise oc.ImmersionObjectiveActive("immersion")
 
     monkeypatch.setattr(sc, "move_to_container", refused)
     tracker = ms.DefiniteFocusTracker(surface_z_m=1.35e-3)
-    with pytest.raises(stage.ImmersionObjectiveActive):
+    with pytest.raises(oc.ImmersionObjectiveActive):
         ms.move_to_container(0, 1, focus_tracker=tracker)
     assert tracker.last_surface_z_m is None

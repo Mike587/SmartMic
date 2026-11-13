@@ -43,17 +43,6 @@ import MS_limits
 import MS_zenapi_focus
 import MS_zenapi_objectivechanger
 
-# The immersion guard is in MS_zenapi_objectivechanger. These names stay
-# available here for the code that uses them from this module. The constant is
-# a copy. Change it in MS_zenapi_objectivechanger.
-from MS_zenapi_objectivechanger import (  # noqa: F401
-    IMMERSION_OBJECTIVE_POSITION,
-    ImmersionObjectiveActive,
-    immersion_objective_active,
-    immersion_objective_positions,
-    refuse_if_immersion_active,
-)
-
 from zen_api.lm.hardware.v2 import (
     StageServiceStub,
     StageServiceGetPositionRequest,
@@ -103,9 +92,10 @@ async def move_stage_to_new_xy_position(x: float, y: float) -> None:
     Raises:
         ValueError: ``x`` or ``y`` is not finite, or it is outside the range
             in ``MS_limits``. The function moves nothing.
-        ImmersionObjectiveActive (a RuntimeError): An immersion objective is
-            active. A move of Z to 0 breaks the immersion bridge. Write the
-            target position into a ``.czexp`` file and let ZEN run it.
+        MS_zenapi_objectivechanger.ImmersionObjectiveActive (a RuntimeError):
+            An immersion objective is active. A move of Z to 0 breaks the
+            immersion bridge. Write the target position into a ``.czexp`` file
+            and let ZEN run it.
     """
     logger = set_logging()
     MS_limits.require_xy_position(x, y)

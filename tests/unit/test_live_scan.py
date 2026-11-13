@@ -177,9 +177,9 @@ def test_load_rpc_sends_request_with_timeout(rpc_calls):
 # LoA wrappers (guards)
 # --------------------------------------------------------------------------
 import MS_CD7_API_LoA as ms                    # noqa: E402
-import MS_zenapi_stage_LM as stage             # noqa: E402
+import MS_zenapi_objectivechanger as oc        # noqa: E402
 
-IMMERSION = stage.IMMERSION_OBJECTIVE_POSITION
+IMMERSION = oc.IMMERSION_OBJECTIVE_POSITION
 
 
 @pytest.fixture

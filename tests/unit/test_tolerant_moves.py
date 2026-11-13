@@ -181,10 +181,10 @@ def test_xy_two_failures_off_target_raise(monkeypatch):
 
 def test_xy_immersion_refusal_is_never_retried(monkeypatch):
     calls = []
-    refusal = MS_zenapi_stage_LM.ImmersionObjectiveActive("immersion objective active")
+    refusal = ms.ImmersionObjectiveActive("immersion objective active")
     monkeypatch.setattr(MS_zenapi_stage_LM, "move_stage_to_new_xy_position",
                         _async_seq([refusal, None], calls))
-    with pytest.raises(MS_zenapi_stage_LM.ImmersionObjectiveActive):
+    with pytest.raises(ms.ImmersionObjectiveActive):
         ms.move_stage_to_new_xy_position(*XY_TARGET, tolerance_m=1e-6)
     assert len(calls) == 1
 

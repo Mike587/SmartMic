@@ -102,7 +102,7 @@ These are the bulk of the value. Grouped by module.
   unused regions skipped, missing flag = used, file order; duplicate used names
   and a region without Name/CenterPosition raise.
 
-### `tests/unit/test_run_log_metadata.py` — `MS_run_log`, `MS_metadata`
+### `tests/unit/test_run_log_metadata.py` — `MS_run_log`, `MS_czexp_metadata` (`MS_metadata` until 2026-11-13)
 - `load_positions_from_czexp`: parse the positions fixture; assert well names,
   position counts, µm→m conversion, and the **`IsUsedForAcquisition` default-True**
   rule (a position with the tag missing is treated as used).
@@ -114,7 +114,7 @@ These are the bulk of the value. Grouped by module.
   uncommitted files; `None` for a non-repo) with the ZEN versions faked; a
   WARNING names uncommitted files. Uses the `git_repo` fixture (a throwaway
   repo in tmp; skipped without git). `git_state` itself (in `MS_versions`
-  since 2026-11-13) is tested in `test_zeiss_paths.py` (clean, dirty +
+  since 2026-11-13) is tested in `test_versions.py` (clean, dirty +
   untracked, subfolder → enclosing repo, not a repo, git missing).
 - `append_jsonl` / `read_jsonl` *(added 2026-10-14)*: round-trip; missing file →
   `[]`; a line cut off by a crash is skipped on read AND the next append starts
@@ -151,8 +151,8 @@ Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a
 
 ### `tests/unit/test_stage_guard.py` — immersion guard, as `MS_zenapi_stage_LM` uses it
 *(Added after this plan was written. Since 2026-11-13 the guard is in
-`MS_zenapi_objectivechanger`; the stage module exports its names again, and
-one test checks that they are the same objects.)*
+`MS_zenapi_objectivechanger`; one test checks that `ms.ImmersionObjectiveActive`
+is the same class.)*
 `move_stage_to_new_xy_position` lowers Z
 to 0 for collision safety before every XY move, which would break the
 immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
@@ -200,8 +200,17 @@ immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
   `test_objectivechanger.py`.
 - `set_logging` moved to `MS_logging` on 2026-11-13; its tests are in
   `test_logging.py` (the shared `"smartmic"` logger; idempotent, no duplicate
-  handlers on repeated calls; `ensure_utf8_stdout` never raises). One test here
-  checks that the old names still resolve on `MS_zenapi_helpers`.
+  handlers on repeated calls; `ensure_utf8_stdout` never raises).
+
+### `test_versions.py`, `test_zen_logs.py`, `test_zeiss_paths.py` *(split 2026-11-13)*
+`test_zeiss_paths.py` held the tests of three modules, because all the
+functions were once in `zeiss_paths`. Each module now has its own file:
+- `test_versions.py` — `MS_versions`: the `zen_api` version from the folder
+  name, the gateway version, `smartmic_version`, `git_state`.
+- `test_zen_logs.py` — `MS_zen_logs`: the ZEN application version and the
+  auto-immersion settings. The DF carrier bottom stays in `test_df_carrier.py`.
+- `test_zeiss_paths.py` — `zeiss_paths`: the search for the `zen_api-<version>`
+  package folders.
 - `open_zen_channel`: with a mock channel, assert `.close()` is called on **both**
   normal exit and when the body raises (TODO.md says this was hand-verified once;
   this makes it a permanent regression test).

@@ -18,7 +18,8 @@ Read and change ZEN ``.czexp`` experiment files.
 This module uses the standard library (xml.etree) and ``MS_limits``. It uses no
 ZEN API. With it you set an experiment up for one target: the position, the
 z-stack and the scan crop. Then you run the experiment with
-``run_experiment_from_path`` of the LoA.
+``run_experiment_from_path`` of the LoA. To read the positions or the sample
+carrier of a file, use ``MS_czexp_metadata``.
 
 The module changes these fields in the HardwareExperiment XML:
 

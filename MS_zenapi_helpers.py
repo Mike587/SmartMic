@@ -35,12 +35,6 @@ from typing import Any, AsyncIterator, List, Optional, Tuple, Union
 
 from grpclib.client import Channel
 
-# The logger is in MS_logging. These names stay available here for the code
-# that imports them from this module.
-from MS_logging import (  # noqa: F401
-    LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME, ensure_utf8_stdout, set_logging,
-)
-
 
 # ---------------------------------------------------------------------------
 # The default time limits for the gRPC calls

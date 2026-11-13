@@ -366,7 +366,7 @@ def _immersion_slots(monkeypatch, slots):
 
 
 def test_check_immersion_guard_agrees(monkeypatch):
-    _immersion_slots(monkeypatch, [MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION])
+    _immersion_slots(monkeypatch, [MS_zenapi_objectivechanger.IMMERSION_OBJECTIVE_POSITION])
     log = _Log()
     assert ms.check_immersion_guard(log) is True
     assert log.errors == []

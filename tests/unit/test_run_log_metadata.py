@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for MS_run_log and MS_metadata (.czexp readers, carrier check)."""
+"""Unit tests for MS_run_log and MS_czexp_metadata (.czexp readers, carrier check)."""
 import logging
 
 import pytest
 
-import MS_metadata as metadata
+import MS_czexp_metadata as metadata
 import MS_run_log as run_log
 
 

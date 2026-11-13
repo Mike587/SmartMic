@@ -18,8 +18,7 @@ The sources are the log files and the options files of ZEN. This module is
 read-only, and it tries its best. If a source is missing, if ZEN rotated it, or
 if the module cannot read it, the function gives ``None``. The module makes no
 gateway call and changes no setting. The files are in
-``zeiss_paths.ZEN_LOGGING_DIR``. ``zeiss_paths.<name>`` also finds each name in
-this module.
+``zeiss_paths.ZEN_LOGGING_DIR``.
 """
 
 import contextlib

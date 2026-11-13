@@ -22,15 +22,13 @@ message::
     import zeiss_paths  # noqa: F401  (the side effect extends sys.path)
 
 The module also gives the paths of this machine: ``CONFIG_PATH``,
-``ZEN_LOGGING_DIR`` and ``ZEN_API_GATEWAY_EXE``. ``zeiss_paths.<name>`` also
-finds the names in ``MS_versions`` and in ``MS_zen_logs``, which were in this
-module before.
+``ZEN_LOGGING_DIR`` and ``ZEN_API_GATEWAY_EXE``.
 """
 
 import os
 import sys
 from pathlib import Path
-from typing import Any, List, Tuple, Union
+from typing import List, Tuple, Union
 
 # The ZEN-API python_examples folder. In the OLD layout, zen_api is directly
 # in this folder.
@@ -128,18 +126,3 @@ if not any((Path(p) / "zen_api").is_dir() for p in _zen_api_locations):
         f"{ZEISS_EXAMPLES.parent}/{{{','.join(ZEN_API_PACKAGE_DIRS)}}}/zen_api-*/src. "
         f"Set SMARTMIC_ZEISS_EXAMPLES to the correct python_examples path.\n"
     )
-
-
-def __getattr__(name: str) -> Any:
-    """Find a name of ``MS_versions`` or of ``MS_zen_logs`` on this module.
-
-    The imports are in the function, because both modules import this module.
-    """
-    if name.startswith("__"):
-        raise AttributeError(name)
-    import MS_versions
-    import MS_zen_logs
-    for module in (MS_versions, MS_zen_logs):
-        if hasattr(module, name):
-            return getattr(module, name)
-    raise AttributeError(f"module 'zeiss_paths' has no attribute {name!r}")

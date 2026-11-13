@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# File        : MS_metadata.py
+# File        : MS_czexp_metadata.py
 # Author      : Michael Stebler
 # Institution : ETH Zurich | ScopeM
 #               ScopeM Imaging Facility (scopem.ethz.ch)

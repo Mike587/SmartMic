@@ -124,6 +124,7 @@ import MS_zenapi_stage_LM
 import MS_zenapi_swaf
 import MS_zenapi_sample_carrier
 import MS_zenapi_live_scan
+import MS_limits
 import MS_run_log
 import MS_versions
 import MS_zen_logs
@@ -137,8 +138,6 @@ from MS_limits import (  # noqa: F401
     validate_objective_number, validate_optovar_number,
     validate_z_position, validate_xy_position,
 )
-from MS_limits import validate_range as _validate_range  # noqa: F401
-from MS_limits import require_valid as _require_valid
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +506,7 @@ def move_focus_to_new_z_position(new_z_pos: float,
     """
     Move the Z-drive to an absolute position in metres.
 
-    WARNING: the function checks only the range, with ``validate_z_position``.
+    WARNING: the function checks only the range, with ``MS_limits``.
     It has NO immersion guard. A Z of 0, or near 0, while the 50x immersion
     objective is active, pulls the objective back and breaks the water bridge
     (DEV_NOTES). The caller must examine the objective before it moves Z to 0.
@@ -523,7 +522,7 @@ def move_focus_to_new_z_position(new_z_pos: float,
         ValueError: The position is outside the safe range, or ``tolerance_m``
             is not correct.
     """
-    _require_valid(validate_z_position(new_z_pos), "Z position")
+    MS_limits.require_z_position(new_z_pos)
     _validate_tolerance(tolerance_m)
 
     set_logging().info(f"Moving focus to Z = {new_z_pos * 1e6:.3f} µm")
@@ -782,7 +781,7 @@ def move_stage_to_new_xy_position(new_x: float, new_y: float,
             again. Write the target position into a ``.czexp`` file and let ZEN
             run it (DEV_NOTES).
     """
-    _require_valid(validate_xy_position(new_x, new_y), "XY coordinates")
+    MS_limits.require_xy_position(new_x, new_y)
     _validate_tolerance(tolerance_m)
 
     def distance_to_target() -> float:
@@ -904,8 +903,8 @@ def _change_optics(objective_nr: int, optovar_nr: int,
         ValueError: A position is not correct, or it is not in the inventory of
             the changer.
     """
-    _require_valid(validate_objective_number(objective_nr), "objective number")
-    _require_valid(validate_optovar_number(optovar_nr), "optovar number")
+    MS_limits.require_objective_number(objective_nr)
+    MS_limits.require_optovar_number(optovar_nr)
     log = set_logging()
 
     async def _set_and_wait() -> bool:

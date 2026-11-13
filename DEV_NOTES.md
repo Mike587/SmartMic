@@ -1379,6 +1379,14 @@ Some functions were in a module that did not agree with their subject. They
 moved. The behaviour did not change. The offline suite passes. None of it is
 tested on the scope yet.
 
+### Rule: no backward compatibility in the library (Mike, 2026-11-13)
+
+Each project works with its own version of SmartMic, for the moment. Thus a
+change to the library can break an old import path or an old name. Do not
+keep a name at its old location, and do not add a hook that sends an old name
+to its new module. Change the callers, the tests and the docs in this
+repository. This rule does not change the safety rules.
+
 ### Where the code is now (old name → new name)
 
 Old entries in this file use the old names. Do not rewrite them; use this table.
@@ -1389,27 +1397,35 @@ Old entries in this file use the old names. Do not rewrite them; use this table.
 | `MS_zenapi_helpers.set_logging`, `ensure_utf8_stdout`, `LOGGER_NAME`, `LOG_FORMAT`, `LOG_DATEFMT` | `MS_logging` |
 | `MS_zenapi_helpers.get_objective_by_position`, `get_optovar_by_position`, `get_used_objective_positions`, `get_used_optovar_positions` | `MS_zenapi_objectivechanger` |
 | `zeiss_paths.zen_api_version`, `zen_api_gateway_version`, `smartmic_version`, `git_state` | `MS_versions` |
+| `MS_metadata` (the module) | `MS_czexp_metadata` |
 
 - **The immersion guard** is about the objective, not about the stage. The
   stage move, the container move, the DF tracker and the tray eject use it.
   It is now next to `is_immersion_objective` and
   `get_immersion_objective_positions`. To change the slot of the immersion
   objective, change `MS_zenapi_objectivechanger.IMMERSION_OBJECTIVE_POSITION`.
-  `MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION` is a copy: a new value
-  there has no effect on the guard.
+  There is no copy of it in a different module.
 - **`ms.ImmersionObjectiveActive`** is new. It is the same class. A pipeline
   can catch the refusal without an import of a `MS_zenapi_*` module.
-- **`MS_logging`** uses only the standard library. Before, `MS_metadata` and
-  `MS_run_log` needed `grpclib` only to get the logger.
+- **`MS_logging`** uses only the standard library. Before, `MS_czexp_metadata`
+  and `MS_run_log` needed `grpclib` only to get the logger.
+- **`MS_metadata` is now `MS_czexp_metadata`** (Mike agreed, 2026-11-13). The
+  name says what the module reads, and the file is next to `MS_czexp_editor`.
+  The functions did not change. The module reads a file by its path and gives
+  data. `MS_czexp_editor` works on a parsed tree and changes it.
 - **`MS_versions`** reads its paths from `zeiss_paths` at the time of the
   call (`THIS_DIR`, `ZEN_API_GATEWAY_EXE`). `zeiss_paths` keeps the path
   bootstrap and the paths of the machine.
-- **The old names still resolve**, with one exception. `MS_zenapi_stage_LM`
-  and `MS_zenapi_helpers` import the guard names and the logger names again,
-  and `zeiss_paths.<name>` finds the names of `MS_versions` and of
-  `MS_zen_logs`. The exception is the four position lookups: they are not on
-  `MS_zenapi_helpers` now, because `MS_zenapi_objectivechanger` imports that
-  module.
+- **The old names are gone**, as the rule above says. `MS_zenapi_stage_LM`
+  has no guard names, `MS_zenapi_helpers` has no logger names and no lookups,
+  and `zeiss_paths` has no `__getattr__` hook: `zeiss_paths.zen_df_bottom`,
+  `zeiss_paths.zen_app_version`, `zeiss_paths.smartmic_version` and the others
+  raise `AttributeError`. Use `MS_zen_logs` and `MS_versions`. The private
+  names `ms._validate_range` and `ms._require_valid` are gone too; the LoA
+  calls `MS_limits.require_*`. The limits and `validate_*` stay on `ms`: they
+  are a part of the LoA interface.
+- **The tests follow the modules.** `test_zeiss_paths.py` is now three files:
+  `test_versions.py`, `test_zen_logs.py` and `test_zeiss_paths.py`.
 - **Zeiss headers.** `set_logging` and the lookups come from `zen_api_utils`.
   Thus `MS_logging.py` has the Zeiss header, and the header of
   `MS_zenapi_objectivechanger.py` names `zen_api_utils/objective.py` too.
@@ -1422,10 +1438,10 @@ Old entries in this file use the old names. Do not rewrite them; use this table.
   that of the machine paths in `zeiss_paths`. But `MS_run_log` must import
   without the Zeiss tree, and an import of `zeiss_paths` changes `sys.path`
   and can write a warning.
-- **`MS_metadata` keeps its name and its functions.** It reads a `.czexp`
-  file, as `MS_czexp_editor` does. But its carrier dict and
-  `check_sample_carrier` also serve a CZI file (`ia_common`), and each
-  pipeline imports `load_positions_from_czexp` from it.
+- **The readers of `MS_czexp_metadata` are not merged into
+  `MS_czexp_editor`.** Its carrier dict and `check_sample_carrier` also serve
+  a CZI file (`ia_common`), and the editor is already approximately 1000
+  lines.
 - **`MS_CD7_API_LoA` is not split.** See the local `TODO.md`.
 
 ---

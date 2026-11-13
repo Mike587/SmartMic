@@ -7,7 +7,7 @@ the loaded plate). Skipped unless --run-hardware.
 """
 import pytest
 
-import MS_metadata as metadata
+import MS_czexp_metadata as metadata
 
 pytestmark = pytest.mark.hardware
 

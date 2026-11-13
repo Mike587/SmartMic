@@ -22,7 +22,7 @@ of the ZEN application comes from the ZEN log, in
 
 Each function is read-only. A source that the function cannot read gives
 ``None``, and raises no exception. The paths come from ``zeiss_paths`` at the
-time of the call. ``zeiss_paths.<name>`` also finds each name in this module.
+time of the call.
 """
 
 import subprocess

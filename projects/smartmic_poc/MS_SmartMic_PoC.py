@@ -80,7 +80,7 @@ sys.path.insert(0, _SMARTMIC_ROOT)
 import zeiss_paths  # noqa: E402,F401  — Import first. It puts zen_api on sys.path.
 import MS_CD7_API_LoA as ms  # noqa: E402
 from MS_image_analysis import run_analysis_json  # noqa: E402
-from MS_metadata import load_positions_from_czexp  # noqa: E402
+from MS_czexp_metadata import load_positions_from_czexp  # noqa: E402
 from MS_run_log import append_jsonl, read_jsonl, setup_run_logger, write_run_info  # noqa: E402
 
 

@@ -12,7 +12,7 @@ import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_CD7_API_LoA as ms            # noqa: E402
-import MS_zenapi_stage_LM as stage     # noqa: E402
+import MS_zenapi_objectivechanger as oc  # noqa: E402
 
 SURFACE = 1.35e-3
 
@@ -42,7 +42,7 @@ def df(monkeypatch):
         monkeypatch.setattr(ms, "df_find_surface", fake.find)
         monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: (objective, 1))
         monkeypatch.setattr(ms, "_immersion_objective_active",
-                            lambda: objective == stage.IMMERSION_OBJECTIVE_POSITION)
+                            lambda: objective == oc.IMMERSION_OBJECTIVE_POSITION)
         # A constant carrier: the carrier check is tested in test_df_carrier.py.
         monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: {
             "name": "PLATE", "material": "Glass", "thickness": 170.0,
@@ -110,15 +110,15 @@ def test_reset_forgets_surface_only(df):
 
 
 def test_immersion_without_known_surface_refuses_full_range(df):
-    fake = df([True], objective=stage.IMMERSION_OBJECTIVE_POSITION)
+    fake = df([True], objective=oc.IMMERSION_OBJECTIVE_POSITION)
     t = ms.DefiniteFocusTracker()
-    with pytest.raises(stage.ImmersionObjectiveActive):
+    with pytest.raises(oc.ImmersionObjectiveActive):
         t.find_surface()
     assert fake.starts == []   # DF never ran
 
 
 def test_immersion_skips_the_full_range_fallback(df):
-    fake = df([False], objective=stage.IMMERSION_OBJECTIVE_POSITION)
+    fake = df([False], objective=oc.IMMERSION_OBJECTIVE_POSITION)
     t = ms.DefiniteFocusTracker(surface_z_m=SURFACE)
     assert t.find_surface() is None
     assert fake.starts == [pytest.approx(SURFACE - ms.DF_APPROACH_MARGIN_M)]

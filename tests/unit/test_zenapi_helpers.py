@@ -9,15 +9,6 @@ import MS_zenapi_helpers as zh
 
 
 # --------------------------------------------------------------------------
-# The logger moved to MS_logging. The old names still resolve here.
-# --------------------------------------------------------------------------
-def test_logging_names_still_resolve_here():
-    import MS_logging
-    assert zh.set_logging is MS_logging.set_logging
-    assert zh.LOGGER_NAME == MS_logging.LOGGER_NAME
-
-
-# --------------------------------------------------------------------------
 # open_zen_channel — must close the channel on every exit path
 # --------------------------------------------------------------------------
 def _fake_channel():

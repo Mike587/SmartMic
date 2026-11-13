@@ -263,7 +263,7 @@ The repo root holds the reusable library; example pipelines live under
 | `MS_czexp_editor.py` | Read and modify `.czexp` files (positions, z-stack, scan crop); refuses unrunnable or unsafe files |
 | `MS_limits.py` | Range checks for positions and changer numbers |
 | `MS_run_log.py` | Run log, per-run version record, JSONL records, default output folder |
-| `MS_metadata.py` | Positions and sample carrier from a `.czexp`; carrier check (CZI reading: ia_common) |
+| `MS_czexp_metadata.py` | Positions and sample carrier from a `.czexp`; carrier check (CZI reading: ia_common) |
 | `MS_image_analysis.py` | Launches external image-analysis scripts; reads back their results |
 | `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files |
 | `MS_versions.py` | Version identities for the log and the run record (SmartMic, gateway, `zen_api`, git state) |
