@@ -28,8 +28,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from MS_zenapi_helpers import (LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME,
-                               ensure_utf8_stdout, set_logging)
+from MS_logging import (LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME, ensure_utf8_stdout,
+                        set_logging)
 
 # Keep this folder on the drive of the default image folder of ZEN. The move
 # of each result is then a fast rename (DEV_NOTES).
@@ -99,7 +99,7 @@ def write_run_info(log_file: Path, log: logging.Logger,
     the commit and the files that are not committed, for SmartMic and for each
     repository in ``repos``. It also holds the versions of the ZEN
     application, of ZenApiGateway and of ``zen_api``. The gRPC API reports none
-    of these versions. See ``zeiss_paths``. The function writes the commit of
+    of these versions. See ``MS_versions``. The function writes the commit of
     each repository to the log, and a WARNING for the files that are not
     committed. Call this function one time for each run, directly after
     ``setup_run_logger``.
@@ -118,20 +118,21 @@ def write_run_info(log_file: Path, log: logging.Logger,
     # Import these here, not at the top of the module. Thus you can import
     # this module without the Zeiss tree.
     import zeiss_paths
+    import MS_versions
     import MS_zen_logs
 
     if script is None and sys.argv and sys.argv[0]:
         script = Path(sys.argv[0]).resolve()
-    api_ver, api_path = zeiss_paths.zen_api_version()
+    api_ver, api_path = MS_versions.zen_api_version()
     info = {
         "started": datetime.now().isoformat(timespec="seconds"),
         "script": str(script) if script else None,
-        "smartmic": {"describe": zeiss_paths.smartmic_version(),
-                     **zeiss_paths.git_state(zeiss_paths.THIS_DIR)},
-        "repos": {name: {"path": str(path), **zeiss_paths.git_state(path)}
+        "smartmic": {"describe": MS_versions.smartmic_version(),
+                     **MS_versions.git_state(zeiss_paths.THIS_DIR)},
+        "repos": {name: {"path": str(path), **MS_versions.git_state(path)}
                   for name, path in (repos or {}).items()},
         "zen_app": MS_zen_logs.zen_app_version(),
-        "zen_api_gateway": zeiss_paths.zen_api_gateway_version(),
+        "zen_api_gateway": MS_versions.zen_api_gateway_version(),
         "zen_api": {"version": api_ver, "path": api_path},
         "python": sys.version.split()[0],
     }

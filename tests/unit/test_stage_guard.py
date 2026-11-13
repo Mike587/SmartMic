@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for the immersion guard in MS_zenapi_stage_LM.
+"""Unit tests for the immersion guard, as MS_zenapi_stage_LM uses it.
+
+The guard is in MS_zenapi_objectivechanger. MS_zenapi_stage_LM exports its
+names again, and these tests reach them there.
 
 move_stage_to_new_xy_position lowers Z to 0 for collision safety, which breaks
 the immersion bridge on this inverted CD7. With the immersion objective active it
@@ -45,6 +48,16 @@ class _FakeStageStub:
 @contextlib.asynccontextmanager
 async def _fake_channel(cfg):
     yield (None, None)
+
+
+def test_guard_names_on_the_stage_module_are_the_objective_module_ones():
+    import MS_CD7_API_LoA as ms
+    assert stage.ImmersionObjectiveActive is oc.ImmersionObjectiveActive
+    assert ms.ImmersionObjectiveActive is oc.ImmersionObjectiveActive
+    assert stage.refuse_if_immersion_active is oc.refuse_if_immersion_active
+    assert stage.immersion_objective_active is oc.immersion_objective_active
+    assert stage.immersion_objective_positions is oc.immersion_objective_positions
+    assert stage.IMMERSION_OBJECTIVE_POSITION == oc.IMMERSION_OBJECTIVE_POSITION
 
 
 def test_move_blocked_when_immersion_active(monkeypatch, fake_objective):

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# Based on    : zenapi_objectivechanger.py
-# Author      : SRh
+# Based on    : zenapi_objectivechanger.py, zen_api_utils/objective.py
+# Author      : SRh, JSm
 # Institution : Carl Zeiss Microscopy GmbH
 #
 # Copyright(c) 2025 Carl Zeiss AG, Germany. All Rights Reserved.
@@ -19,22 +19,26 @@
 #
 # This module wraps the ZEN gRPC ObjectiveChangerService and OptovarService
 # (lm.hardware.v2). It gives helper functions to change the objective and the
-# optovar magnification changer.
+# optovar magnification changer. It also holds the immersion guard.
 #################################################################
 
-"""Helper functions for the ``ObjectiveChangerService`` and the ``OptovarService``."""
+"""Helper functions for the objective and the optovar, and the immersion guard.
 
-from typing import Any, Callable, List, Tuple
+The services are the ``ObjectiveChangerService`` and the ``OptovarService``.
+
+The immersion guard: on this inverted CD7, a Z of 0 breaks the immersion
+bridge. Each move that lowers Z to 0 first calls ``refuse_if_immersion_active``,
+which RAISES ``ImmersionObjectiveActive`` while an immersion objective is
+active. To move the stage in that condition, write the target position into a
+``.czexp`` file and let ZEN run it (DEV_NOTES "inverted CD7 / Z=0 breaks the
+immersion bridge").
+"""
+
+from typing import Any, Callable, List, Optional, Tuple
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import (
-    set_logging,
-    open_zen_channel,
-    get_used_objective_positions,
-    get_objective_by_position,
-    get_used_optovar_positions,
-    get_optovar_by_position,
-)
+from MS_logging import set_logging
+from MS_zenapi_helpers import open_zen_channel
 
 from zen_api.lm.hardware.v2 import (
     ObjectiveChangerServiceStub,
@@ -49,6 +53,41 @@ from zen_api.lm.hardware.v2 import (
 )
 
 from zeiss_paths import CONFIG_PATH as config_path
+
+# The slot of the 50x/1.2 W objective on this CD7. This constant does not
+# depend on the immersion_type from the API. The guard refuses a move if the
+# API OR this constant says immersion. Thus a wrong entry in the inventory
+# cannot switch the guard off. preflight reports a difference between the two
+# sources with check_immersion_guard. Do not change the refusal into a move at
+# a "safe" travel Z (DEV_NOTES "inverted CD7 / Z=0 breaks the immersion
+# bridge").
+IMMERSION_OBJECTIVE_POSITION = 4
+
+
+# ---------------------------------------------------------------------------
+# The position lookups, from zen_api_utils.objective
+# ---------------------------------------------------------------------------
+# These functions accept any object that has an ``.objectives`` or
+# ``.optovars`` list whose items have a ``.position``.
+
+def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
+    """Get the objective at *position* in a GetObjectives response, or ``None``."""
+    return next((obj for obj in objectives.objectives if obj.position == position), None)
+
+
+def get_optovar_by_position(optovars: Any, position: int) -> Optional[Any]:
+    """Get the optovar at *position* in a GetOptovars response, or ``None``."""
+    return next((opt for opt in optovars.optovars if opt.position == position), None)
+
+
+def get_used_objective_positions(objectives: Any) -> List[int]:
+    """Get the list of all the objective positions that the hardware reports."""
+    return [obj.position for obj in objectives.objectives]
+
+
+def get_used_optovar_positions(optovars: Any) -> List[int]:
+    """Get the list of all the optovar positions that the hardware reports."""
+    return [opt.position for opt in optovars.optovars]
 
 
 def _require(lookup_fn: Callable[[Any, int], Any],
@@ -87,6 +126,10 @@ def _services(channel: Any, metadata: Any,
     return (ObjectiveChangerServiceStub(channel=channel, metadata=metadata),
             OptovarServiceStub(channel=channel, metadata=metadata))
 
+
+# ---------------------------------------------------------------------------
+# The objective and the optovar
+# ---------------------------------------------------------------------------
 
 async def _read_inventory(objchanger_service: ObjectiveChangerServiceStub,
                           optovar_service: OptovarServiceStub) -> Tuple[Any, Any]:
@@ -144,6 +187,67 @@ async def get_immersion_objective_positions() -> List[int]:
         )
         return sorted(o.position for o in objectives.objectives if is_immersion_objective(o))
 
+
+# ---------------------------------------------------------------------------
+# The immersion guard
+# ---------------------------------------------------------------------------
+
+class ImmersionObjectiveActive(RuntimeError):
+    """The code refused a direct move, because the immersion objective is active.
+
+    This exception has its own type. Thus a caller that tries a move again
+    does not try a refusal that the code made on purpose.
+    """
+
+
+async def immersion_objective_positions() -> List[int]:
+    """Get the changer positions that the guard counts as immersion, sorted.
+
+    The positions come from the API and from the slot constant.
+    """
+    api = await get_immersion_objective_positions()
+    return sorted(set(api) | {IMMERSION_OBJECTIVE_POSITION})
+
+
+async def _active_immersion_objective() -> Optional[Any]:
+    """Get the active objective if the guard counts it as immersion. If not, ``None``."""
+    objective = await get_active_objective()
+    if (is_immersion_objective(objective)
+            or objective.position == IMMERSION_OBJECTIVE_POSITION):
+        return objective
+    return None
+
+
+async def immersion_objective_active() -> bool:
+    """Return ``True`` if the active objective is an immersion objective.
+
+    The objective is an immersion objective if its immersion type is not AIR,
+    or if it is in slot ``IMMERSION_OBJECTIVE_POSITION``.
+    """
+    return await _active_immersion_objective() is not None
+
+
+async def refuse_if_immersion_active(action: str) -> None:
+    """Raise ``ImmersionObjectiveActive`` if an immersion objective is active.
+
+    This is the guard for each move that lowers Z to 0 first, because a Z of 0
+    breaks the immersion bridge. Run it BEFORE each Z move. *action* gives the
+    name of the move in the message.
+    """
+    objective = await _active_immersion_objective()
+    if objective is not None:
+        raise ImmersionObjectiveActive(
+            f"Refusing direct {action}: the immersion objective '{objective.name}' "
+            f"(changer position {objective.position}) is active. The {action} lowers "
+            f"Z to 0, which breaks the immersion bridge on this inverted CD7. Drive "
+            f"the stage by writing the target XY(Z) into a .czexp and running it via "
+            f"ZEN instead."
+        )
+
+
+# ---------------------------------------------------------------------------
+# The moves and the read-backs
+# ---------------------------------------------------------------------------
 
 async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int) -> None:
     """Move the objective changer and the optovar to position indices that start at 1.

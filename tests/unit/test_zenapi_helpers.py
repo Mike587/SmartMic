@@ -8,43 +8,13 @@ import pytest
 import MS_zenapi_helpers as zh
 
 
-def _item(pos):
-    return SimpleNamespace(position=pos, name=f"item{pos}")
-
-
 # --------------------------------------------------------------------------
-# Objective / optovar position lookups (duck-typed)
+# The logger moved to MS_logging. The old names still resolve here.
 # --------------------------------------------------------------------------
-def test_get_objective_by_position():
-    objs = SimpleNamespace(objectives=[_item(1), _item(3)])
-    assert zh.get_objective_by_position(objs, 3).position == 3
-    assert zh.get_objective_by_position(objs, 2) is None
-
-
-def test_get_optovar_by_position():
-    opts = SimpleNamespace(optovars=[_item(1), _item(2)])
-    assert zh.get_optovar_by_position(opts, 2).position == 2
-    assert zh.get_optovar_by_position(opts, 9) is None
-
-
-def test_get_used_positions():
-    objs = SimpleNamespace(objectives=[_item(1), _item(2), _item(4)])
-    opts = SimpleNamespace(optovars=[_item(1), _item(3)])
-    assert zh.get_used_objective_positions(objs) == [1, 2, 4]
-    assert zh.get_used_optovar_positions(opts) == [1, 3]
-
-
-# --------------------------------------------------------------------------
-# set_logging
-# --------------------------------------------------------------------------
-def test_set_logging_idempotent():
-    name = "smartmic_helpers_test"
-    log1 = zh.set_logging(name)
-    n = len(log1.handlers)
-    log2 = zh.set_logging(name)
-    assert log2 is log1
-    assert n >= 1
-    assert len(log2.handlers) == n   # no duplicate handlers on repeated calls
+def test_logging_names_still_resolve_here():
+    import MS_logging
+    assert zh.set_logging is MS_logging.set_logging
+    assert zh.LOGGER_NAME == MS_logging.LOGGER_NAME
 
 
 # --------------------------------------------------------------------------

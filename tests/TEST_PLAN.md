@@ -113,9 +113,9 @@ These are the bulk of the value. Grouped by module.
   `<stem>_run_info.json`); records SmartMic + each passed repo (commit, root,
   uncommitted files; `None` for a non-repo) with the ZEN versions faked; a
   WARNING names uncommitted files. Uses the `git_repo` fixture (a throwaway
-  repo in tmp; skipped without git). `zeiss_paths.git_state` itself is tested
-  in `test_zeiss_paths.py` (clean, dirty + untracked, subfolder → enclosing
-  repo, not a repo, git missing).
+  repo in tmp; skipped without git). `git_state` itself (in `MS_versions`
+  since 2026-11-13) is tested in `test_zeiss_paths.py` (clean, dirty +
+  untracked, subfolder → enclosing repo, not a repo, git missing).
 - `append_jsonl` / `read_jsonl` *(added 2026-10-14)*: round-trip; missing file →
   `[]`; a line cut off by a crash is skipped on read AND the next append starts
   on a new line (not glued onto the fragment); blank lines ignored.
@@ -149,8 +149,11 @@ Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a
   logged; a template / carrier mismatch is flagged but still passes; an
   unreadable config logs "could not read" and passes; gateway down → not queried.
 
-### `tests/unit/test_stage_guard.py` — immersion guard in `MS_zenapi_stage_LM`
-*(Added after this plan was written.)* `move_stage_to_new_xy_position` lowers Z
+### `tests/unit/test_stage_guard.py` — immersion guard, as `MS_zenapi_stage_LM` uses it
+*(Added after this plan was written. Since 2026-11-13 the guard is in
+`MS_zenapi_objectivechanger`; the stage module exports its names again, and
+one test checks that they are the same objects.)*
+`move_stage_to_new_xy_position` lowers Z
 to 0 for collision safety before every XY move, which would break the
 immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
 - Immersion objective active → raises before the Z=0 lower runs (`calls["z"] == 0`).
@@ -192,10 +195,13 @@ immersion bridge if the 50x immersion objective is active. Mocked gRPC layer:
   that actually protects a live sample; an acceleration failure DOES propagate.
 
 ### `tests/unit/test_zenapi_helpers.py` — `MS_zenapi_helpers.py`
-- `get_objective_by_position` / `get_optovar_by_position` / `get_used_*_positions`:
-  feed duck-typed fake objects (no `zen_api` needed), assert lookups.
-- `set_logging`: returns the shared `"smartmic"` logger; idempotent (no duplicate
-  handlers on repeated calls).
+- The position lookups (`get_objective_by_position` and the others) moved to
+  `MS_zenapi_objectivechanger` on 2026-11-13; their tests are in
+  `test_objectivechanger.py`.
+- `set_logging` moved to `MS_logging` on 2026-11-13; its tests are in
+  `test_logging.py` (the shared `"smartmic"` logger; idempotent, no duplicate
+  handlers on repeated calls; `ensure_utf8_stdout` never raises). One test here
+  checks that the old names still resolve on `MS_zenapi_helpers`.
 - `open_zen_channel`: with a mock channel, assert `.close()` is called on **both**
   normal exit and when the body raises (TODO.md says this was hand-verified once;
   this makes it a permanent regression test).

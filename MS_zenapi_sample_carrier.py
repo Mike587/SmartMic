@@ -26,8 +26,10 @@ from typing import Any, Dict, Optional, Tuple
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError
-from MS_zenapi_helpers import set_logging, open_zen_channel
+from MS_logging import set_logging
+from MS_zenapi_helpers import open_zen_channel
 import MS_zenapi_focus
+import MS_zenapi_objectivechanger
 import MS_zenapi_stage_LM
 
 from zen_api.lm.hardware.v1 import (
@@ -100,15 +102,15 @@ async def move_to_container(row_index: int, column_index: int) -> None:
     carriers").
 
     Raises:
-        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The
-            immersion objective is active. A move of Z to 0 breaks the
+        MS_zenapi_objectivechanger.ImmersionObjectiveActive (a RuntimeError):
+            The immersion objective is active. A move of Z to 0 breaks the
             immersion bridge. The function moves nothing.
     """
     logger = set_logging()
 
     # The immersion guard must run BEFORE the move of Z to 0.
     # See move_stage_to_new_xy_position.
-    await MS_zenapi_stage_LM.refuse_if_immersion_active("container move")
+    await MS_zenapi_objectivechanger.refuse_if_immersion_active("container move")
 
     # ZEN puts the CURRENT Z back after the switch. Thus lower Z first.
     await MS_zenapi_focus.move_focus_to_new_z_position(0)

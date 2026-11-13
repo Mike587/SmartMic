@@ -71,6 +71,32 @@ def test_current_positions_reads_only_the_two_positions(changer):
     assert changer["rpc"] == ["obj.get_position", "opt.get_position"]
 
 
+# --------------------------------------------------------------------------
+# Objective / optovar position lookups (duck-typed)
+# --------------------------------------------------------------------------
+def _item(pos):
+    return NS(position=pos, name=f"item{pos}")
+
+
+def test_get_objective_by_position():
+    objs = NS(objectives=[_item(1), _item(3)])
+    assert oc.get_objective_by_position(objs, 3).position == 3
+    assert oc.get_objective_by_position(objs, 2) is None
+
+
+def test_get_optovar_by_position():
+    opts = NS(optovars=[_item(1), _item(2)])
+    assert oc.get_optovar_by_position(opts, 2).position == 2
+    assert oc.get_optovar_by_position(opts, 9) is None
+
+
+def test_get_used_positions():
+    objs = NS(objectives=[_item(1), _item(2), _item(4)])
+    opts = NS(optovars=[_item(1), _item(3)])
+    assert oc.get_used_objective_positions(objs) == [1, 2, 4]
+    assert oc.get_used_optovar_positions(opts) == [1, 3]
+
+
 def test_current_names(changer):
     assert asyncio.run(oc.get_current_objective_and_optovar_names()) == (("5x", 2), ("2x", 1))
 

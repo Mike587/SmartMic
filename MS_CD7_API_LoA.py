@@ -99,8 +99,9 @@ The exceptions
     PreflightFailed                 A preflight check failed.
     DefiniteFocusFault              DF failed more than one time. Stop the run.
     CarrierChanged                  This is a DefiniteFocusFault.
-    MS_zenapi_stage_LM.ImmersionObjectiveActive
-                                    The code refused an XY move.
+    ImmersionObjectiveActive        The code refused a move that lowers Z to
+                                    0, because the immersion objective is
+                                    active.
 
 For the behaviour of the hardware, and for the reasons for the guards, see
 DEV_NOTES.md.
@@ -124,8 +125,9 @@ import MS_zenapi_swaf
 import MS_zenapi_sample_carrier
 import MS_zenapi_live_scan
 import MS_run_log
+import MS_versions
 import MS_zen_logs
-from MS_zenapi_helpers import set_logging
+from MS_logging import set_logging
 
 # These names come from MS_limits. Change a limit in that module.
 from MS_limits import (  # noqa: F401
@@ -193,6 +195,11 @@ class CarrierBottom(TypedDict):
     refractive_index: NotRequired[float]   # The DF log event does not hold this.
 
 
+# The exception of the immersion guard. The guard is in
+# MS_zenapi_objectivechanger.
+ImmersionObjectiveActive = MS_zenapi_objectivechanger.ImmersionObjectiveActive
+
+
 class FocusSearchFailed(RuntimeError):
     """One focus search found no focus.
 
@@ -245,10 +252,10 @@ def _log_versions(log: logging.Logger) -> None:
     The gRPC API has no version service. Thus the code reads the versions from
     other sources.
     """
-    smartmic = zeiss_paths.smartmic_version()
+    smartmic = MS_versions.smartmic_version()
     zen_app = MS_zen_logs.zen_app_version()
-    gateway = zeiss_paths.zen_api_gateway_version()
-    stubs, stubs_path = zeiss_paths.zen_api_version()
+    gateway = MS_versions.zen_api_gateway_version()
+    stubs, stubs_path = MS_versions.zen_api_version()
     log.info(f"SmartMic: {smartmic or 'unknown (not a git checkout?)'}  |  "
              f"ZEN app: {zen_app or 'unknown'}  |  "
              f"ZenApiGateway: {gateway or 'unknown'}  |  "
@@ -670,8 +677,8 @@ class DefiniteFocusTracker:
                 ``max_consecutive_failures`` in sequence.
             CarrierChanged: The carrier bottom changed, or it is 0. The
                 function moves nothing.
-            MS_zenapi_stage_LM.ImmersionObjectiveActive: The tracker knows no
-                surface and the immersion objective is active.
+            ImmersionObjectiveActive: The tracker knows no surface and the
+                immersion objective is active.
         """
         log = set_logging()
         if self.carrier_check:
@@ -679,7 +686,7 @@ class DefiniteFocusTracker:
         if self.last_surface_z_m is None:
             start = None
             if _immersion_objective_active():
-                raise MS_zenapi_stage_LM.ImmersionObjectiveActive(
+                raise ImmersionObjectiveActive(
                     "DefiniteFocusTracker: no known surface, and a full-range search "
                     "(start −300 µm) would break the immersion bridge — create the "
                     "tracker with surface_z_m near the expected surface.")
@@ -769,8 +776,8 @@ def move_stage_to_new_xy_position(new_x: float, new_y: float,
     Raises:
         ValueError: A coordinate is outside the safe range, or ``tolerance_m``
             is not correct.
-        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The 50x
-            immersion objective is active. A Z of 0 breaks the water bridge.
+        ImmersionObjectiveActive (a RuntimeError): The 50x immersion
+            objective is active. A Z of 0 breaks the water bridge.
             Thus the function refuses the move, and it never tries the move
             again. Write the target position into a ``.czexp`` file and let ZEN
             run it (DEV_NOTES).
@@ -840,14 +847,14 @@ def _immersion_objective_active() -> bool:
 
     The data comes from the immersion type of the API, or from the known slot.
     """
-    return asyncio.run(MS_zenapi_stage_LM.immersion_objective_active())
+    return asyncio.run(MS_zenapi_objectivechanger.immersion_objective_active())
 
 
 def check_immersion_guard(log: logging.Logger) -> Optional[bool]:
     """Compare the immersion objectives of the API with the known slot.
 
     The guard refuses a move of Z to 0 for each source: the immersion type of
-    the API, and MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION. A difference
+    the API, and MS_zenapi_objectivechanger.IMMERSION_OBJECTIVE_POSITION. A difference
     means that someone changed the turret or the constant. The guard then still
     refuses the move for both sources, but the immersion time limits and the
     tray code can be wrong. This function is read-only. Preflight writes the
@@ -858,7 +865,7 @@ def check_immersion_guard(log: logging.Logger) -> Optional[bool]:
         the function writes a ``log.error``. ``None`` if the function cannot
         read the inventory, and it writes a ``log.error``.
     """
-    slot = MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION
+    slot = MS_zenapi_objectivechanger.IMMERSION_OBJECTIVE_POSITION
     try:
         api = asyncio.run(MS_zenapi_objectivechanger.get_immersion_objective_positions())
     except Exception as e:
@@ -872,7 +879,7 @@ def check_immersion_guard(log: logging.Logger) -> Optional[bool]:
     log.error(f"Immersion guard: the API reports immersion objectives in slots {api}, "
               f"but IMMERSION_OBJECTIVE_POSITION is {slot}. The turret or the constant "
               f"changed. Direct moves are refused for all of these slots; correct "
-              f"MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION before a run.")
+              f"MS_zenapi_objectivechanger.IMMERSION_OBJECTIVE_POSITION before a run.")
     return False
 
 
@@ -910,7 +917,7 @@ def _change_optics(objective_nr: int, optovar_nr: int,
 
         # This is the source that the immersion move guard uses: the type
         # from the API and the known slot.
-        immersion_positions = await MS_zenapi_stage_LM.immersion_objective_positions()
+        immersion_positions = await changer.immersion_objective_positions()
         is_from_immersion = start_objective in immersion_positions
         is_to_immersion = objective_nr in immersion_positions
 
@@ -1219,8 +1226,8 @@ def move_to_container(row_index: int, column_index: int,
 
     Raises:
         ValueError: An index is not an integer, or it is less than 0.
-        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The
-            immersion objective is active. The function moves nothing.
+        ImmersionObjectiveActive (a RuntimeError): The immersion objective
+            is active. The function moves nothing.
     """
     for name, index in (("row_index", row_index), ("column_index", column_index)):
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:

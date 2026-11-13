@@ -255,7 +255,7 @@ The repo root holds the reusable library; example pipelines live under
 | `MS_CD7_API_LoA.py` | Synchronous entry point: wraps the async ZEN gRPC calls and adds checks and guards |
 | `MS_zenapi_focus.py` | DefiniteFocus / FocusService (Z-drive) |
 | `MS_zenapi_swaf.py` | Software autofocus |
-| `MS_zenapi_objectivechanger.py` | Objective and optovar |
+| `MS_zenapi_objectivechanger.py` | Objective and optovar; the immersion guard for moves that lower Z to 0 |
 | `MS_zenapi_stage_LM.py` | XY stage |
 | `MS_zenapi_sample_carrier.py` | Sample-carrier info; container (slide position) moves |
 | `MS_zenapi_live_scan.py` | Tray load / eject and prescan configuration (use the guarded versions in `MS_CD7_API_LoA.py`) |
@@ -266,8 +266,10 @@ The repo root holds the reusable library; example pipelines live under
 | `MS_metadata.py` | Positions and sample carrier from a `.czexp`; carrier check (CZI reading: ia_common) |
 | `MS_image_analysis.py` | Launches external image-analysis scripts; reads back their results |
 | `MS_zen_logs.py` | Facts the API does not give, read from ZEN's log and options files |
-| `MS_zenapi_helpers.py` | Vendored ZEN-API glue: channel setup with call time limits, logging, objective lookups |
-| `zeiss_paths.py` | Path bootstrap and version identities (SmartMic, ZEN, gateway, `zen_api`) |
+| `MS_versions.py` | Version identities for the log and the run record (SmartMic, gateway, `zen_api`, git state) |
+| `MS_logging.py` | The shared logger (standard library only) |
+| `MS_zenapi_helpers.py` | Vendored ZEN-API glue: channel setup with call time limits |
+| `zeiss_paths.py` | Path bootstrap (import first) and the machine paths |
 | `verify_zen_api.py` | Read-only connection check |
 | `projects/smartmic_poc/` | Proof-of-concept pipeline; the reference layout for a project |
 

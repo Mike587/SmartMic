@@ -44,7 +44,8 @@ from grpclib.const import Status
 
 # The single source of the default output folder.
 from MS_run_log import DEFAULT_EXPERIMENT_OUTPUT_FOLDER
-from MS_zenapi_helpers import open_zen_channel, set_logging
+from MS_logging import set_logging
+from MS_zenapi_helpers import open_zen_channel
 from zeiss_paths import CONFIG_PATH as config_path  # config.ini at the repo root
 
 from zen_api.acquisition.v1beta import (

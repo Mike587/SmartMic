@@ -21,14 +21,15 @@
 # helper functions to read and to move the XY stage of a light microscope.
 #################################################################
 
-"""Helper functions for the XY stage (``StageService``), and the immersion guard.
+"""Helper functions for the XY stage (``StageService``).
 
 A direct XY move lowers Z to 0 first, to prevent a collision. On this inverted
 CD7, a Z of 0 breaks the immersion bridge. Thus
 ``move_stage_to_new_xy_position`` RAISES an exception while an immersion
-objective is active. To move the stage in that condition, write the target
-position into a ``.czexp`` file and let ZEN run it (DEV_NOTES "inverted CD7 /
-Z=0 breaks the immersion bridge").
+objective is active. The guard is in ``MS_zenapi_objectivechanger``. To move
+the stage in that condition, write the target position into a ``.czexp`` file
+and let ZEN run it (DEV_NOTES "inverted CD7 / Z=0 breaks the immersion
+bridge").
 """
 
 import asyncio
@@ -36,10 +37,22 @@ import math
 from typing import Any, Dict, List, Optional
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
-from MS_zenapi_helpers import set_logging, open_zen_channel
+from MS_logging import set_logging
+from MS_zenapi_helpers import open_zen_channel
 import MS_limits
 import MS_zenapi_focus
 import MS_zenapi_objectivechanger
+
+# The immersion guard is in MS_zenapi_objectivechanger. These names stay
+# available here for the code that uses them from this module. The constant is
+# a copy. Change it in MS_zenapi_objectivechanger.
+from MS_zenapi_objectivechanger import (  # noqa: F401
+    IMMERSION_OBJECTIVE_POSITION,
+    ImmersionObjectiveActive,
+    immersion_objective_active,
+    immersion_objective_positions,
+    refuse_if_immersion_active,
+)
 
 from zen_api.lm.hardware.v2 import (
     StageServiceStub,
@@ -62,72 +75,10 @@ STAGE_SETTLE_SECONDS = 1.0
 STAGE_TRAVEL_SPEED_PERCENT: float = 100.0
 STAGE_ACCELERATION_PERCENT: float = 100.0
 
-# The slot of the 50x/1.2 W objective on this CD7. This constant does not
-# depend on the immersion_type from the API. The guard refuses a move if the
-# API OR this constant says immersion. Thus a wrong entry in the inventory
-# cannot switch the guard off. preflight reports a difference between the two
-# sources with check_immersion_guard. Do not change the refusal into a move at
-# a "safe" travel Z (DEV_NOTES "inverted CD7 / Z=0 breaks the immersion
-# bridge").
-IMMERSION_OBJECTIVE_POSITION = 4
-
-
-class ImmersionObjectiveActive(RuntimeError):
-    """The code refused a direct move, because the immersion objective is active.
-
-    This exception has its own type. Thus a caller that tries a move again
-    does not try a refusal that the code made on purpose.
-    """
-
 
 def _xy_um(position: Any) -> str:
     """Make the log text of a stage position, in µm."""
     return f"{position.x * 1e6:.2f} - {position.y * 1e6:.2f} [micron]"
-
-
-async def immersion_objective_positions() -> List[int]:
-    """Get the changer positions that the guard counts as immersion, sorted.
-
-    The positions come from the API and from the slot constant.
-    """
-    api = await MS_zenapi_objectivechanger.get_immersion_objective_positions()
-    return sorted(set(api) | {IMMERSION_OBJECTIVE_POSITION})
-
-
-async def _active_immersion_objective() -> Optional[Any]:
-    """Get the active objective if the guard counts it as immersion. If not, ``None``."""
-    objective = await MS_zenapi_objectivechanger.get_active_objective()
-    if (MS_zenapi_objectivechanger.is_immersion_objective(objective)
-            or objective.position == IMMERSION_OBJECTIVE_POSITION):
-        return objective
-    return None
-
-
-async def immersion_objective_active() -> bool:
-    """Return ``True`` if the active objective is an immersion objective.
-
-    The objective is an immersion objective if its immersion type is not AIR,
-    or if it is in slot ``IMMERSION_OBJECTIVE_POSITION``.
-    """
-    return await _active_immersion_objective() is not None
-
-
-async def refuse_if_immersion_active(action: str) -> None:
-    """Raise ``ImmersionObjectiveActive`` if an immersion objective is active.
-
-    This is the guard for each move that lowers Z to 0 first, because a Z of 0
-    breaks the immersion bridge. Run it BEFORE each Z move. *action* gives the
-    name of the move in the message.
-    """
-    objective = await _active_immersion_objective()
-    if objective is not None:
-        raise ImmersionObjectiveActive(
-            f"Refusing direct {action}: the immersion objective '{objective.name}' "
-            f"(changer position {objective.position}) is active. The {action} lowers "
-            f"Z to 0, which breaks the immersion bridge on this inverted CD7. Drive "
-            f"the stage by writing the target XY(Z) into a .czexp and running it via "
-            f"ZEN instead."
-        )
 
 
 async def get_current_xy_stage_coordinates() -> List[float]:
@@ -160,7 +111,7 @@ async def move_stage_to_new_xy_position(x: float, y: float) -> None:
     MS_limits.require_xy_position(x, y)
 
     # The immersion guard must run BEFORE the move of Z to 0 below.
-    await refuse_if_immersion_active("stage move")
+    await MS_zenapi_objectivechanger.refuse_if_immersion_active("stage move")
 
     async with open_zen_channel(config_path) as (channel, metadata):
         stage_service = StageServiceStub(channel=channel, metadata=metadata)

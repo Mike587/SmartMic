@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Unit tests for zeiss_paths version helpers (all logged at preflight).
+"""Unit tests for the version helpers (all logged at preflight).
+
+The helpers are in MS_versions and MS_zen_logs. These tests reach them as
+``zeiss_paths.<name>``, which is where they were before; that also checks the
+compatibility hook of zeiss_paths.
 
 None of ZEN app / ZenApiGateway / zen_api stub version is available over the
 gRPC API, so each is recovered out-of-band. The parsing logic for each is a
@@ -348,14 +352,24 @@ def test_zen_auto_immersion_settings_contract():
 
 
 # --------------------------------------------------------------------------
-# The ZEN log readers moved to MS_zen_logs (2026-11-10). The tests above still
-# reach them as zp.<name>: that is the compatibility hook, checked here.
+# The ZEN log readers moved to MS_zen_logs (2026-11-10), and the version and
+# git readers to MS_versions (2026-11-13). The tests above still reach them as
+# zp.<name>: that is the compatibility hook, checked here.
 # --------------------------------------------------------------------------
 def test_moved_log_readers_resolve_through_zeiss_paths():
     import MS_zen_logs
     assert zp.zen_df_bottom is MS_zen_logs.zen_df_bottom
     assert zp.zen_app_version is MS_zen_logs.zen_app_version
     assert zp._last_df_bottom is MS_zen_logs._last_df_bottom
+
+
+def test_moved_version_readers_resolve_through_zeiss_paths():
+    import MS_versions
+    assert zp.zen_api_version is MS_versions.zen_api_version
+    assert zp.zen_api_gateway_version is MS_versions.zen_api_gateway_version
+    assert zp.smartmic_version is MS_versions.smartmic_version
+    assert zp.git_state is MS_versions.git_state
+    assert zp._zen_api_version_from_dir is MS_versions._zen_api_version_from_dir
 
 
 def test_unknown_attribute_still_raises():

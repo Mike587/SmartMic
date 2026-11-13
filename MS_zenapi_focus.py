@@ -42,7 +42,8 @@ from typing import Optional, Tuple
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 import MS_limits
-from MS_zenapi_helpers import set_logging, open_zen_channel
+from MS_logging import set_logging
+from MS_zenapi_helpers import open_zen_channel
 
 from zen_api.lm.hardware.v2 import (
     FocusServiceGetPositionRequest,

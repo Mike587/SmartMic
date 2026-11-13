@@ -1373,6 +1373,63 @@ used the old API are frozen at tag `freeze-2026-11-11`.
 
 ---
 
+## Module tidy (2026-11-13)
+
+Some functions were in a module that did not agree with their subject. They
+moved. The behaviour did not change. The offline suite passes. None of it is
+tested on the scope yet.
+
+### Where the code is now (old name → new name)
+
+Old entries in this file use the old names. Do not rewrite them; use this table.
+
+| Old | New |
+|-----|-----|
+| `MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION`, `ImmersionObjectiveActive`, `immersion_objective_active`, `immersion_objective_positions`, `refuse_if_immersion_active` | `MS_zenapi_objectivechanger` |
+| `MS_zenapi_helpers.set_logging`, `ensure_utf8_stdout`, `LOGGER_NAME`, `LOG_FORMAT`, `LOG_DATEFMT` | `MS_logging` |
+| `MS_zenapi_helpers.get_objective_by_position`, `get_optovar_by_position`, `get_used_objective_positions`, `get_used_optovar_positions` | `MS_zenapi_objectivechanger` |
+| `zeiss_paths.zen_api_version`, `zen_api_gateway_version`, `smartmic_version`, `git_state` | `MS_versions` |
+
+- **The immersion guard** is about the objective, not about the stage. The
+  stage move, the container move, the DF tracker and the tray eject use it.
+  It is now next to `is_immersion_objective` and
+  `get_immersion_objective_positions`. To change the slot of the immersion
+  objective, change `MS_zenapi_objectivechanger.IMMERSION_OBJECTIVE_POSITION`.
+  `MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION` is a copy: a new value
+  there has no effect on the guard.
+- **`ms.ImmersionObjectiveActive`** is new. It is the same class. A pipeline
+  can catch the refusal without an import of a `MS_zenapi_*` module.
+- **`MS_logging`** uses only the standard library. Before, `MS_metadata` and
+  `MS_run_log` needed `grpclib` only to get the logger.
+- **`MS_versions`** reads its paths from `zeiss_paths` at the time of the
+  call (`THIS_DIR`, `ZEN_API_GATEWAY_EXE`). `zeiss_paths` keeps the path
+  bootstrap and the paths of the machine.
+- **The old names still resolve**, with one exception. `MS_zenapi_stage_LM`
+  and `MS_zenapi_helpers` import the guard names and the logger names again,
+  and `zeiss_paths.<name>` finds the names of `MS_versions` and of
+  `MS_zen_logs`. The exception is the four position lookups: they are not on
+  `MS_zenapi_helpers` now, because `MS_zenapi_objectivechanger` imports that
+  module.
+- **Zeiss headers.** `set_logging` and the lookups come from `zen_api_utils`.
+  Thus `MS_logging.py` has the Zeiss header, and the header of
+  `MS_zenapi_objectivechanger.py` names `zen_api_utils/objective.py` too.
+  `copyright.md` was not on the machine where this was done. [check] Compare
+  the three headers with it.
+
+### Not moved, and why
+
+- **`DEFAULT_EXPERIMENT_OUTPUT_FOLDER` stays in `MS_run_log`.** Its pattern is
+  that of the machine paths in `zeiss_paths`. But `MS_run_log` must import
+  without the Zeiss tree, and an import of `zeiss_paths` changes `sys.path`
+  and can write a warning.
+- **`MS_metadata` keeps its name and its functions.** It reads a `.czexp`
+  file, as `MS_czexp_editor` does. But its carrier dict and
+  `check_sample_carrier` also serve a CZI file (`ia_common`), and each
+  pipeline imports `load_positions_from_czexp` from it.
+- **`MS_CD7_API_LoA` is not split.** See the local `TODO.md`.
+
+---
+
 ## Code review fixes (2026-07-15)
 
 A full-codebase review (8 finder angles, each verified against the actual

@@ -33,7 +33,8 @@ from typing import Any, Dict, List, Optional
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 from grpclib.exceptions import GRPCError
 from MS_metadata import strip_czsht
-from MS_zenapi_helpers import set_logging, open_zen_channel
+from MS_logging import set_logging
+from MS_zenapi_helpers import open_zen_channel
 from zeiss_paths import CONFIG_PATH as config_path  # config.ini at the repo root
 
 from zen_api.lm.live_scan.v1 import (

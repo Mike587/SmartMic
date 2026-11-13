@@ -68,7 +68,9 @@ def _import_all() -> str:
     import MS_image_analysis         # noqa: F401
     import MS_czexp_editor           # noqa: F401
     import MS_zenapi_helpers         # noqa: F401
+    import MS_logging                # noqa: F401
     import MS_limits                 # noqa: F401
+    import MS_versions               # noqa: F401
     import MS_zen_logs               # noqa: F401
     import zen_api                   # noqa: F401
     return "all SmartMic + zen_api modules imported"

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #################################################################
-# Based on    : zen_api_utils/misc.py, zen_api_utils/objective.py
+# Based on    : zen_api_utils/misc.py
 # Author      : SRh, JSm
 # Institution : Carl Zeiss Microscopy GmbH
 #
@@ -18,62 +18,28 @@
 #               ScopeM Imaging Facility (scopem.ethz.ch)
 #################################################################
 
-"""Helper functions copied from ``zen_api_utils``.
+"""The gRPC channel to the ZEN-API gateway, copied from ``zen_api_utils``.
 
-This module gives the logging set-up, the channel set-up, the default RPC time
-limits, and the objective and optovar lookups. It uses only the standard
-library and ``grpclib``. Thus an import of this module does NOT need the Zeiss
-tree.
+This module gives the channel set-up and the default RPC time limits. It uses
+only the standard library and ``grpclib``. Thus an import of this module does
+NOT need the Zeiss tree.
 """
 
 import asyncio
 import configparser
 import functools
-import logging
 import ssl
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, List, Optional, Tuple, Union
 
 from grpclib.client import Channel
 
-# MS_run_log.setup_run_logger uses these names too. Both configure the SAME
-# logger.
-LOGGER_NAME = "smartmic"
-LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(message)s"
-LOG_DATEFMT = "%Y-%m-%dT%H:%M:%S"
-
-
-def ensure_utf8_stdout() -> None:
-    """Try to make ``sys.stdout`` UTF-8, for example to print µ on a cp1252 console.
-
-    The function calls ``reconfigure`` on the stream. It does not make a new
-    ``TextIOWrapper``, because a new wrapper closes the shared buffer when
-    Python releases it.
-    """
-    try:
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-
-
-def set_logging(name: str = LOGGER_NAME) -> logging.Logger:
-    """Get the shared logger of the standard library.
-
-    If the logger has no handler, the function attaches a UTF-8 stdout handler.
-    If ``MS_run_log.setup_run_logger`` set the logger up before, the function
-    returns it with no change. You can call this function more than once.
-    """
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
-    if not logger.handlers:
-        ensure_utf8_stdout()
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
-        logger.addHandler(handler)
-    return logger
+# The logger is in MS_logging. These names stay available here for the code
+# that imports them from this module.
+from MS_logging import (  # noqa: F401
+    LOG_DATEFMT, LOG_FORMAT, LOGGER_NAME, ensure_utf8_stdout, set_logging,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -227,29 +193,3 @@ async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
     finally:
         channel.close()
 
-
-# ---------------------------------------------------------------------------
-# The objective and optovar position lookups, from zen_api_utils.objective
-# ---------------------------------------------------------------------------
-# These functions accept any object that has an ``.objectives`` or
-# ``.optovars`` list whose items have a ``.position``.
-
-
-def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
-    """Get the objective at *position* in a GetObjectives response, or ``None``."""
-    return next((obj for obj in objectives.objectives if obj.position == position), None)
-
-
-def get_optovar_by_position(optovars: Any, position: int) -> Optional[Any]:
-    """Get the optovar at *position* in a GetOptovars response, or ``None``."""
-    return next((opt for opt in optovars.optovars if opt.position == position), None)
-
-
-def get_used_objective_positions(objectives: Any) -> List[int]:
-    """Get the list of all the objective positions that the hardware reports."""
-    return [obj.position for obj in objectives.objectives]
-
-
-def get_used_optovar_positions(optovars: Any) -> List[int]:
-    """Get the list of all the optovar positions that the hardware reports."""
-    return [opt.position for opt in optovars.optovars]

@@ -28,7 +28,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
-from MS_zenapi_helpers import set_logging
+from MS_logging import set_logging
 
 
 class Position(TypedDict):
