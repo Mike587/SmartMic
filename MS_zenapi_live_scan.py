@@ -64,6 +64,12 @@ CONFIG_FIELDS = (
     "material",
 )
 
+# The prescan steps that have a boolean value.
+PRESCAN_FLAGS = tuple(
+    name for name in CONFIG_FIELDS
+    if name not in ("sample_holder_template", "refractive_index", "material")
+)
+
 
 async def get_live_scan_configuration() -> Dict[str, Any]:
     """Get the live-scan configuration of ZEN. This function is read-only.
@@ -87,13 +93,6 @@ async def get_live_scan_configuration() -> Dict[str, Any]:
     return result
 
 
-# The prescan steps that have a boolean value.
-PRESCAN_FLAGS = tuple(
-    f for f in CONFIG_FIELDS
-    if f not in ("sample_holder_template", "refractive_index", "material")
-)
-
-
 def format_live_scan_configuration(cfg: Dict[str, Any],
                                    carrier: Optional[str] = None) -> str:
     """Make one log line from a ``get_live_scan_configuration()`` dict.
@@ -104,8 +103,8 @@ def format_live_scan_configuration(cfg: Dict[str, Any],
     ``.czsht`` suffix. A key that is not in the dict raises no exception.
     """
     template = cfg.get("sample_holder_template")
-    on = [f for f in PRESCAN_FLAGS if cfg.get(f) is True]
-    off = [f for f in PRESCAN_FLAGS if cfg.get(f) is False]
+    on = [flag for flag in PRESCAN_FLAGS if cfg.get(flag) is True]
+    off = [flag for flag in PRESCAN_FLAGS if cfg.get(flag) is False]
     line = (f"Live-scan (tray load) config: template '{template}', "
             f"material {cfg.get('material')}, RI {cfg.get('refractive_index')}  |  "
             f"prescan on: {', '.join(on) or 'none'}  |  off: {', '.join(off) or 'none'}")
@@ -147,14 +146,13 @@ async def _timed_rpc(method: str, request: Any, timeout_s: float) -> List[str]:
     and the notifications to the log.
     """
     logger = set_logging()
-    name = method
-    logger.info(f"LiveScanService.{name}: sent (timeout {timeout_s:.0f} s).")
-    t0 = time.monotonic()
+    logger.info(f"LiveScanService.{method}: sent (timeout {timeout_s:.0f} s).")
+    start = time.monotonic()
     async with open_zen_channel(config_path) as (channel, metadata):
         service = LiveScanServiceStub(channel=channel, metadata=metadata)
         response = await getattr(service, method)(request, timeout=timeout_s)
     notifications = list(response.notifications)
-    logger.info(f"LiveScanService.{name}: returned after {time.monotonic() - t0:.1f} s, "
+    logger.info(f"LiveScanService.{method}: returned after {time.monotonic() - start:.1f} s, "
                 f"notifications: {notifications or 'none'}")
     return notifications
 

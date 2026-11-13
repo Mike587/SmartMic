@@ -142,10 +142,37 @@ def _parse_pair(text: str) -> Tuple[float, float]:
 
 
 def _require(elem: ET.Element, tag: str) -> ET.Element:
+    """Get the child ``<tag>`` of ``elem``, or raise ``ValueError`` if there is none."""
     child = elem.find(tag)
     if child is None:
         raise ValueError(f"<{tag}> not found under <{elem.tag}>")
     return child
+
+
+def _is_deactivated(elem: ET.Element) -> bool:
+    """Return ``True`` only if the ``IsActivated`` attribute of ``elem`` is "false".
+
+    An element that has no such attribute is active.
+    """
+    return (elem.get("IsActivated") or "true").lower() == "false"
+
+
+def _where(path: Optional[PathLike]) -> str:
+    """Make the ``"<path>: "`` prefix of an error message, or ``""`` with no path."""
+    return f"{path}: " if path is not None else ""
+
+
+def _um(value_m: float) -> str:
+    """Change metres into the µm text that the file holds."""
+    return _fmt_float(value_m * 1e6)
+
+
+def _zstack_value(zstack: ET.Element, tag: str) -> ET.Element:
+    """Get the <Value> element of ``<tag><Distance>`` in a <ZStackSetup>.
+
+    ``tag`` is "First", "Last" or "Interval". The value is in metres.
+    """
+    return _require(_require(zstack, tag), "Distance").find("Value")
 
 
 # ---------------------------------------------------------------------------
@@ -211,19 +238,18 @@ def is_stitching_configured(root: ET.Element) -> bool:
     Algorithm child or a FunctionParameters child.
     """
     setup = next(iter(_iter_own(root, "ExperimentRemoteProcessingSetup")), None)
-    if setup is None:
-        return True
-    if (setup.get("IsActivated") or "true").lower() == "false":
+    if setup is None or _is_deactivated(setup):
         return True
     steps = list(setup.iter("ProcessingStep"))
     if not steps:
         return True
-    for s in steps:
-        if (s.get("Id") or "NULL") != "NULL":
-            return True
-        if s.find("Algorithm") is not None or s.find("FunctionParameters") is not None:
-            return True
-    return False
+
+    def has_content(step: ET.Element) -> bool:
+        return ((step.get("Id") or "NULL") != "NULL"
+                or step.find("Algorithm") is not None
+                or step.find("FunctionParameters") is not None)
+
+    return any(has_content(step) for step in steps)
 
 
 def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
@@ -237,14 +263,14 @@ def get_focus_strategy(root: ET.Element) -> Optional[Dict[str, str]]:
     do this check before you run a file that sets Z itself.
     """
     setup = next(iter(_iter_own(root, "FocusSetup")), None)
-    if setup is None or (setup.get("IsActivated") or "true").lower() == "false":
+    if setup is None or _is_deactivated(setup):
         return None
-    fs = setup.find("FocusStrategy")
-    if fs is None or (fs.get("IsActivated") or "true").lower() == "false":
+    strategy = setup.find("FocusStrategy")
+    if strategy is None or _is_deactivated(strategy):
         return None
-    fields = {tag: (fs.findtext(tag) or "").strip()
+    fields = {tag: (strategy.findtext(tag) or "").strip()
               for tag in ("Method", "SearchAction", "SurfaceMode")}
-    if all(v in FOCUS_OFF_VALUES for v in fields.values()):
+    if all(value in FOCUS_OFF_VALUES for value in fields.values()):
         return None
     return {"method": fields["Method"],
             "search_action": fields["SearchAction"],
@@ -276,11 +302,10 @@ def require_no_focus_search(root: ET.Element, path: Optional[PathLike] = None,
     """
     strategy = get_focus_strategy(root)
     if strategy is not None and strategy["search_action"] not in FOCUS_OFF_VALUES:
-        where = f"{path}: " if path is not None else ""
+        because = f" ({reason})" if reason else ""
         raise ValueError(
-            f"{where}the focus strategy runs a focus search {strategy}; this run sets Z "
-            f"itself" + (f" ({reason})" if reason else "")
-            + " — remove the search in ZEN and re-save.")
+            f"{_where(path)}the focus strategy runs a focus search {strategy}; this run "
+            f"sets Z itself{because} — remove the search in ZEN and re-save.")
     return strategy
 
 
@@ -308,9 +333,8 @@ def require_runnable_tiles(root: ET.Element, path: Optional[PathLike] = None) ->
         return
     if find_stitch_regions(root) or find_tile_regions(root):
         return
-    where = f"{path}: " if path is not None else ""
     raise ValueError(
-        f"{where}Tiles is switched on but there is no tile region — ZEN refuses to start "
+        f"{_where(path)}Tiles is switched on but there is no tile region — ZEN refuses to start "
         f"it (\"Failed to start experiment\"). Switch Tiles off in ZEN (the experiment "
         f"then acquires at the stage position) or add a region, and re-save.")
 
@@ -332,8 +356,7 @@ def get_lsm_pixel_size_um(root: ET.Element) -> float:
 
 def get_zstack_interval_m(root: ET.Element) -> float:
     """Get the current z-stack interval, which is the step, in metres."""
-    zs = find_zstack_setup(root)
-    return float(_require(_require(zs, "Interval"), "Distance").find("Value").text)
+    return float(_zstack_value(find_zstack_setup(root), "Interval").text)
 
 
 def get_focus_z_stack_mode(root: ET.Element) -> Optional[str]:
@@ -378,9 +401,8 @@ def require_focus_z_stack_mode(root: ET.Element, expected: str,
                          f"got {expected!r}")
     found = get_focus_z_stack_mode(root)
     if found != expected:
-        where = f"{path}: " if path is not None else ""
         raise ValueError(
-            f"{where}FocusZStackMode is {found!r}, expected {expected!r} "
+            f"{_where(path)}FocusZStackMode is {found!r}, expected {expected!r} "
             f"({FOCUS_Z_STACK_MODES[expected]} z-stack First/Last). It decides "
             f"whether ZEN reads First/Last as offsets (CurrentZ) or absolute Z "
             f"(FixedZ) — change it in ZEN and re-save, or write the other kind of range.")
@@ -409,15 +431,15 @@ def _used_stitch_regions(root: ET.Element) -> List[Tuple[str, ET.Element]]:
             Name.
     """
     used = {}
-    for tr in find_stitch_regions(root):
-        if (tr.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
+    for region in find_stitch_regions(root):
+        if (region.findtext("IsUsedForAcquisition") or "true").strip().lower() != "true":
             continue
-        name = tr.get("Name")
+        name = region.get("Name")
         if not name:
             raise ValueError("<TileRegion> without a Name attribute")
         if name in used:
             raise ValueError(f"two used <TileRegion>s are named {name!r}")
-        used[name] = tr
+        used[name] = region
     return list(used.items())
 
 
@@ -433,8 +455,8 @@ def get_tile_region_centers(root: ET.Element) -> Dict[str, Tuple[float, float]]:
             regions in use have the same Name.
     """
     centers = {}
-    for name, tr in _used_stitch_regions(root):
-        x_um, y_um = _parse_pair(_require(tr, "CenterPosition").text)
+    for name, region in _used_stitch_regions(root):
+        x_um, y_um = _parse_pair(_require(region, "CenterPosition").text)
         centers[name] = (x_um * 1e-6, y_um * 1e-6)
     return centers
 
@@ -455,8 +477,8 @@ def get_tile_region_shape_ids(root: ET.Element) -> Dict[str, Optional[str]]:
             Name.
     """
     ids: Dict[str, Optional[str]] = {}
-    for name, tr in _used_stitch_regions(root):
-        text = tr.findtext("TemplateShapeId")
+    for name, region in _used_stitch_regions(root):
+        text = region.findtext("TemplateShapeId")
         ids[name] = text.strip() if text and text.strip() else None
     return ids
 
@@ -464,27 +486,23 @@ def get_tile_region_shape_ids(root: ET.Element) -> Dict[str, Optional[str]]:
 def summarize(root: ET.Element) -> Dict[str, Any]:
     """Get a dict of the current values that this module can change, for the log."""
     det = find_lsm_detector(root)
-    zs = find_zstack_setup(root)
-    regions = find_tile_regions(root)
-
-    def zval(tag: str) -> float:
-        return float(_require(_require(zs, tag), "Distance").find("Value").text)
+    zstack = find_zstack_setup(root)
 
     return {
         "regions": [
             {
-                "name": r.get("Name"),
-                "x_um": float(_require(r, "X").text),
-                "y_um": float(_require(r, "Y").text),
-                "z": float(_require(r, "Z").text),
+                "name": region.get("Name"),
+                "x_um": float(_require(region, "X").text),
+                "y_um": float(_require(region, "Y").text),
+                "z": float(_require(region, "Z").text),
             }
-            for r in regions
+            for region in find_tile_regions(root)
         ],
         "focus_z_stack_mode": get_focus_z_stack_mode(root),
         "zstack_center_mode": is_zstack_center_mode(root),
-        "zstack_first_m": zval("First"),
-        "zstack_last_m": zval("Last"),
-        "zstack_interval_m": zval("Interval"),
+        "zstack_first_m": float(_zstack_value(zstack, "First").text),
+        "zstack_last_m": float(_zstack_value(zstack, "Last").text),
+        "zstack_interval_m": float(_zstack_value(zstack, "Interval").text),
         "zoom": _parse_pair(_require(det, "Zoom").text),
         "frame_size": _parse_pair(_require(det, "FrameSize").text),
         "sampling": float(_require(det, "Sampling").text),
@@ -530,11 +548,11 @@ def set_position(root: ET.Element, x_m: float, y_m: float, z_m: Optional[float] 
     regions = find_tile_regions(root)
     if not regions:
         raise ValueError("no SingleTileRegion to set position on")
-    r = regions[region_index]
-    _require(r, "X").text = _fmt_float(x_m * 1e6)
-    _require(r, "Y").text = _fmt_float(y_m * 1e6)
+    region = regions[region_index]
+    _require(region, "X").text = _um(x_m)
+    _require(region, "Y").text = _um(y_m)
     if z_m is not None:
-        _require(r, "Z").text = _fmt_float(z_m * 1e6)
+        _require(region, "Z").text = _um(z_m)
     return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
 
 
@@ -565,14 +583,14 @@ def add_single_tile_region(root: ET.Element, x_m: float, y_m: float,
     containers = _iter_own(root, "SingleTileRegions")
     if not containers:
         raise ValueError("no <SingleTileRegions> container to add a region to")
-    st = ET.SubElement(containers[0], "SingleTileRegion")
-    st.set("Name", name)
-    st.set("Id", str(region_id))
-    ET.SubElement(st, "X").text = _fmt_float(x_m * 1e6)
-    ET.SubElement(st, "Y").text = _fmt_float(y_m * 1e6)
-    ET.SubElement(st, "Z").text = _fmt_float((z_m if z_m is not None else 0.0) * 1e6)
-    ET.SubElement(st, "IsUsedForAcquisition").text = "true"
-    ET.SubElement(st, "AdditionalValues")
+    region = ET.SubElement(containers[0], "SingleTileRegion")
+    region.set("Name", name)
+    region.set("Id", str(region_id))
+    ET.SubElement(region, "X").text = _um(x_m)
+    ET.SubElement(region, "Y").text = _um(y_m)
+    ET.SubElement(region, "Z").text = _um(z_m if z_m is not None else 0.0)
+    ET.SubElement(region, "IsUsedForAcquisition").text = "true"
+    ET.SubElement(region, "AdditionalValues")
     return x_m * 1e6, y_m * 1e6, (z_m * 1e6 if z_m is not None else None)
 
 
@@ -595,12 +613,13 @@ def set_tile_region_center(root: ET.Element, x_m: float, y_m: float,
     regions = find_stitch_regions(root)
     if not regions:
         raise ValueError("no TileRegion (stitch region) to set centre on")
-    r = regions[region_index]
-    center = _require(r, "CenterPosition")
-    z_el = _require(r, "Z") if z_m is not None else None
-    center.text = f"{_fmt_float(x_m * 1e6)},{_fmt_float(y_m * 1e6)}"
-    if z_el is not None:
-        z_el.text = _fmt_float(z_m * 1e6)
+    region = regions[region_index]
+    # Find both elements before the first write. Thus an error writes nothing.
+    center = _require(region, "CenterPosition")
+    z_elem = _require(region, "Z") if z_m is not None else None
+    center.text = f"{_um(x_m)},{_um(y_m)}"
+    if z_elem is not None:
+        z_elem.text = _um(z_m)
     return x_m * 1e6, y_m * 1e6
 
 
@@ -688,15 +707,11 @@ def set_zstack_range(root: ET.Element, first_m: float, last_m: float,
     """
     if expect_mode is not None:
         require_focus_z_stack_mode(root, expect_mode)
-    zs = find_zstack_setup(root)
-
-    def set_val(tag: str, value_m: float) -> None:
-        _require(_require(zs, tag), "Distance").find("Value").text = _fmt_float(value_m)
-
-    set_val("First", first_m)
-    set_val("Last", last_m)
+    zstack = find_zstack_setup(root)
+    _zstack_value(zstack, "First").text = _fmt_float(first_m)
+    _zstack_value(zstack, "Last").text = _fmt_float(last_m)
     if interval_m is not None:
-        set_val("Interval", interval_m)
+        _zstack_value(zstack, "Interval").text = _fmt_float(interval_m)
     return first_m, last_m
 
 
@@ -764,30 +779,28 @@ def fit_lsm_crop(root: ET.Element, target_fov_um: float,
     # the mode only if the caller gives a frame size.
     sampling_mode = None
     if frame_size_override is not None:
-        sm = det.find("SamplingMode")
-        if sm is not None:
-            sm.text = "User"
+        mode = det.find("SamplingMode")
+        if mode is not None:
+            mode.text = "User"
             sampling_mode = "User"
 
     # The field-of-view fields in µm that ZEN calculates. Put them at the
     # centre of the maximum field, which does not depend on the zoom.
-    rect_off = (scaled_max_x - target_fov_um) / 2.0
-    _require(det, "ScaledImageRectangleSize").text = (
-        f"{_fmt_float(target_fov_um)},{_fmt_float(target_fov_um)}")
+    fov = _fmt_float(target_fov_um)
+    rect_offset = _fmt_float((scaled_max_x - target_fov_um) / 2.0)
+    _require(det, "ScaledImageRectangleSize").text = f"{fov},{fov}"
     rect = det.find("ScaledImageRectangle")
     if rect is not None:
-        rect.text = (f"{_fmt_float(rect_off)},{_fmt_float(rect_off)},"
-                     f"{_fmt_float(target_fov_um)},{_fmt_float(target_fov_um)}")
+        rect.text = f"{rect_offset},{rect_offset},{fov},{fov}"
 
     # Frame and ImageFrame are the scan area in pixels, at the centre of the
     # full field, which is ScaledMaxImageSize divided by pixel_um. These
     # values are the same as the values of ZEN.
-    frame_off = (scaled_max_x / pixel_um - new_frame) / 2.0
+    frame_offset = _fmt_float((scaled_max_x / pixel_um - new_frame) / 2.0)
     for tag in ("Frame", "ImageFrame"):
-        el = det.find(tag)
-        if el is not None:
-            el.text = (f"{_fmt_float(frame_off)},{_fmt_float(frame_off)},"
-                       f"{new_frame},{new_frame}")
+        frame = det.find(tag)
+        if frame is not None:
+            frame.text = f"{frame_offset},{frame_offset},{new_frame},{new_frame}"
 
     return {
         "base_pixel_um": base_pixel_um,
@@ -813,13 +826,13 @@ def set_run_mode_lock(root: ET.Element) -> Optional[str]:
     Returns:
         The new RunMode text, or ``None`` if the file has no <RunMode>.
     """
-    rm = root.find("RunMode")
-    if rm is None or not rm.text:
+    run_mode = root.find("RunMode")
+    if run_mode is None or not run_mode.text:
         return None
     drop = {"OptimizeBeforePerformEnabled", "ValidateAndAdaptBeforePerformEnabled"}
-    keep = [f.strip() for f in rm.text.split(",") if f.strip() and f.strip() not in drop]
-    rm.text = ",".join(keep)
-    return rm.text
+    flags = (flag.strip() for flag in run_mode.text.split(","))
+    run_mode.text = ",".join(flag for flag in flags if flag and flag not in drop)
+    return run_mode.text
 
 
 def set_lsm_scan_speed_max(root: ET.Element) -> bool:
@@ -828,12 +841,11 @@ def set_lsm_scan_speed_max(root: ET.Element) -> bool:
     Returns:
         ``True``, or ``False`` if the file has no IsMaxScanSpeedSet.
     """
-    det = find_lsm_detector(root)
-    el = det.find("IsMaxScanSpeedSet")
-    if el is not None:
-        el.text = "true"
-        return True
-    return False
+    flag = find_lsm_detector(root).find("IsMaxScanSpeedSet")
+    if flag is None:
+        return False
+    flag.text = "true"
+    return True
 
 
 def set_lsm_sampling_mode_user(root: ET.Element) -> Optional[str]:
@@ -846,12 +858,12 @@ def set_lsm_sampling_mode_user(root: ET.Element) -> Optional[str]:
         has no SamplingMode.
     """
     det = find_lsm_detector(root)
-    sm = det.find("SamplingMode")
-    if sm is None:
+    mode = det.find("SamplingMode")
+    if mode is None:
         return None
-    sm.text = "User"
-    fr = det.find("FrameSize")
-    return fr.text if fr is not None else "User"
+    mode.text = "User"
+    frame_size = det.find("FrameSize")
+    return frame_size.text if frame_size is not None else "User"
 
 
 # ---------------------------------------------------------------------------
@@ -918,17 +930,16 @@ def fit_lsm_stack_to_box(base_path: PathLike, out_path: PathLike, center_m: XYZ,
     tree, root = load_czexp(base_path)
     require_runnable_tiles(root, base_path)
     if forbid_focus_search:
-        require_no_focus_search(root, base_path,
-                                reason=forbid_focus_search if isinstance(forbid_focus_search, str)
-                                else None)
+        reason = forbid_focus_search if isinstance(forbid_focus_search, str) else None
+        require_no_focus_search(root, base_path, reason=reason)
     require_focus_z_stack_mode(root, expect_mode, base_path)
 
     regions = find_tile_regions(root)
     if regions:
-        r = regions[0]
-        _require(r, "X").text = _fmt_float(cx * 1e6)
-        _require(r, "Y").text = _fmt_float(cy * 1e6)
-        _require(r, "Z").text = _fmt_float(cz * 1e6)
+        region = regions[0]
+        _require(region, "X").text = _um(cx)
+        _require(region, "Y").text = _um(cy)
+        _require(region, "Z").text = _um(cz)
 
     half_z = sz / 2.0 + z_margin_m
     if expect_mode == "CurrentZ":                  # Offsets from the focus.

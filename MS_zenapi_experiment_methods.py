@@ -83,7 +83,7 @@ async def _get_default_image_folder(exp_service: ExperimentServiceStub,
         ExperimentServiceGetImageOutputPathRequest()
     )
     default_image_folder = Path(save_path.image_output_path)
-    logger.info("Default Saving Location for CZI Images:" + str(default_image_folder))
+    logger.info(f"Default Saving Location for CZI Images:{default_image_folder}")
     return default_image_folder
 
 
@@ -98,7 +98,7 @@ def _resolve_image_folder(custom_image_folder: Union[str, Path, None],
     else:
         image_folder = DEFAULT_EXPERIMENT_OUTPUT_FOLDER
     image_folder.mkdir(parents=True, exist_ok=True)
-    logger.info("Custom Saving Location for CZI Images:" + str(image_folder))
+    logger.info(f"Custom Saving Location for CZI Images:{image_folder}")
     return image_folder
 
 
@@ -135,20 +135,20 @@ def _make_czi_basename(custom_filename: Optional[str]) -> str:
     The name is *custom_filename*, or a name that contains a UUID.
     """
     if custom_filename is not None:
-        return custom_filename[:-4] if custom_filename.endswith(".czi") else custom_filename
+        return custom_filename.removesuffix(".czi")
     return f"zenapi_{str(uuid.uuid4())[:8]}"
 
 
 def _unique_czi_name(image_folder: Path, czi_name: str, logger: logging.Logger) -> str:
     """Add a counter to the name, so the code never writes over a result file."""
-    base_czi_name = czi_name
+    unique_name = czi_name
     counter = 1
-    while (image_folder / (czi_name + ".czi")).exists():
-        czi_name = f"{base_czi_name}_{counter:06d}"
+    while (image_folder / f"{unique_name}.czi").exists():
+        unique_name = f"{czi_name}_{counter:06d}"
         counter += 1
-    if czi_name != base_czi_name:
-        logger.info(f"File {base_czi_name}.czi already exists. Using {czi_name}.czi instead.")
-    return czi_name
+    if unique_name != czi_name:
+        logger.info(f"File {czi_name}.czi already exists. Using {unique_name}.czi instead.")
+    return unique_name
 
 
 def _move_result_and_cleanup(exp_result: Any, default_image_folder: Path,
@@ -160,33 +160,32 @@ def _move_result_and_cleanup(exp_result: Any, default_image_folder: Path,
     Returns:
         The final path of the result.
     """
-    exp_default_path = default_image_folder / (exp_result.output_name + ".czi")
-    exp_custom_path = image_folder / (exp_result.output_name + ".czi")
+    czi_file = f"{exp_result.output_name}.czi"
+    source = default_image_folder / czi_file
+    target = image_folder / czi_file
     # Resolve the paths before the comparison, so the code never renames a
     # file onto itself.
-    if exp_default_path.resolve() != exp_custom_path.resolve() and exp_default_path.exists():
+    if source.resolve() != target.resolve() and source.exists():
         # Use shutil.move, not rename. A move can cross drives (WinError 17).
-        shutil.move(str(exp_default_path), str(exp_custom_path))
-        logger.info(f"Moved experiment result from {exp_default_path} to {exp_custom_path}")
-        result_path = exp_custom_path
+        shutil.move(str(source), str(target))
+        logger.info(f"Moved experiment result from {source} to {target}")
+        result_path = target
     else:
-        result_path = exp_default_path
-    logger.info("Final Experiment Location: " + str(result_path))
+        result_path = source
+    logger.info(f"Final Experiment Location: {result_path}")
 
     # Delete each .czi file that stays in the default folder of ZEN. NEVER
     # delete the result itself.
     result_resolved = result_path.resolve()
-    temp_files_after = [
-        f for f in default_image_folder.glob("*.czi")
-        if f.resolve() != result_resolved
-    ]
-    for temp_file in temp_files_after:
+    leftovers = [f for f in default_image_folder.glob("*.czi")
+                 if f.resolve() != result_resolved]
+    for leftover in leftovers:
         try:
-            temp_file.unlink()
-            logger.info(f"Cleaned up temp file: {temp_file}")
+            leftover.unlink()
+            logger.info(f"Cleaned up temp file: {leftover}")
         except Exception as e:
-            logger.warning(f"Could not delete temp file {temp_file}: {e}")
-    logger.info(f"Cleaned up {len(temp_files_after)} files from default temp folder.")
+            logger.warning(f"Could not delete temp file {leftover}: {e}")
+    logger.info(f"Cleaned up {len(leftovers)} files from default temp folder.")
     return result_path
 
 
@@ -263,10 +262,10 @@ async def run_experiment_from_path(
         czi_name = _make_czi_basename(custom_filename)
 
         load_arg = str(czexp_path.with_suffix(""))
-        logger.info("Loading Experiment from path: " + load_arg)
+        logger.info(f"Loading Experiment from path: {load_arg}")
         loaded = await exp_service.load(ExperimentServiceLoadRequest(experiment_name=load_arg))
         experiment_id = loaded.experiment_id
-        logger.info("Experiment reference id: " + experiment_id)
+        logger.info(f"Experiment reference id: {experiment_id}")
 
         result_path = await _run_experiment_and_collect(
             exp_service, experiment_id, default_image_folder, image_folder, czi_name, logger,
@@ -293,29 +292,29 @@ async def get_running_experiment_status() -> Optional[Dict[str, Any]]:
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
-        svc = ExperimentServiceStub(channel=channel, metadata=metadata)
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
 
         try:
-            resp = await svc.get_status(ExperimentServiceGetStatusRequest())
+            response = await exp_service.get_status(ExperimentServiceGetStatusRequest())
         except GRPCError as e:
             if e.status == Status.FAILED_PRECONDITION:
                 logger.info("Experiment status: no experiment running (idle).")
                 return None
             raise
 
-        s = resp.status
+        status = response.status
         logger.info(
-            f"Experiment status: experiment_running={s.is_experiment_running} "
-            f"acquisition_running={s.is_acquisition_running} "
-            f"images={s.images_acquired_index}/{s.images_count}"
+            f"Experiment status: experiment_running={status.is_experiment_running} "
+            f"acquisition_running={status.is_acquisition_running} "
+            f"images={status.images_acquired_index}/{status.images_count}"
         )
         return {
-            "is_experiment_running": s.is_experiment_running,
-            "is_acquisition_running": s.is_acquisition_running,
-            "images_acquired_index": s.images_acquired_index,
-            "images_count": s.images_count,
-            "scenes_index": s.scenes_index,
-            "scenes_count": s.scenes_count,
+            "is_experiment_running": status.is_experiment_running,
+            "is_acquisition_running": status.is_acquisition_running,
+            "images_acquired_index": status.images_acquired_index,
+            "images_count": status.images_count,
+            "scenes_index": status.scenes_index,
+            "scenes_count": status.scenes_count,
         }
 
 
@@ -342,9 +341,9 @@ async def stop_running_experiment() -> bool:
 
     experiment_id = _last_started_experiment_id or ""
     async with open_zen_channel(config_path) as (channel, metadata):
-        svc = ExperimentServiceStub(channel=channel, metadata=metadata)
+        exp_service = ExperimentServiceStub(channel=channel, metadata=metadata)
         logger.warning(f"Stop experiment: sending Stop "
                        f"(experiment id: {experiment_id or 'none - the active one'}).")
-        await svc.stop(ExperimentServiceStopRequest(experiment_id=experiment_id))
+        await exp_service.stop(ExperimentServiceStopRequest(experiment_id=experiment_id))
     logger.warning("Stop experiment: ZEN accepted the stop request.")
     return True

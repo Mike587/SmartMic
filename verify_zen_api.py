@@ -46,6 +46,7 @@ _ok = True
 
 
 def check(label: str, fn: Callable[[], Any]) -> None:
+    """Run ``fn`` and print PASS with its result, or FAIL with its exception."""
     global _ok
     try:
         result = fn()

@@ -80,6 +80,11 @@ class ImmersionObjectiveActive(RuntimeError):
     """
 
 
+def _xy_um(position: Any) -> str:
+    """Make the log text of a stage position, in µm."""
+    return f"{position.x * 1e6:.2f} - {position.y * 1e6:.2f} [micron]"
+
+
 async def immersion_objective_positions() -> List[int]:
     """Get the changer positions that the guard counts as immersion, sorted.
 
@@ -117,12 +122,11 @@ async def refuse_if_immersion_active(action: str) -> None:
     objective = await _active_immersion_objective()
     if objective is not None:
         raise ImmersionObjectiveActive(
-            f"Refusing direct {action}: the immersion objective "
-            f"'{objective.name}' (changer position {objective.position}) is "
-            f"active. The {action} "
-            f"lowers Z to 0, which breaks the immersion bridge on this inverted "
-            f"CD7. Drive the stage by writing the target XY(Z) into a .czexp and "
-            f"running it via ZEN instead."
+            f"Refusing direct {action}: the immersion objective '{objective.name}' "
+            f"(changer position {objective.position}) is active. The {action} lowers "
+            f"Z to 0, which breaks the immersion bridge on this inverted CD7. Drive "
+            f"the stage by writing the target XY(Z) into a .czexp and running it via "
+            f"ZEN instead."
         )
 
 
@@ -131,12 +135,12 @@ async def get_current_xy_stage_coordinates() -> List[float]:
     logger = set_logging()
 
     async with open_zen_channel(config_path) as (channel, metadata):
-        simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
+        stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
-        posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-        logger.info(f"Stage XY position: {posXY.x * 1e6:.2f} - {posXY.y * 1e6:.2f} [micron]")
+        position = await stage_service.get_position(StageServiceGetPositionRequest())
+        logger.info(f"Stage XY position: {_xy_um(position)}")
 
-        return [posXY.x, posXY.y]
+        return [position.x, position.y]
 
 
 async def move_stage_to_new_xy_position(x: float, y: float) -> None:
@@ -159,26 +163,19 @@ async def move_stage_to_new_xy_position(x: float, y: float) -> None:
     await refuse_if_immersion_active("stage move")
 
     async with open_zen_channel(config_path) as (channel, metadata):
-        simple_stage_service = StageServiceStub(channel=channel, metadata=metadata)
+        stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
         # Move Z to 0 before the lateral move, to prevent a collision.
         # Z stays at 0.
-        new_z = 0
-        await MS_zenapi_focus.move_focus_to_new_z_position(new_z)
+        await MS_zenapi_focus.move_focus_to_new_z_position(0)
 
-        posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-        logger.info(
-            f"Stage XY position before the move: "
-            f"{posXY.x * 1e6:.2f} - {posXY.y * 1e6:.2f} [micron]"
-        )
+        before = await stage_service.get_position(StageServiceGetPositionRequest())
+        logger.info(f"Stage XY position before the move: {_xy_um(before)}")
 
-        await simple_stage_service.move_to(StageServiceMoveToRequest(x=x, y=y))
+        await stage_service.move_to(StageServiceMoveToRequest(x=x, y=y))
 
-        new_posXY = await simple_stage_service.get_position(StageServiceGetPositionRequest())
-        logger.info(
-            f"Stage XY position after the move: "
-            f"{new_posXY.x * 1e6:.2f} - {new_posXY.y * 1e6:.2f} [micron]"
-        )
+        after = await stage_service.get_position(StageServiceGetPositionRequest())
+        logger.info(f"Stage XY position after the move: {_xy_um(after)}")
 
         logger.info(f"Waiting for {STAGE_SETTLE_SECONDS} seconds...")
         await asyncio.sleep(STAGE_SETTLE_SECONDS)
@@ -215,8 +212,9 @@ async def set_stage_motion(speed_percent: Optional[float] = None,
     """
     logger = set_logging()
     speed = STAGE_TRAVEL_SPEED_PERCENT if speed_percent is None else speed_percent
-    accel = STAGE_ACCELERATION_PERCENT if acceleration_percent is None else acceleration_percent
-    for name, value in (("speed_percent", speed), ("acceleration_percent", accel)):
+    acceleration = (STAGE_ACCELERATION_PERCENT if acceleration_percent is None
+                    else acceleration_percent)
+    for name, value in (("speed_percent", speed), ("acceleration_percent", acceleration)):
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isfinite(value) or not 0 <= value <= 100):
             raise ValueError(f"{name} must be a finite number in [0, 100], got {value!r}")
@@ -225,19 +223,18 @@ async def set_stage_motion(speed_percent: Optional[float] = None,
         stage_service = StageServiceStub(channel=channel, metadata=metadata)
 
         # The acceleration must succeed. Let a failure go to the caller.
-        await stage_service.set_acceleration(
-            StageServiceSetAccelerationRequest(acceleration_x=accel, acceleration_y=accel)
-        )
-        ac = await stage_service.get_acceleration(StageServiceGetAccelerationRequest())
+        await stage_service.set_acceleration(StageServiceSetAccelerationRequest(
+            acceleration_x=acceleration, acceleration_y=acceleration))
+        acceleration_readback = await stage_service.get_acceleration(
+            StageServiceGetAccelerationRequest())
 
         # This gateway refuses the speed. Continue without it.
-        sp_x = sp_y = None
+        speed_x = speed_y = None
         try:
             await stage_service.set_speed(
-                StageServiceSetSpeedRequest(speed_x=speed, speed_y=speed)
-            )
-            sp = await stage_service.get_speed(StageServiceGetSpeedRequest())
-            sp_x, sp_y = sp.x, sp.y
+                StageServiceSetSpeedRequest(speed_x=speed, speed_y=speed))
+            speed_readback = await stage_service.get_speed(StageServiceGetSpeedRequest())
+            speed_x, speed_y = speed_readback.x, speed_readback.y
         except Exception as e:
             logger.warning(
                 f"Stage speed not supported by this device/gateway ({e}); "
@@ -247,10 +244,12 @@ async def set_stage_motion(speed_percent: Optional[float] = None,
         # Write the read-back to the log. ZEN or a tile scan can write over
         # these values.
         logger.info(
-            f"Stage motion set: speed=({sp_x}, {sp_y})%  "
-            f"acceleration=({ac.x}, {ac.y})%"
+            f"Stage motion set: speed=({speed_x}, {speed_y})%  "
+            f"acceleration=({acceleration_readback.x}, {acceleration_readback.y})%"
         )
         return {
-            "speed_x": sp_x, "speed_y": sp_y,
-            "acceleration_x": ac.x, "acceleration_y": ac.y,
+            "speed_x": speed_x,
+            "speed_y": speed_y,
+            "acceleration_x": acceleration_readback.x,
+            "acceleration_y": acceleration_readback.y,
         }

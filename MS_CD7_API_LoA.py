@@ -127,8 +127,23 @@ import MS_run_log
 import MS_zen_logs
 from MS_zenapi_helpers import set_logging
 
+# These names come from MS_limits. Change a limit in that module.
+from MS_limits import (  # noqa: F401
+    OBJECTIVE_MIN, OBJECTIVE_MAX, OPTOVAR_MIN, OPTOVAR_MAX,
+    Z_POSITION_MIN, Z_POSITION_MAX,
+    X_STAGE_MIN, X_STAGE_MAX, Y_STAGE_MIN, Y_STAGE_MAX,
+    validate_objective_number, validate_optovar_number,
+    validate_z_position, validate_xy_position,
+)
+from MS_limits import validate_range as _validate_range  # noqa: F401
+from MS_limits import require_valid as _require_valid
 
-# The configuration constants.
+
+# ---------------------------------------------------------------------------
+# The configuration constants
+# ---------------------------------------------------------------------------
+
+# The objective change, in _change_optics.
 IMMERSION_OBJECTIVE_TIMEOUT = 120.0  # s. The minimum limit for an immersion objective.
 IMMERSION_RETRY_DELAY = 10.0         # s. The wait after a move from immersion.
 OBJECTIVE_CHANGE_RETRY_DELAY = 5.0   # s. The wait between two retries.
@@ -142,6 +157,10 @@ OPTICS_SETTLE_S = 5.0
 OPTICS_VERIFY_TIMEOUT_S = 60.0   # Stop if the read-back does not become stable.
 OPTICS_VERIFY_POLL_S = 2.0
 
+# The dry 5x/0.35 objective. Change to it before an eject from the 50x
+# immersion objective.
+EJECT_DRY_OBJECTIVE = 2
+
 # For a move that has a tolerance_m, this is the wait before the one retry of
 # a move that failed.
 MOVE_RETRY_DELAY_S = 1.0
@@ -150,19 +169,21 @@ MOVE_RETRY_DELAY_S = 1.0
 DF_APPROACH_MARGIN_M = 100e-6       # A search starts this far below the last surface.
 DF_MAX_CONSECUTIVE_FAILURES = 5     # This many failures in sequence is a hardware fault.
 
-# These names come from MS_limits. Change a limit in that module.
-from MS_limits import (  # noqa: E402,F401
-    OBJECTIVE_MIN, OBJECTIVE_MAX, OPTOVAR_MIN, OPTOVAR_MAX,
-    Z_POSITION_MIN, Z_POSITION_MAX,
-    X_STAGE_MIN, X_STAGE_MAX, Y_STAGE_MIN, Y_STAGE_MAX,
-    validate_objective_number, validate_optovar_number,
-    validate_z_position, validate_xy_position,
-)
-from MS_limits import validate_range as _validate_range  # noqa: E402,F401
-from MS_limits import require_valid as _require_valid    # noqa: E402
+# Two thicknesses in µm that are nearer to each other than this value are
+# equal. The API and the DF log round the value in different ways.
+CARRIER_THICKNESS_TOL_UM = 0.5
+
+# After a tray load, wait until DF has a stable bottom thickness that is more
+# than 0.
+LOAD_SETTLE_TIMEOUT_S = 60.0
+LOAD_SETTLE_POLL_S = 1.0
 
 DEFAULT_EXPERIMENT_OUTPUT_FOLDER = MS_run_log.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
 
+
+# ---------------------------------------------------------------------------
+# The types and the exceptions
+# ---------------------------------------------------------------------------
 
 class CarrierBottom(TypedDict):
     """The bottom of the active sample carrier. See ``carrier_bottom``."""
@@ -170,6 +191,339 @@ class CarrierBottom(TypedDict):
     material: str
     thickness_um: float
     refractive_index: NotRequired[float]   # The DF log event does not hold this.
+
+
+class FocusSearchFailed(RuntimeError):
+    """One focus search found no focus.
+
+    The search is a DF FindSurface, a DF RecallFocus or a SWAF.
+
+    Attributes:
+        method: "FindSurface", "RecallFocus" or "SWAF".
+        attempts: The number of attempts that the code made.
+    """
+
+    def __init__(self, method: str, message: str, attempts: int) -> None:
+        super().__init__(f"{method} failed after {attempts} attempt(s): {message}")
+        self.method = method
+        self.attempts = attempts
+
+
+class PreflightFailed(RuntimeError):
+    """``preflight`` found a reason not to start the run. See the message."""
+
+
+class DefiniteFocusFault(RuntimeError):
+    """DefiniteFocus failed at too many positions in sequence.
+
+    Treat this condition as a fault of the hardware.
+    """
+
+
+class CarrierChanged(DefiniteFocusFault):
+    """The carrier bottom that DF uses changed during the run, or it is 0.
+
+    A value of 0 means that a tray load runs. A bottom that changes moves the
+    DF focus on a dry objective, and it gives no message (DEV_NOTES "Dry
+    objectives: DF finds the plate UNDERSIDE").
+    """
+
+
+# ---------------------------------------------------------------------------
+# The start of a run
+# ---------------------------------------------------------------------------
+
+def _fail(log: logging.Logger, msg: str) -> NoReturn:
+    """Write a preflight failure to the log, and raise PreflightFailed with that text."""
+    log.error(msg)
+    raise PreflightFailed(f"Preflight failed: {msg}")
+
+
+def _log_versions(log: logging.Logger) -> None:
+    """Write the versions of SmartMic, ZEN, the gateway and the stubs to the log.
+
+    The gRPC API has no version service. Thus the code reads the versions from
+    other sources.
+    """
+    smartmic = zeiss_paths.smartmic_version()
+    zen_app = MS_zen_logs.zen_app_version()
+    gateway = zeiss_paths.zen_api_gateway_version()
+    stubs, stubs_path = zeiss_paths.zen_api_version()
+    log.info(f"SmartMic: {smartmic or 'unknown (not a git checkout?)'}  |  "
+             f"ZEN app: {zen_app or 'unknown'}  |  "
+             f"ZenApiGateway: {gateway or 'unknown'}  |  "
+             f"zen_api stubs: {stubs or 'unversioned (loose layout)'} @ {stubs_path}")
+
+
+def _describe_stage_motion(motion: Optional[Dict[str, Optional[float]]]) -> str:
+    """Make the text for the read-back of ``set_stage_motion_sync``.
+
+    ``None`` means that the device did not accept the setting.
+    """
+    if motion is None:
+        return "stage motion left as-is (set not supported)"
+    acceleration = f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%"
+    if motion["speed_x"] is None:
+        return (f"{acceleration} "
+                f"(speed throttle not supported by this device — acceleration only)")
+    return f"stage speed=({motion['speed_x']}, {motion['speed_y']})% {acceleration}"
+
+
+def preflight(expected_carrier: str, log: logging.Logger,
+              stage_speed_percent: Optional[float] = None,
+              stage_acceleration_percent: Optional[float] = None,
+              expected_material: Optional[str] = None,
+              thickness_range_um: Optional[Tuple[float, float]] = None) -> None:
+    """
+    The usual preflight at the start of a run. Run it before ANY hardware action.
+
+    The function does these checks, in this order. The gateway must answer, and
+    the carrier request is the test. The microscope must be idle. ZEN must have
+    ``expected_carrier``. The DF carrier bottom must be correct, through
+    ``check_carrier_for_df`` with ``expected_material`` and
+    ``thickness_range_um`` in µm. Then the function sets the stage speed and the
+    acceleration one time for the run, with ``set_stage_motion_sync``, and
+    writes the read-back to the log.
+
+    The function only writes to the log, and it never stops the run, for these
+    items: the versions, the auto-immersion refill settings, the live-scan
+    configuration and ``check_immersion_guard``.
+
+    Args:
+        log: The logger for all the messages. They go into the log of this run.
+        stage_speed_percent, stage_acceleration_percent: A percent of the
+            maximum. ``None`` gives the default values of MS_zenapi_stage_LM,
+            and 100 is the maximum. Use a lower value for a live sample. If you
+            give one of these values and the device does not accept it,
+            preflight fails. If both are ``None``, a setting that the device
+            refuses only gives a warning.
+
+    Raises:
+        PreflightFailed: A check failed. The function also writes the reason
+            with ``log.error``. Nothing moved.
+    """
+    # 0. The versions. Log only.
+    _log_versions(log)
+
+    # 0b. The auto-immersion refill settings. Log only. The API does not give
+    #     them (DEV_NOTES "The re-immersion settings are NOT reachable through
+    #     the ZEN-API").
+    try:
+        log.info(MS_zen_logs.format_auto_immersion_settings(
+            MS_zen_logs.zen_auto_immersion_settings()))
+    except Exception as e:
+        log.info(f"Auto-immersion refill settings: could not read ({e})")
+
+    # 1. Test that the gateway answers.
+    try:
+        carrier = get_sample_carrier_name()
+    except Exception as e:
+        _fail(log, f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
+
+    # 1b. The live-scan configuration. Log only. It shows a difference
+    #     between the template and the carrier (DEV_NOTES "Tray load /
+    #     eject").
+    try:
+        log.info(MS_zenapi_live_scan.format_live_scan_configuration(
+            get_live_scan_configuration(), carrier=carrier))
+    except Exception as e:
+        log.info(f"Live-scan config: could not read ({e})")
+
+    # 1c. Do the two sources of the immersion guard agree? Log only. The
+    #     guard refuses a move for both sources.
+    check_immersion_guard(log)
+
+    # 2. The microscope must be idle.
+    try:
+        busy = is_microscope_busy()
+    except Exception as e:
+        _fail(log, f"Could not query microscope status ({e}) — aborting.")
+    if busy:
+        _fail(log, "Microscope is busy (an experiment is already running) — aborting.")
+
+    # 3. The carrier must be the correct one.
+    if carrier != expected_carrier:
+        _fail(log, f"Wrong sample carrier: '{carrier}' "
+                   f"(expected '{expected_carrier}') — aborting.")
+
+    # 3b. The DF carrier bottom. A wrong value moves the DF focus on a dry
+    #     objective, and it gives no message.
+    if check_carrier_for_df(log, expected_material, thickness_range_um) is None:
+        _fail(log, "DF carrier check failed — aborting.")
+
+    # 4. The stage speed and the acceleration. If you ask for a lower value
+    #    and the device does not accept it, the run stops, because the run then
+    #    goes at the full speed and gives no message. If you ask for no value,
+    #    a refusal only gives a warning. set_stage_motion already accepts a
+    #    refusal of SetSpeed from the gateway (DEV_NOTES). Thus an exception
+    #    here means that the device did not accept the ACCELERATION.
+    throttle_requested = (stage_speed_percent is not None
+                          or stage_acceleration_percent is not None)
+    motion = None
+    try:
+        motion = set_stage_motion_sync(stage_speed_percent, stage_acceleration_percent)
+    except Exception as e:
+        if throttle_requested:
+            _fail(log, f"Could not set requested stage acceleration ({e}) — aborting.")
+        log.warning(f"Stage acceleration not set ({e}); the device may not support "
+                    f"this knob. No throttle was requested, so proceeding at the stage's "
+                    f"current motion settings (full speed).")
+
+    log.info(f"Preflight OK: gateway responsive, microscope idle, "
+             f"carrier '{carrier}', {_describe_stage_motion(motion)}.")
+
+
+def is_microscope_busy() -> bool:
+    """Return ``True`` while an experiment or an acquisition runs.
+
+    See ``get_running_experiment_status``.
+    """
+    status = get_running_experiment_status()
+    if status is None:
+        return False
+    return bool(status["is_experiment_running"] or status["is_acquisition_running"])
+
+
+def get_running_experiment_status() -> Optional[Dict[str, Any]]:
+    """
+    Get the status of the active experiment, or ``None`` if the microscope is idle.
+
+    The keys are is_experiment_running, is_acquisition_running,
+    images_acquired_index, images_count, scenes_index and scenes_count. The
+    status covers the work of ZEN and of the API: an experiment, a snap, a live
+    view and a continuous acquisition. It does not cover a manual stage move.
+    """
+    return asyncio.run(MS_zenapi_experiment_methods.get_running_experiment_status())
+
+
+def stop_experiment() -> bool:
+    """
+    Stop the experiment that is active in ZEN, if there is one.
+
+    Use this function in a handler for a crash or for Ctrl-C. Then ZEN does not
+    continue an acquisition that has no owner::
+
+        try:
+            run_pipeline()
+        except (Exception, KeyboardInterrupt):
+            log.exception("Run aborted")
+            try:
+                ms.stop_experiment()
+            except Exception:
+                log.exception("Could not stop the experiment")
+            raise
+
+    The function stops only the acquisition. The stage, the Z-drive and the
+    objective stay where they are. See
+    ``MS_zenapi_experiment_methods.stop_running_experiment``.
+
+    Returns:
+        ``True`` if an experiment was active and the function sent the stop.
+        ``False`` if the microscope is idle.
+
+    Raises:
+        GRPCError: ZEN refused the status request or the stop request.
+    """
+    return asyncio.run(MS_zenapi_experiment_methods.stop_running_experiment())
+
+
+# ---------------------------------------------------------------------------
+# Moves that accept a wrong not-reached error from ZEN
+# ---------------------------------------------------------------------------
+
+def _validate_tolerance(tolerance_m: Optional[float]) -> None:
+    """Raise ``ValueError`` if ``tolerance_m`` is not ``None`` or a finite number >= 0.
+
+    A value of inf accepts a failed move at any position. Thus the function
+    refuses a value that is not finite.
+    """
+    if tolerance_m is None:
+        return
+    if (isinstance(tolerance_m, bool) or not isinstance(tolerance_m, (int, float))
+            or not math.isfinite(tolerance_m) or tolerance_m < 0):
+        raise ValueError(f"tolerance_m must be a finite, non-negative number (metres) "
+                         f"or None, got {tolerance_m!r}")
+
+
+def _move_with_tolerance(move: Callable[[], None], distance_to_target: Callable[[], float],
+                         tolerance_m: Optional[float],
+                         what: str, settle_s: float = 0.0) -> None:
+    """Run ``move()``. With a tolerance, accept a wrong "not reached" from ZEN.
+
+    See DEV_NOTES "Spurious 'not reached'". After a GRPCError, the function
+    reads the position back. If the position is within ``tolerance_m`` in
+    metres, the function accepts the move. It then waits ``settle_s``, because
+    the move did not do its own wait. If the position is not within the
+    tolerance, the function tries the move one more time. A second failure away
+    from the target raises an exception. With ``tolerance_m`` as ``None``, the
+    function only calls ``move()``. Each other exception goes to the caller
+    with no retry. The refusal of the immersion guard is one such exception.
+    """
+    if tolerance_m is None:
+        move()
+        return
+    log = set_logging()
+    for attempt in (1, 2):
+        try:
+            move()
+            return
+        except GRPCError as e:
+            try:
+                dist = distance_to_target()
+            except Exception as read_err:
+                log.warning(f"{what}: could not read the position back ({read_err}).")
+                dist = None
+            if dist is not None and dist <= tolerance_m:
+                log.warning(f"{what}: ZEN reported {e} but the read-back is "
+                            f"{dist * 1e6:.3f} µm from the target (tolerance "
+                            f"{tolerance_m * 1e6:.3f} µm) — accepted.")
+                time.sleep(settle_s)
+                return
+            if attempt == 2:
+                raise
+            off = "unknown" if dist is None else f"{dist * 1e6:.3f} µm"
+            log.warning(f"{what} failed ({e}); read-back off by {off} — retrying once.")
+            time.sleep(MOVE_RETRY_DELAY_S)
+
+
+# ---------------------------------------------------------------------------
+# Focus: the Z-drive, DefiniteFocus and the software autofocus
+# ---------------------------------------------------------------------------
+
+def get_current_z_position() -> float:
+    """Get the current Z-drive position in metres."""
+    return asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
+
+
+def move_focus_to_new_z_position(new_z_pos: float,
+                                 tolerance_m: Optional[float] = None) -> None:
+    """
+    Move the Z-drive to an absolute position in metres.
+
+    WARNING: the function checks only the range, with ``validate_z_position``.
+    It has NO immersion guard. A Z of 0, or near 0, while the 50x immersion
+    objective is active, pulls the objective back and breaks the water bridge
+    (DEV_NOTES). The caller must examine the objective before it moves Z to 0.
+
+    Args:
+        tolerance_m: Accept a wrong "Requested position was not reached" from
+            ZEN, in metres. See ``_move_with_tolerance``. Use a small value
+            that is more than 0, for example 0.25e-6, because the read-back is
+            never exactly equal. With ``None``, an error from ZEN raises an
+            exception.
+
+    Raises:
+        ValueError: The position is outside the safe range, or ``tolerance_m``
+            is not correct.
+    """
+    _require_valid(validate_z_position(new_z_pos), "Z position")
+    _validate_tolerance(tolerance_m)
+
+    set_logging().info(f"Moving focus to Z = {new_z_pos * 1e6:.3f} µm")
+    _move_with_tolerance(
+        lambda: asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(new_z_pos)),
+        lambda: abs(asyncio.run(MS_zenapi_focus.get_current_z_focus_position()) - new_z_pos),
+        tolerance_m, f"Z move to {new_z_pos * 1e6:.3f} µm")
 
 
 def df_find_surface(max_retries: int = 3, start_z_m: Optional[float] = None,
@@ -219,153 +573,6 @@ def df_recall_focus(max_retries: int = 3) -> float:
     if z_um is None:
         raise FocusSearchFailed("RecallFocus", "no focus position returned", attempts)
     return z_um * 1e-6
-
-
-def get_current_z_position() -> float:
-    """Get the current Z-drive position in metres."""
-    return asyncio.run(MS_zenapi_focus.get_current_z_focus_position())
-
-
-class FocusSearchFailed(RuntimeError):
-    """One focus search found no focus.
-
-    The search is a DF FindSurface, a DF RecallFocus or a SWAF.
-
-    Attributes:
-        method: "FindSurface", "RecallFocus" or "SWAF".
-        attempts: The number of attempts that the code made.
-    """
-
-    def __init__(self, method: str, message: str, attempts: int) -> None:
-        super().__init__(f"{method} failed after {attempts} attempt(s): {message}")
-        self.method = method
-        self.attempts = attempts
-
-
-class PreflightFailed(RuntimeError):
-    """``preflight`` found a reason not to start the run. See the message."""
-
-
-class DefiniteFocusFault(RuntimeError):
-    """DefiniteFocus failed at too many positions in sequence.
-
-    Treat this condition as a fault of the hardware.
-    """
-
-
-class CarrierChanged(DefiniteFocusFault):
-    """The carrier bottom that DF uses changed during the run, or it is 0.
-
-    A value of 0 means that a tray load runs. A bottom that changes moves the
-    DF focus on a dry objective, and it gives no message (DEV_NOTES "Dry
-    objectives: DF finds the plate UNDERSIDE").
-    """
-
-
-# Two thicknesses in µm that are nearer to each other than this value are
-# equal. The API and the DF log round the value in different ways.
-CARRIER_THICKNESS_TOL_UM = 0.5
-
-
-def carrier_bottom() -> CarrierBottom:
-    """Get the bottom of the active sample carrier from the API.
-
-    The call needs approximately 10 ms. ``thickness_um`` is the measured
-    value, if ZEN measured it at the load.
-    """
-    info = get_sample_carrier_info()
-    return {"name": info["name"], "material": info["material"],
-            "thickness_um": float(info["thickness"]),
-            "refractive_index": info["refractive_index"]}
-
-
-def _carrier_difference(a: CarrierBottom, b: CarrierBottom) -> Optional[str]:
-    """Make a text that tells how two ``carrier_bottom()`` dicts are different.
-
-    The result is ``None`` if the two dicts are the same.
-    """
-    diffs = []
-    if str(a["material"]).lower() != str(b["material"]).lower():
-        diffs.append(f"material {a['material']} → {b['material']}")
-    if abs(a["thickness_um"] - b["thickness_um"]) > CARRIER_THICKNESS_TOL_UM:
-        diffs.append(f"thickness {a['thickness_um']:.1f} → {b['thickness_um']:.1f} µm")
-    if a.get("name") != b.get("name"):
-        diffs.append(f"carrier '{a.get('name')}' → '{b.get('name')}'")
-    return ", ".join(diffs) or None
-
-
-def _df_bottom_as_carrier(df: MS_zen_logs.DfBottom, name: str) -> CarrierBottom:
-    """Change a ``zen_df_bottom()`` dict into a ``carrier_bottom()`` dict.
-
-    The DF log holds no name. Thus the function uses ``name``.
-    """
-    return {"name": name, "material": df["material"], "thickness_um": df["thickness_um"]}
-
-
-def check_carrier_for_df(log: logging.Logger, expected_material: Optional[str] = None,
-                         thickness_range_um: Optional[Tuple[float, float]] = None
-                         ) -> Optional[CarrierBottom]:
-    """Check the carrier bottom that DF uses, at a run start or in preflight.
-
-    The function does these checks. The thickness from the API must be more
-    than 0, because 0 means that a tray load runs. If you give
-    ``expected_material``, the material must be equal to it, and the comparison
-    ignores the letter case. If you give ``thickness_range_um`` in µm, for
-    example (150, 190), the thickness must be in that range. The last DF value
-    in the ZEN log must not be 0, and it must agree with the API. If ZEN
-    rotated that event out, the function only writes a note to the log. The
-    function gives a warning if "measure bottom thickness" is off, because the
-    thickness is then the value from the template.
-
-    Returns:
-        The ``carrier_bottom()`` dict, or ``None`` if a check failed. The
-        function writes the reason with ``log.error``.
-    """
-    try:
-        api = carrier_bottom()
-    except Exception as e:
-        log.error(f"DF carrier check: could not read the sample carrier ({e}).")
-        return None
-    text = (f"DF carrier: '{api['name']}', {api['material']}, "
-            f"{api['thickness_um']:.1f} µm, n = {api['refractive_index']}")
-    if api["thickness_um"] <= 0:
-        log.error(f"{text} — thickness 0: a tray load runs or the carrier has no "
-                  f"thickness. Do not use DF.")
-        return None
-    if expected_material and str(api["material"]).lower() != expected_material.lower():
-        log.error(f"{text} — material is not {expected_material}. On a dry objective DF "
-                  f"then focuses far from the surface (DEV_NOTES).")
-        return None
-    if thickness_range_um is not None:
-        lo, hi = thickness_range_um
-        if not lo <= api["thickness_um"] <= hi:
-            log.error(f"{text} — thickness is not in {lo:g}…{hi:g} µm. Measure it at load "
-                      f"or correct the carrier template.")
-            return None
-    try:
-        df = MS_zen_logs.zen_df_bottom()
-    except Exception as e:
-        df = None
-        log.info(f"DF carrier: could not read the ZEN log ({e}).")
-    if df is None:
-        log.info(f"{text}. The DF value is not in the ZEN logs (rotated): API value only.")
-    else:
-        if df["thickness_um"] <= 0:
-            log.error(f"{text} — but DF has thickness 0 (ZEN log {df['timestamp']}): a tray "
-                      f"load runs. Do not use DF.")
-            return None
-        diff = _carrier_difference(api, _df_bottom_as_carrier(df, api["name"]))
-        if diff:
-            log.error(f"{text} — DF has a different value (ZEN log {df['timestamp']}: {diff}).")
-            return None
-        log.info(f"{text}; DF has the same value (ZEN log {df['timestamp']}).")
-    try:
-        if not get_live_scan_configuration().get("measure_bottom_thickness", True):
-            log.warning("DF carrier: 'measure bottom thickness' is off at tray load. The "
-                        "thickness is the template value: make sure that it is correct.")
-    except Exception as e:
-        log.info(f"DF carrier: could not read the live-scan configuration ({e}).")
-    return api
 
 
 class DefiniteFocusTracker:
@@ -511,129 +718,32 @@ class DefiniteFocusTracker:
         return None
 
 
-def _immersion_objective_active() -> bool:
-    """Return ``True`` if the active objective is an immersion objective.
-
-    The data comes from the immersion type of the API, or from the known slot.
+def swaf_find_focus(czexp_path: Union[str, Path], timeout: int = 30,
+                    max_retries: int = 2) -> float:
     """
-    return asyncio.run(MS_zenapi_stage_LM.immersion_objective_active())
-
-
-def check_immersion_guard(log: logging.Logger) -> Optional[bool]:
-    """Compare the immersion objectives of the API with the known slot.
-
-    The guard refuses a move of Z to 0 for each source: the immersion type of
-    the API, and MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION. A difference
-    means that someone changed the turret or the constant. The guard then still
-    refuses the move for both sources, but the immersion time limits and the
-    tray code can be wrong. This function is read-only. Preflight writes the
-    result to the log and does not stop the run.
-
-    Returns:
-        ``True`` if the two sources agree. ``False`` if they do not agree, and
-        the function writes a ``log.error``. ``None`` if the function cannot
-        read the inventory, and it writes a ``log.error``.
-    """
-    slot = MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION
-    try:
-        api = asyncio.run(MS_zenapi_objectivechanger.get_immersion_objective_positions())
-    except Exception as e:
-        log.error(f"Immersion guard: could not read the objective inventory ({e}). "
-                  f"The guard then depends on slot {slot} only.")
-        return None
-    if api == [slot]:
-        log.info(f"Immersion guard: the API reports the immersion objective in slot {slot}, "
-                 f"as expected.")
-        return True
-    log.error(f"Immersion guard: the API reports immersion objectives in slots {api}, "
-              f"but IMMERSION_OBJECTIVE_POSITION is {slot}. The turret or the constant "
-              f"changed. Direct moves are refused for all of these slots; correct "
-              f"MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION before a run.")
-    return False
-
-
-def _move_with_tolerance(move: Callable[[], None], distance_to_target: Callable[[], float],
-                         tolerance_m: Optional[float],
-                         what: str, settle_s: float = 0.0) -> None:
-    """Run ``move()``. With a tolerance, accept a wrong "not reached" from ZEN.
-
-    See DEV_NOTES "Spurious 'not reached'". After a GRPCError, the function
-    reads the position back. If the position is within ``tolerance_m`` in
-    metres, the function accepts the move. It then waits ``settle_s``, because
-    the move did not do its own wait. If the position is not within the
-    tolerance, the function tries the move one more time. A second failure away
-    from the target raises an exception. With ``tolerance_m`` as ``None``, the
-    function only calls ``move()``. Each other exception goes to the caller
-    with no retry. The refusal of the immersion guard is one such exception.
-    """
-    if tolerance_m is None:
-        move()
-        return
-    log = set_logging()
-    for attempt in (1, 2):
-        try:
-            move()
-            return
-        except GRPCError as e:
-            try:
-                dist = distance_to_target()
-            except Exception as read_err:
-                log.warning(f"{what}: could not read the position back ({read_err}).")
-                dist = None
-            if dist is not None and dist <= tolerance_m:
-                log.warning(f"{what}: ZEN reported {e} but the read-back is "
-                            f"{dist * 1e6:.3f} µm from the target (tolerance "
-                            f"{tolerance_m * 1e6:.3f} µm) — accepted.")
-                time.sleep(settle_s)
-                return
-            if attempt == 2:
-                raise
-            off = "unknown" if dist is None else f"{dist * 1e6:.3f} µm"
-            log.warning(f"{what} failed ({e}); read-back off by {off} — retrying once.")
-            time.sleep(MOVE_RETRY_DELAY_S)
-
-
-def _validate_tolerance(tolerance_m: Optional[float]) -> None:
-    if tolerance_m is None:
-        return
-    # Refuse a value that is not finite. A value of inf accepts a failed move
-    # at any position.
-    if (isinstance(tolerance_m, bool) or not isinstance(tolerance_m, (int, float))
-            or not math.isfinite(tolerance_m) or tolerance_m < 0):
-        raise ValueError(f"tolerance_m must be a finite, non-negative number (metres) "
-                         f"or None, got {tolerance_m!r}")
-
-
-def move_focus_to_new_z_position(new_z_pos: float,
-                                 tolerance_m: Optional[float] = None) -> None:
-    """
-    Move the Z-drive to an absolute position in metres.
-
-    WARNING: the function checks only the range, with ``validate_z_position``.
-    It has NO immersion guard. A Z of 0, or near 0, while the 50x immersion
-    objective is active, pulls the objective back and breaks the water bridge
-    (DEV_NOTES). The caller must examine the objective before it moves Z to 0.
+    Run the software autofocus from a SWAF ``.czexp`` file.
 
     Args:
-        tolerance_m: Accept a wrong "Requested position was not reached" from
-            ZEN, in metres. See ``_move_with_tolerance``. Use a small value
-            that is more than 0, for example 0.25e-6, because the read-back is
-            never exactly equal. With ``None``, an error from ZEN raises an
-            exception.
+        timeout: The number of seconds that ZEN can use for one search.
+        max_retries: The number of attempts, including the first attempt.
+
+    Returns:
+        The focus Z in metres.
 
     Raises:
-        ValueError: The position is outside the safe range, or ``tolerance_m``
-            is not correct.
+        FocusSearchFailed: All the attempts failed.
+        FileNotFoundError: ``czexp_path`` does not exist.
     """
-    _require_valid(validate_z_position(new_z_pos), "Z position")
-    _validate_tolerance(tolerance_m)
+    focus_um, attempts = asyncio.run(MS_zenapi_swaf.run_software_autofocus(
+        czexp_path, timeout=timeout, max_retries=max_retries))
+    if focus_um is None:
+        raise FocusSearchFailed("SWAF", f"no focus found with {czexp_path}", attempts)
+    return focus_um * 1e-6
 
-    set_logging().info(f"Moving focus to Z = {new_z_pos * 1e6:.3f} µm")
-    _move_with_tolerance(
-        lambda: asyncio.run(MS_zenapi_focus.move_focus_to_new_z_position(new_z_pos)),
-        lambda: abs(asyncio.run(MS_zenapi_focus.get_current_z_focus_position()) - new_z_pos),
-        tolerance_m, f"Z move to {new_z_pos * 1e6:.3f} µm")
 
+# ---------------------------------------------------------------------------
+# The stage
+# ---------------------------------------------------------------------------
 
 def get_current_xy_stage_position() -> List[float]:
     """Get the current stage position ``[x, y]`` in metres."""
@@ -703,57 +813,67 @@ def set_stage_motion_sync(speed_percent: Optional[float] = None,
     )
 
 
-def run_experiment_from_path(czexp_path: Union[str, Path],
-                             custom_folder: Optional[Path] = None,
-                             custom_filename: Optional[str] = None
-                             ) -> MS_zenapi_experiment_methods.ExperimentResult:
+# ---------------------------------------------------------------------------
+# The optics
+# ---------------------------------------------------------------------------
+
+def get_current_objective_and_optovar() -> Tuple[int, int]:
+    """Get the current ``(objective_position, optovar_position)``."""
+    return asyncio.run(MS_zenapi_objectivechanger.get_current_objective_and_optovar())
+
+
+def get_current_objective_and_optovar_names() -> Tuple[Tuple[str, int], Tuple[str, int]]:
     """
-    Run a ``.czexp`` file, then move the ``.czi`` file to ``custom_folder``.
+    Get the current ``((objective_name, position), (optovar_name, position))``.
 
-    The code LOADS the file by its path. It does not import the file. Thus a
-    copy that you edit for one run also works.
+    An example of a name is 'Plan-Apochromat 20x/0.95' or '2x Tubelens'. Use
+    the magnification and the numerical aperture to make sure that the optics
+    are correct. Do not use the slot number.
+    """
+    return asyncio.run(
+        MS_zenapi_objectivechanger.get_current_objective_and_optovar_names()
+    )
 
-    Args:
-        custom_folder: The output folder. ``None`` gives
-            DEFAULT_EXPERIMENT_OUTPUT_FOLDER.
-        custom_filename: The base name of the output file, without ``.czi``.
+
+def _immersion_objective_active() -> bool:
+    """Return ``True`` if the active objective is an immersion objective.
+
+    The data comes from the immersion type of the API, or from the known slot.
+    """
+    return asyncio.run(MS_zenapi_stage_LM.immersion_objective_active())
+
+
+def check_immersion_guard(log: logging.Logger) -> Optional[bool]:
+    """Compare the immersion objectives of the API with the known slot.
+
+    The guard refuses a move of Z to 0 for each source: the immersion type of
+    the API, and MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION. A difference
+    means that someone changed the turret or the constant. The guard then still
+    refuses the move for both sources, but the immersion time limits and the
+    tray code can be wrong. This function is read-only. Preflight writes the
+    result to the log and does not stop the run.
 
     Returns:
-        ``{exp_result_path, experiment_id}``.
-
-    Raises:
-        FileNotFoundError: ``czexp_path`` does not exist.
+        ``True`` if the two sources agree. ``False`` if they do not agree, and
+        the function writes a ``log.error``. ``None`` if the function cannot
+        read the inventory, and it writes a ``log.error``.
     """
-    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_path(
-        czexp_path=czexp_path,
-        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
-        custom_filename=custom_filename,
-    ))
-    set_logging().info(f"Experiment results: {result}")
-    return result
-
-
-def swaf_find_focus(czexp_path: Union[str, Path], timeout: int = 30,
-                    max_retries: int = 2) -> float:
-    """
-    Run the software autofocus from a SWAF ``.czexp`` file.
-
-    Args:
-        timeout: The number of seconds that ZEN can use for one search.
-        max_retries: The number of attempts, including the first attempt.
-
-    Returns:
-        The focus Z in metres.
-
-    Raises:
-        FocusSearchFailed: All the attempts failed.
-        FileNotFoundError: ``czexp_path`` does not exist.
-    """
-    focus_um, attempts = asyncio.run(MS_zenapi_swaf.run_software_autofocus(
-        czexp_path, timeout=timeout, max_retries=max_retries))
-    if focus_um is None:
-        raise FocusSearchFailed("SWAF", f"no focus found with {czexp_path}", attempts)
-    return focus_um * 1e-6
+    slot = MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION
+    try:
+        api = asyncio.run(MS_zenapi_objectivechanger.get_immersion_objective_positions())
+    except Exception as e:
+        log.error(f"Immersion guard: could not read the objective inventory ({e}). "
+                  f"The guard then depends on slot {slot} only.")
+        return None
+    if api == [slot]:
+        log.info(f"Immersion guard: the API reports the immersion objective in slot {slot}, "
+                 f"as expected.")
+        return True
+    log.error(f"Immersion guard: the API reports immersion objectives in slots {api}, "
+              f"but IMMERSION_OBJECTIVE_POSITION is {slot}. The turret or the constant "
+              f"changed. Direct moves are refused for all of these slots; correct "
+              f"MS_zenapi_stage_LM.IMMERSION_OBJECTIVE_POSITION before a run.")
+    return False
 
 
 def _change_optics(objective_nr: int, optovar_nr: int,
@@ -782,14 +902,16 @@ def _change_optics(objective_nr: int, optovar_nr: int,
     log = set_logging()
 
     async def _set_and_wait() -> bool:
+        changer = MS_zenapi_objectivechanger
+        target = (objective_nr, optovar_nr)
+
         # For the lens at each position, see DEV_NOTES "Optics map (this CD7)".
-        current_obj, current_opt = (
-            await MS_zenapi_objectivechanger.get_current_objective_and_optovar())
+        start_objective, _ = await changer.get_current_objective_and_optovar()
 
         # This is the source that the immersion move guard uses: the type
         # from the API and the known slot.
         immersion_positions = await MS_zenapi_stage_LM.immersion_objective_positions()
-        is_from_immersion = current_obj in immersion_positions
+        is_from_immersion = start_objective in immersion_positions
         is_to_immersion = objective_nr in immersion_positions
 
         if is_from_immersion or is_to_immersion:
@@ -799,25 +921,18 @@ def _change_optics(objective_nr: int, optovar_nr: int,
         else:
             adjusted_timeout = timeout_seconds
 
-        retry_count = 0
-        while retry_count < max_retries:
+        for attempt in range(1, max_retries + 1):
             try:
-                await MS_zenapi_objectivechanger.set_objective_set_optovar(objective_nr, optovar_nr)
+                await changer.set_objective_set_optovar(objective_nr, optovar_nr)
 
                 start_time = time.time()
-
                 while time.time() - start_time < adjusted_timeout:
-                    current_obj, current_opt = (
-                        await MS_zenapi_objectivechanger.get_current_objective_and_optovar())
-
-                    if current_obj == objective_nr and current_opt == optovar_nr:
+                    if tuple(await changer.get_current_objective_and_optovar()) == target:
                         return True
-
                     await asyncio.sleep(poll_interval)
 
                 log.warning(f"Objective change: timeout after {adjusted_timeout}s, "
-                            f"retry {retry_count + 1}/{max_retries}")
-                retry_count += 1
+                            f"retry {attempt}/{max_retries}")
 
             except (ValueError, TypeError):
                 # This error does not go away. For example, the target is
@@ -826,7 +941,7 @@ def _change_optics(objective_nr: int, optovar_nr: int,
                 raise
             except Exception as e:
                 log.warning(f"Exception during objective change: {e} — "
-                            f"retry {retry_count + 1}/{max_retries}")
+                            f"retry {attempt}/{max_retries}")
 
                 # ZEN raises "has not been set" one time while it removes
                 # the water after a move from the immersion objective.
@@ -835,7 +950,6 @@ def _change_optics(objective_nr: int, optovar_nr: int,
                              "needs time. Waiting for immersion removal process...")
                     await asyncio.sleep(IMMERSION_RETRY_DELAY)
 
-                retry_count += 1
                 await asyncio.sleep(OBJECTIVE_CHANGE_RETRY_DELAY)
 
         return False
@@ -868,52 +982,41 @@ def set_optics_verified(objective_nr: int, optovar_nr: int,
         ValueError: A position or a time argument is not correct.
         RuntimeError: The optics do not become stable at the target.
     """
-    for name, v in (("settle_s", settle_s), ("timeout_s", timeout_s), ("poll_s", poll_s)):
-        if v < 0:
-            raise ValueError(f"{name} must be >= 0, got {v}")
+    for name, seconds in (("settle_s", settle_s), ("timeout_s", timeout_s),
+                          ("poll_s", poll_s)):
+        if seconds < 0:
+            raise ValueError(f"{name} must be >= 0, got {seconds}")
     log = set_logging()
     target = (objective_nr, optovar_nr)
+
     # A return of False, which is a time limit of the changer, is not an
     # error. The read-back is the check.
     if not _change_optics(objective_nr, optovar_nr):
         log.warning(f"Optics change to {target} not confirmed by the changer — "
                     f"verifying the read-back.")
+
     deadline = time.monotonic() + timeout_s
     while True:
-        cur = tuple(get_current_objective_and_optovar())
-        if cur == target:
+        current = tuple(get_current_objective_and_optovar())
+        if current == target:
             time.sleep(settle_s)
-            cur = tuple(get_current_objective_and_optovar())
-            if cur == target:
+            current = tuple(get_current_objective_and_optovar())
+            if current == target:
                 log.info(f"Optics confirmed + settled: objective pos {objective_nr}, "
                          f"optovar pos {optovar_nr}.")
                 return
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Optics never settled at objective {objective_nr}/optovar "
-                               f"{optovar_nr} (read-back {cur}) — aborting to avoid a "
+                               f"{optovar_nr} (read-back {current}) — aborting to avoid a "
                                f"mis-tiled scan.")
         log.info(f"Waiting for optics to reach (obj {objective_nr}, opt {optovar_nr}); "
-                 f"currently {cur}...")
+                 f"currently {current}...")
         time.sleep(poll_s)
 
 
-def get_current_objective_and_optovar() -> Tuple[int, int]:
-    """Get the current ``(objective_position, optovar_position)``."""
-    return asyncio.run(MS_zenapi_objectivechanger.get_current_objective_and_optovar())
-
-
-def get_current_objective_and_optovar_names() -> Tuple[Tuple[str, int], Tuple[str, int]]:
-    """
-    Get the current ``((objective_name, position), (optovar_name, position))``.
-
-    An example of a name is 'Plan-Apochromat 20x/0.95' or '2x Tubelens'. Use
-    the magnification and the numerical aperture to make sure that the optics
-    are correct. Do not use the slot number.
-    """
-    return asyncio.run(
-        MS_zenapi_objectivechanger.get_current_objective_and_optovar_names()
-    )
-
+# ---------------------------------------------------------------------------
+# The sample carrier and the tray
+# ---------------------------------------------------------------------------
 
 def get_sample_carrier_info() -> Dict[str, Any]:
     """
@@ -930,6 +1033,163 @@ def get_sample_carrier_name() -> str:
     return get_sample_carrier_info()["name"]
 
 
+def carrier_bottom() -> CarrierBottom:
+    """Get the bottom of the active sample carrier from the API.
+
+    The call needs approximately 10 ms. ``thickness_um`` is the measured
+    value, if ZEN measured it at the load.
+    """
+    info = get_sample_carrier_info()
+    return {"name": info["name"], "material": info["material"],
+            "thickness_um": float(info["thickness"]),
+            "refractive_index": info["refractive_index"]}
+
+
+def _carrier_difference(a: CarrierBottom, b: CarrierBottom) -> Optional[str]:
+    """Make a text that tells how two ``carrier_bottom()`` dicts are different.
+
+    The result is ``None`` if the two dicts are the same.
+    """
+    diffs = []
+    if str(a["material"]).lower() != str(b["material"]).lower():
+        diffs.append(f"material {a['material']} → {b['material']}")
+    if abs(a["thickness_um"] - b["thickness_um"]) > CARRIER_THICKNESS_TOL_UM:
+        diffs.append(f"thickness {a['thickness_um']:.1f} → {b['thickness_um']:.1f} µm")
+    if a.get("name") != b.get("name"):
+        diffs.append(f"carrier '{a.get('name')}' → '{b.get('name')}'")
+    return ", ".join(diffs) or None
+
+
+def _df_bottom_as_carrier(df: MS_zen_logs.DfBottom, name: str) -> CarrierBottom:
+    """Change a ``zen_df_bottom()`` dict into a ``carrier_bottom()`` dict.
+
+    The DF log holds no name. Thus the function uses ``name``.
+    """
+    return {"name": name, "material": df["material"], "thickness_um": df["thickness_um"]}
+
+
+def check_carrier_for_df(log: logging.Logger, expected_material: Optional[str] = None,
+                         thickness_range_um: Optional[Tuple[float, float]] = None
+                         ) -> Optional[CarrierBottom]:
+    """Check the carrier bottom that DF uses, at a run start or in preflight.
+
+    The function does these checks. The thickness from the API must be more
+    than 0, because 0 means that a tray load runs. If you give
+    ``expected_material``, the material must be equal to it, and the comparison
+    ignores the letter case. If you give ``thickness_range_um`` in µm, for
+    example (150, 190), the thickness must be in that range. The last DF value
+    in the ZEN log must not be 0, and it must agree with the API. If ZEN
+    rotated that event out, the function only writes a note to the log. The
+    function gives a warning if "measure bottom thickness" is off, because the
+    thickness is then the value from the template.
+
+    Returns:
+        The ``carrier_bottom()`` dict, or ``None`` if a check failed. The
+        function writes the reason with ``log.error``.
+    """
+    try:
+        api = carrier_bottom()
+    except Exception as e:
+        log.error(f"DF carrier check: could not read the sample carrier ({e}).")
+        return None
+
+    text =(f"DF carrier: '{api['name']}', {api['material']}, "
+            f"{api['thickness_um']:.1f} µm, n = {api['refractive_index']}")
+
+    # The value from the API.
+    if api["thickness_um"] <= 0:
+        log.error(f"{text} — thickness 0: a tray load runs or the carrier has no "
+                  f"thickness. Do not use DF.")
+        return None
+    if expected_material and str(api["material"]).lower() != expected_material.lower():
+        log.error(f"{text} — material is not {expected_material}. On a dry objective DF "
+                  f"then focuses far from the surface (DEV_NOTES).")
+        return None
+    if thickness_range_um is not None:
+        lo, hi = thickness_range_um
+        if not lo <= api["thickness_um"] <= hi:
+            log.error(f"{text} — thickness is not in {lo:g}…{hi:g} µm. Measure it at load "
+                      f"or correct the carrier template.")
+            return None
+
+    # The value that DF received, from the ZEN log.
+    try:
+        df = MS_zen_logs.zen_df_bottom()
+    except Exception as e:
+        df = None
+        log.info(f"DF carrier: could not read the ZEN log ({e}).")
+    if df is None:
+        log.info(f"{text}. The DF value is not in the ZEN logs (rotated): API value only.")
+    else:
+        if df["thickness_um"] <= 0:
+            log.error(f"{text} — but DF has thickness 0 (ZEN log {df['timestamp']}): a tray "
+                      f"load runs. Do not use DF.")
+            return None
+        diff = _carrier_difference(api, _df_bottom_as_carrier(df, api["name"]))
+        if diff:
+            log.error(f"{text} — DF has a different value (ZEN log {df['timestamp']}: {diff}).")
+            return None
+        log.info(f"{text}; DF has the same value (ZEN log {df['timestamp']}).")
+
+    # The source of the thickness: a measurement at the load, or the template.
+    try:
+        if not get_live_scan_configuration().get("measure_bottom_thickness", True):
+            log.warning("DF carrier: 'measure bottom thickness' is off at tray load. The "
+                        "thickness is the template value: make sure that it is correct.")
+    except Exception as e:
+        log.info(f"DF carrier: could not read the live-scan configuration ({e}).")
+    return api
+
+
+def _df_has_bottom(api: CarrierBottom) -> bool:
+    """Return ``True`` if DF has the carrier bottom that the API reports.
+
+    The thickness from the API must be more than 0. The value in the DF log,
+    if it is there, must be more than 0 and must agree with the API.
+    """
+    if api["thickness_um"] <= 0:
+        return False
+    df = MS_zen_logs.zen_df_bottom()
+    if df is None:
+        return True
+    return (df["thickness_um"] > 0
+            and _carrier_difference(api, _df_bottom_as_carrier(df, api["name"])) is None)
+
+
+def wait_for_df_bottom(timeout_s: float = LOAD_SETTLE_TIMEOUT_S,
+                       poll_s: float = LOAD_SETTLE_POLL_S) -> CarrierBottom:
+    """Wait until the carrier bottom for DF is correct.
+
+    The thickness must be more than 0 and stable. During a load, ZEN sends a
+    thickness of 0 to DF for some seconds. A DF search then stops on the
+    underside of the plate (DEV_NOTES "Dry objectives: DF finds the plate
+    UNDERSIDE"). The condition is correct when two reads in sequence agree, the
+    thickness from the API is more than 0, and the value in the DF log, if it
+    is there, is more than 0 and agrees with the API.
+
+    Returns:
+        The ``carrier_bottom()`` dict.
+
+    Raises:
+        RuntimeError: The condition is not correct within ``timeout_s``.
+    """
+    log = set_logging()
+    deadline = time.monotonic() + timeout_s
+    previous = None
+    while True:
+        now = carrier_bottom()
+        ok = _df_has_bottom(now)
+        if ok and previous is not None and _carrier_difference(previous, now) is None:
+            log.info(f"DF carrier set: '{now['name']}', {now['material']}, "
+                     f"{now['thickness_um']:.1f} µm.")
+            return now
+        previous = now if ok else None
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"DF carrier bottom not set {timeout_s:g} s after the load "
+                               f"(last API value: {now}). Do not use DF.")
+        time.sleep(poll_s)
+
+
 def get_current_container() -> Optional[Tuple[int, int]]:
     """
     Get the container that the stage is in, as ``(row, column)`` from 0.
@@ -941,6 +1201,37 @@ def get_current_container() -> Optional[Tuple[int, int]]:
     return asyncio.run(MS_zenapi_sample_carrier.get_current_container())
 
 
+def move_to_container(row_index: int, column_index: int,
+                      focus_tracker: Optional[DefiniteFocusTracker] = None) -> None:
+    """
+    Let ZEN move the stage to a container. The indices start at 0.
+
+    For example, slide 2 of 3 is row 0, column 1. This function operates like
+    ``move_stage_to_new_xy_position``. It lowers Z to 0 first, because ZEN puts
+    the Z of the old slide on the new slide. Z ends near 0. The function
+    refuses the move while the immersion objective is active. Focus again
+    before you acquire. Do NOT use ``get_current_container`` as a check,
+    because it is always ``None`` on the CD7. Use the images instead. See
+    DEV_NOTES "Multi-slide carriers".
+
+    Args:
+        focus_tracker: The function resets this tracker before the move.
+
+    Raises:
+        ValueError: An index is not an integer, or it is less than 0.
+        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The
+            immersion objective is active. The function moves nothing.
+    """
+    for name, index in (("row_index", row_index), ("column_index", column_index)):
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError(f"{name} must be a non-negative integer, got {index!r}")
+    # Reset before the move. This is safe, also if the move stops in the
+    # middle.
+    if focus_tracker is not None:
+        focus_tracker.reset()
+    asyncio.run(MS_zenapi_sample_carrier.move_to_container(row_index, column_index))
+
+
 def get_live_scan_configuration() -> Dict[str, Any]:
     """Get the live-scan configuration of ZEN, for the tray load and the prescan.
 
@@ -948,11 +1239,6 @@ def get_live_scan_configuration() -> Dict[str, Any]:
     function is read-only.
     """
     return asyncio.run(MS_zenapi_live_scan.get_live_scan_configuration())
-
-
-# The dry 5x/0.35 objective. Change to it before an eject from the 50x
-# immersion objective.
-EJECT_DRY_OBJECTIVE = 2
 
 
 def eject_tray(switch_to_dry_objective: bool = True,
@@ -993,51 +1279,6 @@ def eject_tray(switch_to_dry_objective: bool = True,
     return asyncio.run(MS_zenapi_live_scan.eject_tray())
 
 
-# After a tray load, wait until DF has a stable bottom thickness that is more
-# than 0.
-LOAD_SETTLE_TIMEOUT_S = 60.0
-LOAD_SETTLE_POLL_S = 1.0
-
-
-def wait_for_df_bottom(timeout_s: float = LOAD_SETTLE_TIMEOUT_S,
-                       poll_s: float = LOAD_SETTLE_POLL_S) -> CarrierBottom:
-    """Wait until the carrier bottom for DF is correct.
-
-    The thickness must be more than 0 and stable. During a load, ZEN sends a
-    thickness of 0 to DF for some seconds. A DF search then stops on the
-    underside of the plate (DEV_NOTES "Dry objectives: DF finds the plate
-    UNDERSIDE"). The condition is correct when two reads in sequence agree, the
-    thickness from the API is more than 0, and the value in the DF log, if it
-    is there, is more than 0 and agrees with the API.
-
-    Returns:
-        The ``carrier_bottom()`` dict.
-
-    Raises:
-        RuntimeError: The condition is not correct within ``timeout_s``.
-    """
-    log = set_logging()
-    deadline = time.monotonic() + timeout_s
-    previous = None
-    while True:
-        now = carrier_bottom()
-        ok = now["thickness_um"] > 0
-        if ok:
-            df = MS_zen_logs.zen_df_bottom()
-            if df is not None:
-                ok = df["thickness_um"] > 0 and _carrier_difference(
-                    now, _df_bottom_as_carrier(df, now["name"])) is None
-        if ok and previous is not None and _carrier_difference(previous, now) is None:
-            log.info(f"DF carrier set: '{now['name']}', {now['material']}, "
-                     f"{now['thickness_um']:.1f} µm.")
-            return now
-        previous = now if ok else None
-        if time.monotonic() >= deadline:
-            raise RuntimeError(f"DF carrier bottom not set {timeout_s:g} s after the load "
-                               f"(last API value: {now}). Do not use DF.")
-        time.sleep(poll_s)
-
-
 def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) -> List[str]:
     """
     Move the tray in and run the prescan with ``LoadTrayAndPrescan``.
@@ -1075,212 +1316,35 @@ def load_tray_and_prescan(focus_tracker: Optional[DefiniteFocusTracker] = None) 
     return notifications
 
 
-def move_to_container(row_index: int, column_index: int,
-                      focus_tracker: Optional[DefiniteFocusTracker] = None) -> None:
-    """
-    Let ZEN move the stage to a container. The indices start at 0.
+# ---------------------------------------------------------------------------
+# The acquisition
+# ---------------------------------------------------------------------------
 
-    For example, slide 2 of 3 is row 0, column 1. This function operates like
-    ``move_stage_to_new_xy_position``. It lowers Z to 0 first, because ZEN puts
-    the Z of the old slide on the new slide. Z ends near 0. The function
-    refuses the move while the immersion objective is active. Focus again
-    before you acquire. Do NOT use ``get_current_container`` as a check,
-    because it is always ``None`` on the CD7. Use the images instead. See
-    DEV_NOTES "Multi-slide carriers".
+def run_experiment_from_path(czexp_path: Union[str, Path],
+                             custom_folder: Optional[Path] = None,
+                             custom_filename: Optional[str] = None
+                             ) -> MS_zenapi_experiment_methods.ExperimentResult:
+    """
+    Run a ``.czexp`` file, then move the ``.czi`` file to ``custom_folder``.
+
+    The code LOADS the file by its path. It does not import the file. Thus a
+    copy that you edit for one run also works.
 
     Args:
-        focus_tracker: The function resets this tracker before the move.
-
-    Raises:
-        ValueError: An index is not an integer, or it is less than 0.
-        MS_zenapi_stage_LM.ImmersionObjectiveActive (a RuntimeError): The
-            immersion objective is active. The function moves nothing.
-    """
-    for name, v in (("row_index", row_index), ("column_index", column_index)):
-        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-            raise ValueError(f"{name} must be a non-negative integer, got {v!r}")
-    # Reset before the move. This is safe, also if the move stops in the
-    # middle.
-    if focus_tracker is not None:
-        focus_tracker.reset()
-    asyncio.run(MS_zenapi_sample_carrier.move_to_container(row_index, column_index))
-
-
-def get_running_experiment_status() -> Optional[Dict[str, Any]]:
-    """
-    Get the status of the active experiment, or ``None`` if the microscope is idle.
-
-    The keys are is_experiment_running, is_acquisition_running,
-    images_acquired_index, images_count, scenes_index and scenes_count. The
-    status covers the work of ZEN and of the API: an experiment, a snap, a live
-    view and a continuous acquisition. It does not cover a manual stage move.
-    """
-    return asyncio.run(MS_zenapi_experiment_methods.get_running_experiment_status())
-
-
-def stop_experiment() -> bool:
-    """
-    Stop the experiment that is active in ZEN, if there is one.
-
-    Use this function in a handler for a crash or for Ctrl-C. Then ZEN does not
-    continue an acquisition that has no owner::
-
-        try:
-            run_pipeline()
-        except (Exception, KeyboardInterrupt):
-            log.exception("Run aborted")
-            try:
-                ms.stop_experiment()
-            except Exception:
-                log.exception("Could not stop the experiment")
-            raise
-
-    The function stops only the acquisition. The stage, the Z-drive and the
-    objective stay where they are. See
-    ``MS_zenapi_experiment_methods.stop_running_experiment``.
+        custom_folder: The output folder. ``None`` gives
+            DEFAULT_EXPERIMENT_OUTPUT_FOLDER.
+        custom_filename: The base name of the output file, without ``.czi``.
 
     Returns:
-        ``True`` if an experiment was active and the function sent the stop.
-        ``False`` if the microscope is idle.
+        ``{exp_result_path, experiment_id}``.
 
     Raises:
-        GRPCError: ZEN refused the status request or the stop request.
+        FileNotFoundError: ``czexp_path`` does not exist.
     """
-    return asyncio.run(MS_zenapi_experiment_methods.stop_running_experiment())
-
-
-def is_microscope_busy() -> bool:
-    """Return ``True`` while an experiment or an acquisition runs.
-
-    See ``get_running_experiment_status``.
-    """
-    status = get_running_experiment_status()
-    if status is None:
-        return False
-    return bool(status["is_experiment_running"] or status["is_acquisition_running"])
-
-
-def _fail(log: logging.Logger, msg: str) -> NoReturn:
-    """Write a preflight failure to the log, and raise PreflightFailed with that text."""
-    log.error(msg)
-    raise PreflightFailed(f"Preflight failed: {msg}")
-
-
-def preflight(expected_carrier: str, log: logging.Logger,
-              stage_speed_percent: Optional[float] = None,
-              stage_acceleration_percent: Optional[float] = None,
-              expected_material: Optional[str] = None,
-              thickness_range_um: Optional[Tuple[float, float]] = None) -> None:
-    """
-    The usual preflight at the start of a run. Run it before ANY hardware action.
-
-    The function does these checks, in this order. The gateway must answer, and
-    the carrier request is the test. The microscope must be idle. ZEN must have
-    ``expected_carrier``. The DF carrier bottom must be correct, through
-    ``check_carrier_for_df`` with ``expected_material`` and
-    ``thickness_range_um`` in µm. Then the function sets the stage speed and the
-    acceleration one time for the run, with ``set_stage_motion_sync``, and
-    writes the read-back to the log.
-
-    The function only writes to the log, and it never stops the run, for these
-    items: the versions, the auto-immersion refill settings, the live-scan
-    configuration and ``check_immersion_guard``.
-
-    Args:
-        log: The logger for all the messages. They go into the log of this run.
-        stage_speed_percent, stage_acceleration_percent: A percent of the
-            maximum. ``None`` gives the default values of MS_zenapi_stage_LM,
-            and 100 is the maximum. Use a lower value for a live sample. If you
-            give one of these values and the device does not accept it,
-            preflight fails. If both are ``None``, a setting that the device
-            refuses only gives a warning.
-
-    Raises:
-        PreflightFailed: A check failed. The function also writes the reason
-            with ``log.error``. Nothing moved.
-    """
-    # 0. The versions. The gRPC API has no version service, thus the code
-    #    reads them from other sources.
-    sm_ver = zeiss_paths.smartmic_version()
-    zen_ver = MS_zen_logs.zen_app_version()
-    gw_ver = zeiss_paths.zen_api_gateway_version()
-    api_ver, api_path = zeiss_paths.zen_api_version()
-    log.info(f"SmartMic: {sm_ver or 'unknown (not a git checkout?)'}  |  "
-             f"ZEN app: {zen_ver or 'unknown'}  |  "
-             f"ZenApiGateway: {gw_ver or 'unknown'}  |  "
-             f"zen_api stubs: {api_ver or 'unversioned (loose layout)'} @ {api_path}")
-
-    # 0b. The auto-immersion refill settings. Log only. The API does not give
-    #     them (DEV_NOTES "The re-immersion settings are NOT reachable through
-    #     the ZEN-API").
-    try:
-        log.info(MS_zen_logs.format_auto_immersion_settings(
-            MS_zen_logs.zen_auto_immersion_settings()))
-    except Exception as e:
-        log.info(f"Auto-immersion refill settings: could not read ({e})")
-
-    # 1. Test that the gateway answers.
-    try:
-        carrier = get_sample_carrier_name()
-    except Exception as e:
-        _fail(log, f"ZEN-API gateway not responding ({e}) — is ZEN running? Aborting.")
-
-    # 1b. The live-scan configuration. Log only. It shows a difference
-    #     between the template and the carrier (DEV_NOTES "Tray load /
-    #     eject").
-    try:
-        log.info(MS_zenapi_live_scan.format_live_scan_configuration(
-            get_live_scan_configuration(), carrier=carrier))
-    except Exception as e:
-        log.info(f"Live-scan config: could not read ({e})")
-
-    # 1c. Do the two sources of the immersion guard agree? Log only. The
-    #     guard refuses a move for both sources.
-    check_immersion_guard(log)
-
-    # 2. The microscope must be idle.
-    try:
-        busy = is_microscope_busy()
-    except Exception as e:
-        _fail(log, f"Could not query microscope status ({e}) — aborting.")
-    if busy:
-        _fail(log, "Microscope is busy (an experiment is already running) — aborting.")
-
-    # 3. The carrier must be the correct one.
-    if carrier != expected_carrier:
-        _fail(log, f"Wrong sample carrier: '{carrier}' "
-                  f"(expected '{expected_carrier}') — aborting.")
-
-    # 3b. The DF carrier bottom. A wrong value moves the DF focus on a dry
-    #     objective, and it gives no message.
-    if check_carrier_for_df(log, expected_material, thickness_range_um) is None:
-        _fail(log, "DF carrier check failed — aborting.")
-
-    # 4. The stage speed and the acceleration. If you ask for a lower value
-    #    and the device does not accept it, the run stops, because the run then
-    #    goes at the full speed and gives no message. If you ask for no value,
-    #    a refusal only gives a warning. set_stage_motion already accepts a
-    #    refusal of SetSpeed from the gateway (DEV_NOTES). Thus an exception
-    #    here means that the device did not accept the ACCELERATION.
-    throttle_requested = (stage_speed_percent is not None
-                          or stage_acceleration_percent is not None)
-    motion = None
-    try:
-        motion = set_stage_motion_sync(stage_speed_percent, stage_acceleration_percent)
-    except Exception as e:
-        if throttle_requested:
-            _fail(log, f"Could not set requested stage acceleration ({e}) — aborting.")
-        log.warning(f"Stage acceleration not set ({e}); the device may not support "
-                    f"this knob. No throttle was requested, so proceeding at the stage's "
-                    f"current motion settings (full speed).")
-
-    if motion is None:
-        motion_str = "stage motion left as-is (set not supported)"
-    elif motion["speed_x"] is None:
-        motion_str = (f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})% "
-                       f"(speed throttle not supported by this device — acceleration only)")
-    else:
-        motion_str = (f"stage speed=({motion['speed_x']}, {motion['speed_y']})% "
-                      f"acceleration=({motion['acceleration_x']}, {motion['acceleration_y']})%")
-    log.info(f"Preflight OK: gateway responsive, microscope idle, "
-             f"carrier '{carrier}', {motion_str}.")
+    result = asyncio.run(MS_zenapi_experiment_methods.run_experiment_from_path(
+        czexp_path=czexp_path,
+        custom_image_folder=Path(custom_folder or DEFAULT_EXPERIMENT_OUTPUT_FOLDER),
+        custom_filename=custom_filename,
+    ))
+    set_logging().info(f"Experiment results: {result}")
+    return result

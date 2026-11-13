@@ -237,18 +237,12 @@ async def open_zen_channel(config_file: Union[str, Path] = "config.ini",
 
 def get_objective_by_position(objectives: Any, position: int) -> Optional[Any]:
     """Get the objective at *position* in a GetObjectives response, or ``None``."""
-    for obj in objectives.objectives:
-        if obj.position == position:
-            return obj
-    return None
+    return next((obj for obj in objectives.objectives if obj.position == position), None)
 
 
 def get_optovar_by_position(optovars: Any, position: int) -> Optional[Any]:
     """Get the optovar at *position* in a GetOptovars response, or ``None``."""
-    for opt in optovars.optovars:
-        if opt.position == position:
-            return opt
-    return None
+    return next((opt for opt in optovars.optovars if opt.position == position), None)
 
 
 def get_used_objective_positions(objectives: Any) -> List[int]:

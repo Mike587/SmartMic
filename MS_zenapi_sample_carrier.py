@@ -81,13 +81,13 @@ async def get_current_container() -> Optional[Tuple[int, int]]:
     async with open_zen_channel(config_path) as (channel, metadata):
         service = SampleCarrierServiceStub(channel=channel, metadata=metadata)
         try:
-            c = await service.get_current_container(
+            container = await service.get_current_container(
                 SampleCarrierServiceGetCurrentContainerRequest())
         except GRPCError as e:
             if e.status == Status.NOT_FOUND:
                 return None
             raise
-    return c.row_index, c.column_index
+    return container.row_index, container.column_index
 
 
 async def move_to_container(row_index: int, column_index: int) -> None:

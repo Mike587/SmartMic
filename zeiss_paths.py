@@ -31,7 +31,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # The ZEN-API python_examples folder. In the OLD layout, zen_api is directly
 # in this folder.
@@ -73,7 +73,7 @@ if _zeiss not in sys.path:
     sys.path.append(_zeiss)
 
 
-def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
+def _zen_api_src_version_key(src_path: Path) -> Tuple[int, ...]:
     """Make a sort key for a ``.../zen_api-<version>/src`` path.
 
     The key is numeric, not alphabetic. Thus 2025.10 is above 2025.9. A name
@@ -93,7 +93,7 @@ def _zen_api_src_version_key(src_path: Union[str, Path]) -> Tuple[int, ...]:
 ZEN_API_PACKAGE_DIRS = ("python_package", "python_packages")
 
 
-def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> list:
+def _find_zen_api_srcs(examples_dir: Union[str, Path]) -> List[Path]:
     """Find each ``zen_api-<version>/src`` folder next to ``python_examples``.
 
     The function looks in each folder in ``ZEN_API_PACKAGE_DIRS``. The newest

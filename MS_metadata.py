@@ -147,43 +147,44 @@ def _parse_sample_carrier(root: ET.Element, source: str = "") -> Optional[Dict[s
              if child.tag == "Template" and parent.tag in _CARRIER_TEMPLATE_PARENTS]
     if not found:
         return None
-    tmpl = next((t for p, t in found if p == "SampleHolder"), found[0][1])
+    template = next((t for parent, t in found if parent == "SampleHolder"), found[0][1])
+    name = strip_czsht(template.get("Name", ""))
 
     names = {strip_czsht(t.get("Name", "")) for _, t in found}
     if len(names) > 1:
         set_logging().warning(
             f"{source or 'metadata'}: more than one sample carrier "
-            f"({', '.join(sorted(names))}); using '{strip_czsht(tmpl.get('Name', ''))}'.")
+            f"({', '.join(sorted(names))}); using '{name}'.")
 
     def _float(tag: str) -> Optional[float]:
         try:
-            v = float(tmpl.findtext(tag))
+            value = float(template.findtext(tag))
         except (TypeError, ValueError):
             return None
-        return None if v != v else v          # A NaN becomes None.
+        return None if math.isnan(value) else value
 
     def _int(tag: str) -> Optional[int]:
-        v = _float(tag)
-        return int(v) if v is not None else None
+        value = _float(tag)
+        return int(value) if value is not None else None
 
     def _m(tag: str) -> Optional[float]:      # Change µm to metres.
-        v = _float(tag)
-        return v / 1e6 if v is not None else None
+        value = _float(tag)
+        return value / 1e6 if value is not None else None
 
     def _pair_m(tag: str) -> Optional[Tuple[float, float]]:   # An "x,y" pair, µm to m.
         try:
-            x, y = (float(v) / 1e6 for v in tmpl.findtext(tag).split(","))
+            x, y = (float(part) / 1e6 for part in template.findtext(tag).split(","))
         except (AttributeError, TypeError, ValueError):
             return None
         return (x, y)
 
     def _text(tag: str) -> Optional[str]:
-        t = tmpl.findtext(tag)
-        return t.strip() if t and t.strip() else None
+        text = template.findtext(tag)
+        return text.strip() if text and text.strip() else None
 
     insert_type = _text("InsertType")
     return {
-        "name":                strip_czsht(tmpl.get("Name", "")),
+        "name":                name,
         "category":            _text("Category"),
         "shape_type":          _text("ShapeType"),
         "rows":                _int("ShapeRows"),

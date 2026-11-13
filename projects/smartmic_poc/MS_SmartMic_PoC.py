@@ -84,6 +84,11 @@ from MS_metadata import load_positions_from_czexp  # noqa: E402
 from MS_run_log import append_jsonl, read_jsonl, setup_run_logger, write_run_info  # noqa: E402
 
 
+def position_tag(pos):
+    """Make the name of a position from its well and its region, for example "D3_P1"."""
+    return f"{pos['well']}_{pos['position_name']}"
+
+
 def focus_here(df, swaf, log):
     """Run DF FindSurface, then the coarse SWAF and the fine SWAF.
 
@@ -119,8 +124,8 @@ def image_nucleus(target, tag, folder, df, log):
     if focus is None:
         return {**rec, "status": "no_surface"}
     ms.run_experiment_from_path(PLANE_CZEXP, folder, f"{name}_plane")
-    zs = ms.run_experiment_from_path(ZSTACK_CZEXP, folder, f"{name}_zstack")
-    return {**rec, **focus, "status": "ok", "zstack": str(zs["exp_result_path"])}
+    zstack = ms.run_experiment_from_path(ZSTACK_CZEXP, folder, f"{name}_zstack")
+    return {**rec, **focus, "status": "ok", "zstack": str(zstack["exp_result_path"])}
 
 
 def image_position(pos, df, log):
@@ -128,28 +133,37 @@ def image_position(pos, df, log):
 
     The function images as many as N_NUCLEI nuclei.
     """
-    tag = f"{pos['well']}_{pos['position_name']}"
+    tag = position_tag(pos)
     folder = RUN_FOLDER / tag
     rec = {"position": tag, "x_m": pos["x_m"], "y_m": pos["y_m"]}
     ms.move_stage_to_new_xy_position(pos["x_m"], pos["y_m"])
     focus = focus_here(df, OVERVIEW_SWAF, log)
     if focus is None:
         return {**rec, "status": "no_surface"}
-    ov = ms.run_experiment_from_path(OVERVIEW_CZEXP, folder, f"{tag}_overview")
-    res = run_analysis_json(Path(ov["exp_result_path"]), folder, tag, log,
-                            ANALYSIS_SCRIPT, "targets", ANALYSIS_DIR)
-    if res is None:
+    overview = ms.run_experiment_from_path(OVERVIEW_CZEXP, folder, f"{tag}_overview")
+    analysis = run_analysis_json(Path(overview["exp_result_path"]), folder, tag, log,
+                                 ANALYSIS_SCRIPT, "targets", ANALYSIS_DIR)
+    if analysis is None:
         return {**rec, **focus, "status": "analysis_failed"}
-    if not res["found"]:
+    if not analysis["found"]:
         return {**rec, **focus, "status": "no_nuclei", "n_nuclei": 0}
-    pick = random.Random(f"{RUN_NAME}/{tag}").sample(
-        res["targets"], min(N_NUCLEI, len(res["targets"])))
-    log.info(f"{tag}: {res['n_nuclei']} nuclei, imaging ids {[t['id'] for t in pick]}")
-    nuclei = [image_nucleus(t, tag, folder, df, log) for t in pick]
-    return {**rec, **focus, "status": "ok", "n_nuclei": res["n_nuclei"], "nuclei": nuclei}
+    targets = analysis["targets"]
+    # The seed makes the selection the same for each run of this position.
+    picked = random.Random(f"{RUN_NAME}/{tag}").sample(targets, min(N_NUCLEI, len(targets)))
+    log.info(f"{tag}: {analysis['n_nuclei']} nuclei, imaging ids {[t['id'] for t in picked]}")
+    nuclei = [image_nucleus(target, tag, folder, df, log) for target in picked]
+    return {**rec, **focus, "status": "ok", "n_nuclei": analysis["n_nuclei"],
+            "nuclei": nuclei}
 
 
 def main():
+    """Run the pipeline.
+
+    Returns:
+        The exit code. 0: done. 1: an input is missing, or the preflight
+        failed. 2: a DefiniteFocus fault. 3: MAX_CONSECUTIVE_ERRORS positions
+        failed in sequence.
+    """
     LOG_FOLDER.mkdir(parents=True, exist_ok=True)
     log, log_file = setup_run_logger(LOG_FOLDER)
     log.info(f"SmartMic PoC — {RUN_NAME}")
@@ -168,17 +182,19 @@ def main():
     except ms.PreflightFailed:
         return 1
 
+    # The positions to do: all of them, or POSITIONS_TO_RUN, without the
+    # positions that an earlier run finished.
     positions = sorted(load_positions_from_czexp(POSITIONS_FILE), key=lambda p: p["scene_index"])
     if POSITIONS_TO_RUN is not None:
-        unknown = set(POSITIONS_TO_RUN) - {f"{p['well']}_{p['position_name']}" for p in positions}
+        unknown = set(POSITIONS_TO_RUN) - {position_tag(p) for p in positions}
         if unknown:
             log.error(f"POSITIONS_TO_RUN not in {POSITIONS_FILE.name}: {sorted(unknown)}")
             return 1
-        positions = [p for p in positions
-                     if f"{p['well']}_{p['position_name']}" in POSITIONS_TO_RUN]
-    done = ({r["position"] for r in read_jsonl(RECORDS) if r.get("status") in FINISHED}
-            if RESUME else set())
-    todo = [p for p in positions if f"{p['well']}_{p['position_name']}" not in done]
+        positions = [p for p in positions if position_tag(p) in POSITIONS_TO_RUN]
+    done = set()
+    if RESUME:
+        done = {r["position"] for r in read_jsonl(RECORDS) if r.get("status") in FINISHED}
+    todo = [p for p in positions if position_tag(p) not in done]
     log.info(f"{len(positions)} positions, {len(positions) - len(todo)} finished "
              f"→ {len(todo)} to do")
 
@@ -187,7 +203,8 @@ def main():
     counts, errors_in_a_row = {}, 0
     try:
         for pos in todo:
-            log.info(f"--- {pos['well']}_{pos['position_name']} ---")
+            tag = position_tag(pos)
+            log.info(f"--- {tag} ---")
             try:
                 rec = image_position(pos, df, log)
                 errors_in_a_row = 0
@@ -195,8 +212,7 @@ def main():
                 raise
             except Exception as e:                   # One position must not stop the run.
                 log.exception(f"ERROR — {e}")
-                rec = {"position": f"{pos['well']}_{pos['position_name']}",
-                       "status": "error", "error": repr(e)}
+                rec = {"position": tag, "status": "error", "error": repr(e)}
                 errors_in_a_row += 1
             rec["finished"] = datetime.now().isoformat(timespec="seconds")
             append_jsonl(RECORDS, rec)

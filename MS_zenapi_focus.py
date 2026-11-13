@@ -67,11 +67,22 @@ from zeiss_paths import CONFIG_PATH as config_path
 DF_RETRY_BACKOFF_S = 2.0
 DF_RETRY_NUDGE_M = 50e-6
 
+# These two values control what move_focus_to_new_z_position does after a
+# failed move to a Z near 0. A drive that is nearer to 0 than the tolerance is
+# accepted. If not, the function moves to the fallback Z.
+Z_ZERO_TOLERANCE_M = 10e-6
+Z_ZERO_FALLBACK_M = 10e-6
+
+
+async def _read_z_m(focus_service: FocusServiceStub) -> float:
+    """Get the current Z-drive position in metres."""
+    position = await focus_service.get_position(FocusServiceGetPositionRequest())
+    return position.value
+
 
 async def _read_z_um(focus_service: FocusServiceStub) -> float:
-    """Get the current Z-drive position in µm."""
-    pos = await focus_service.get_position(FocusServiceGetPositionRequest())
-    return pos.value * 1e6
+    """Get the current Z-drive position in µm, for the log."""
+    return await _read_z_m(focus_service) * 1e6
 
 
 async def definite_focus_find_surface(max_retries: int = 3, start_z_m: float = -300e-6,
@@ -195,23 +206,22 @@ async def definite_focus_recall(max_retries: int = 3) -> Tuple[Optional[float], 
         definite_focus_service = DefiniteFocusServiceStub(channel=channel, metadata=metadata)
         focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-        for attempt in range(max_retries):
+        for attempt in range(1, max_retries + 1):
             try:
-                z_recall = await definite_focus_service.recall_focus(
+                recalled = await definite_focus_service.recall_focus(
                     DefiniteFocusServiceRecallFocusRequest()
                 )
-                z_um = z_recall.zposition * 1e6
-                logger.info(f"RecallFocus Z-Position: {z_um:.3f} [micron]")
+                logger.info(f"RecallFocus Z-Position: {recalled.zposition * 1e6:.3f} [micron]")
 
-                zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-                logger.info(f"ZDrive after RecallFocus: {zpos.value * 1e6:.3f} [micron]")
+                z_um = await _read_z_um(focus_service)
+                logger.info(f"ZDrive after RecallFocus: {z_um:.3f} [micron]")
 
-                return zpos.value * 1e6, attempt + 1
+                return z_um, attempt
 
             except Exception as e:
-                logger.error(f"RecallFocus failed (attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(DF_RETRY_BACKOFF_S * (attempt + 1))
+                logger.error(f"RecallFocus failed (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(DF_RETRY_BACKOFF_S * attempt)
 
         logger.error(f"RecallFocus failed after {max_retries} attempts")
         return None, max_retries
@@ -223,7 +233,8 @@ async def move_focus_to_new_z_position(z: float) -> None:
     WARNING: a Z of 0 breaks the immersion bridge.
 
     If a move to a Z near 0 fails, the function accepts a drive that is already
-    within 10 µm of 0. If the drive is not that near, the function tries 10 µm.
+    within ``Z_ZERO_TOLERANCE_M`` of 0. If the drive is not that near, the
+    function tries ``Z_ZERO_FALLBACK_M``.
 
     Raises:
         ValueError: ``z`` is not finite, or it is outside the range in
@@ -238,45 +249,40 @@ async def move_focus_to_new_z_position(z: float) -> None:
 
         try:
             await focus_service.move_to(FocusServiceMoveToRequest(value=z))
-            zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-            logger.info(f"Z-Position after move: {zpos.value * 1e6:.3f} [micron]")
+            logger.info(f"Z-Position after move: {await _read_z_um(focus_service):.3f} [micron]")
 
-        except Exception as e:
-            logger.error(f"Error moving focus to z={z}: {e}")
+        except Exception as move_error:
+            logger.error(f"Error moving focus to z={z}: {move_error}")
 
             # Only the read-back is in this try block. The raise statements
             # must stay outside it.
             try:
-                current_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-            except Exception as e2:
-                logger.error(f"Could not get current position: {e2}")
-                raise e
-            logger.info(f"Current Z-Position: {current_zpos.value * 1e6:.3f} [micron]")
+                current_z_m = await _read_z_m(focus_service)
+            except Exception as read_error:
+                logger.error(f"Could not get current position: {read_error}")
+                raise move_error
+            logger.info(f"Current Z-Position: {current_z_m * 1e6:.3f} [micron]")
 
+            # Only a move to a Z within 1 µm of 0 gets a second chance.
             if abs(z) >= 1e-6:
-                raise e
+                raise move_error
 
-            tolerance = 10e-6  # 10 µm
-            if abs(current_zpos.value) < tolerance:
+            if abs(current_z_m) < Z_ZERO_TOLERANCE_M:
                 logger.info(
-                    f"Already close to z=0 ({current_zpos.value * 1e6:.3f} micron). "
-                    "Continuing..."
-                )
+                    f"Already close to z=0 ({current_z_m * 1e6:.3f} micron). Continuing...")
                 return
 
-            # The hardware can refuse a Z of exactly 0. Try 10 µm.
+            # The hardware can refuse a Z of exactly 0. Try the fallback Z.
             logger.info("Trying to move to z=10e-6 instead...")
             try:
-                await focus_service.move_to(FocusServiceMoveToRequest(value=10e-6))
-                new_zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
+                await focus_service.move_to(FocusServiceMoveToRequest(value=Z_ZERO_FALLBACK_M))
                 logger.info(
                     f"Z-Position after alternative move: "
-                    f"{new_zpos.value * 1e6:.3f} [micron]"
+                    f"{await _read_z_um(focus_service):.3f} [micron]"
                 )
-                return
-            except Exception as e3:
-                logger.error(f"Alternative move also failed: {e3}")
-                raise e
+            except Exception as fallback_error:
+                logger.error(f"Alternative move also failed: {fallback_error}")
+                raise move_error
 
 
 async def get_current_z_focus_position() -> float:
@@ -286,7 +292,7 @@ async def get_current_z_focus_position() -> float:
     async with open_zen_channel(config_path) as (channel, metadata):
         focus_service = FocusServiceStub(channel=channel, metadata=metadata)
 
-        zpos = await focus_service.get_position(FocusServiceGetPositionRequest())
-        logger.info(f"Z-Position (ZDrive): {zpos.value * 1e6:.3f} [micron]")
+        z_m = await _read_z_m(focus_service)
+        logger.info(f"Z-Position (ZDrive): {z_m * 1e6:.3f} [micron]")
 
-        return zpos.value
+        return z_m

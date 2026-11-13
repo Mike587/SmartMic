@@ -86,7 +86,7 @@ async def run_software_autofocus(
         swaf_service = ExperimentSwAutofocusServiceStub(channel=channel, metadata=metadata)
 
         load_arg = str(czexp_path.with_suffix(""))
-        logger.info("Loading SWAF experiment from path: " + load_arg)
+        logger.info(f"Loading SWAF experiment from path: {load_arg}")
         loaded = await exp_service.load(ExperimentServiceLoadRequest(experiment_name=load_arg))
 
         for attempt in range(1, max_retries + 1):
