@@ -332,7 +332,7 @@ keeps its original "Based on" header with the ZEISS author, copyright and
 permission notice. Those notices stand alongside the MIT license; keep them in
 any derivative.
 
-- **`MS_zenapi_helpers.py`**: derived from
+- **`MS_zenapi_helpers.py`, `MS_logging.py`**: derived from
   [`zen_api_utils`](https://github.com/zeiss-microscopy/OAD/tree/master/ZEN-API/zen_api_utils),
   MIT License, © 2026 Sebastian Rhode (notice below).
 - **`MS_zenapi_focus.py`, `MS_zenapi_experiment_methods.py`,
