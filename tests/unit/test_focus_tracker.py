@@ -12,6 +12,8 @@ import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_CD7_API_LoA as ms            # noqa: E402
+import MS_CD7_devices as devices  # noqa: E402
+import MS_definite_focus as dfocus  # noqa: E402
 import MS_zenapi_objectivechanger as oc  # noqa: E402
 
 SURFACE = 1.35e-3
@@ -39,12 +41,12 @@ class FakeDF:
 def df(monkeypatch):
     def install(outcomes, objective=3, surface=SURFACE):
         fake = FakeDF(outcomes, surface)
-        monkeypatch.setattr(ms, "df_find_surface", fake.find)
-        monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: (objective, 1))
-        monkeypatch.setattr(ms, "_immersion_objective_active",
+        monkeypatch.setattr(devices, "df_find_surface", fake.find)
+        monkeypatch.setattr(devices, "get_current_objective_and_optovar", lambda: (objective, 1))
+        monkeypatch.setattr(devices, "immersion_objective_active",
                             lambda: objective == oc.IMMERSION_OBJECTIVE_POSITION)
         # A constant carrier: the carrier check is tested in test_df_carrier.py.
-        monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: {
+        monkeypatch.setattr(devices, "get_sample_carrier_info", lambda: {
             "name": "PLATE", "material": "Glass", "thickness": 170.0,
             "refractive_index": 1.52})
         return fake
@@ -56,7 +58,7 @@ def test_first_search_is_full_range_then_adaptive(df):
     t = ms.DefiniteFocusTracker()
     assert t.find_surface() == SURFACE
     assert t.find_surface() == SURFACE
-    assert fake.starts == [None, pytest.approx(SURFACE - ms.DF_APPROACH_MARGIN_M)]
+    assert fake.starts == [None, pytest.approx(SURFACE - dfocus.DF_APPROACH_MARGIN_M)]
 
 
 def test_seeded_tracker_starts_adaptive(df):
@@ -70,7 +72,7 @@ def test_adaptive_failure_falls_back_to_full_range(df):
     fake = df([False, True])
     t = ms.DefiniteFocusTracker(surface_z_m=SURFACE)
     assert t.find_surface() == SURFACE
-    assert fake.starts == [pytest.approx(SURFACE - ms.DF_APPROACH_MARGIN_M), None]
+    assert fake.starts == [pytest.approx(SURFACE - dfocus.DF_APPROACH_MARGIN_M), None]
     assert t.consecutive_failures == 0
 
 
@@ -121,7 +123,7 @@ def test_immersion_skips_the_full_range_fallback(df):
     fake = df([False], objective=oc.IMMERSION_OBJECTIVE_POSITION)
     t = ms.DefiniteFocusTracker(surface_z_m=SURFACE)
     assert t.find_surface() is None
-    assert fake.starts == [pytest.approx(SURFACE - ms.DF_APPROACH_MARGIN_M)]
+    assert fake.starts == [pytest.approx(SURFACE - dfocus.DF_APPROACH_MARGIN_M)]
     assert t.consecutive_failures == 1
 
 

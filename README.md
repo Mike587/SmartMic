@@ -252,7 +252,10 @@ The repo root holds the reusable library; example pipelines live under
 
 | File | Role |
 |------|------|
-| `MS_CD7_API_LoA.py` | Synchronous entry point: wraps the async ZEN gRPC calls and adds checks and guards |
+| `MS_CD7_API_LoA.py` | Synchronous entry point (`import MS_CD7_API_LoA as ms`): the index of the public functions; it imports them from the three modules below |
+| `MS_CD7_devices.py` | Synchronous calls to one device: moves, focus searches, optics change, read functions; wraps the async ZEN gRPC calls and adds checks and guards |
+| `MS_definite_focus.py` | `DefiniteFocusTracker` and the checks of the carrier bottom that DefiniteFocus uses |
+| `MS_CD7_procedures.py` | Procedures that use more than one device: preflight, guarded tray eject / load |
 | `MS_zenapi_focus.py` | DefiniteFocus / FocusService (Z-drive) |
 | `MS_zenapi_swaf.py` | Software autofocus |
 | `MS_zenapi_objectivechanger.py` | Objective and optovar; the immersion guard for moves that lower Z to 0 |

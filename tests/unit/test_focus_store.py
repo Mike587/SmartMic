@@ -17,6 +17,7 @@ pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_zenapi_focus as focus   # noqa: E402
 import MS_CD7_API_LoA as ms       # noqa: E402
+import MS_CD7_devices as devices  # noqa: E402
 
 
 class SearchError(Exception):
@@ -116,6 +117,6 @@ def test_loa_wrapper_passes_store_focus(monkeypatch, store_focus):
         return True, 1
 
     monkeypatch.setattr(focus, "definite_focus_find_surface", fake)
-    monkeypatch.setattr(ms, "get_current_z_position", lambda: 1.2e-3)
+    monkeypatch.setattr(devices, "get_current_z_position", lambda: 1.2e-3)
     assert ms.df_find_surface(store_focus=store_focus) == 1.2e-3
     assert seen["store_focus"] is store_focus

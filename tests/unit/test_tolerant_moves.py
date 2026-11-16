@@ -6,6 +6,8 @@ ZEN sometimes reports a move as failed although the drive is on target
 position back: within tolerance → done; otherwise one retry. The async gRPC
 layer is MOCKED, so these run with no microscope.
 """
+import time
+
 import pytest
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
@@ -46,7 +48,7 @@ def _async_return(value):
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
     sleeps = []
-    monkeypatch.setattr(ms.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
     return sleeps
 
 

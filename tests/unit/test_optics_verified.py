@@ -4,12 +4,15 @@
 The changer call and the read-back are mocked; time is faked so the polling /
 settle / timeout logic runs instantly.
 """
+import time
+
 import pytest
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_CD7_API_LoA as ms   # noqa: E402
+import MS_CD7_devices as devices  # noqa: E402
 
 TARGET = (3, 1)
 
@@ -23,8 +26,8 @@ def clock(monkeypatch):
         state["sleeps"].append(s)
         state["now"] += s
 
-    monkeypatch.setattr(ms.time, "sleep", sleep)
-    monkeypatch.setattr(ms.time, "monotonic", lambda: state["now"])
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(time, "monotonic", lambda: state["now"])
     return state
 
 
@@ -40,8 +43,8 @@ def _optics(monkeypatch, readbacks, change_ok=True):
     def read():
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    monkeypatch.setattr(ms, "_change_optics", change)
-    monkeypatch.setattr(ms, "get_current_objective_and_optovar", read)
+    monkeypatch.setattr(devices, "_change_optics", change)
+    monkeypatch.setattr(devices, "get_current_objective_and_optovar", read)
     return calls
 
 

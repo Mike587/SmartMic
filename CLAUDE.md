@@ -14,7 +14,8 @@ under `projects/`. Full architecture, layout, and module table: **[README.md](RE
 swallowed error can crash an objective into a slide/stage or break the
 immersion water bridge. Read **[DEV_NOTES.md](DEV_NOTES.md)** before changing
 anything in `MS_zenapi_stage_LM.py`, `MS_zenapi_focus.py`,
-`MS_zenapi_objectivechanger.py`, or `MS_CD7_API_LoA.py` — it's the record of
+`MS_zenapi_objectivechanger.py`, or the modules behind `MS_CD7_API_LoA.py`
+(`MS_CD7_devices.py`, `MS_definite_focus.py`, `MS_CD7_procedures.py`) — it's the record of
 hardware/ZEN gotchas (immersion, DefiniteFocus quirks, the stage-speed
 gateway rejection, units, ZEN-version discovery) and the persistent design
 decisions behind them.

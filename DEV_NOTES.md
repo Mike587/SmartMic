@@ -1442,7 +1442,45 @@ Old entries in this file use the old names. Do not rewrite them; use this table.
   `MS_czexp_editor`.** Its carrier dict and `check_sample_carrier` also serve
   a CZI file (`ia_common`), and the editor is already approximately 1000
   lines.
-- **`MS_CD7_API_LoA` is not split.** See the local `TODO.md`.
+
+### The LoA is three modules and an entry point (2026-11-16)
+
+`MS_CD7_API_LoA.py` was approximately 1350 lines. Only one sixth of it was a
+thin call. It is now three modules in layers. Each layer imports only the
+layers below it.
+
+| Module | Contents |
+|--------|----------|
+| `MS_CD7_devices` | One device or one call: the thin calls, the moves with a tolerance, the optics change (`set_optics_verified`), `FocusSearchFailed` |
+| `MS_definite_focus` | `DefiniteFocusTracker`, `check_carrier_for_df`, `wait_for_df_bottom`, `carrier_bottom`, `DefiniteFocusFault`, `CarrierChanged` |
+| `MS_CD7_procedures` | `preflight`, `check_immersion_guard`, `eject_tray`, `load_tray_and_prescan`, `PreflightFailed` |
+| `MS_CD7_API_LoA` | The index docstring and the imports. No code. |
+
+- **A pipeline does not change.** `import MS_CD7_API_LoA as ms` gives the same
+  public functions, classes and exceptions.
+- **Each function has the same text as before.** The only change is the
+  module name on a call to a lower layer, for example
+  `MS_CD7_devices.df_find_surface(...)` in the tracker.
+- **Rule: call a lower layer through its module name.** Write
+  `MS_CD7_devices.get_sample_carrier_info()`. Do not write
+  `from MS_CD7_devices import get_sample_carrier_info`. Then one replacement
+  in a test gets to each caller.
+- **Rule: a test replaces a function in the module that has it.** A
+  replacement on `ms` has no effect on the code, because `ms.<name>` is only
+  a second name for the object.
+- **`ms.immersion_objective_active()`** is new. It was the private
+  `ms._immersion_objective_active`. The tracker and the tray eject call it
+  from a different module, thus it is public.
+- **The configuration constants are not on `ms`.** `OPTICS_SETTLE_S`,
+  `DF_APPROACH_MARGIN_M`, `EJECT_DRY_OBJECTIVE`, `LOAD_SETTLE_TIMEOUT_S` and
+  the others are in the module that uses them. A new value on `ms` had no
+  effect on a default argument. The limits of `MS_limits` stay on `ms`.
+- **`move_to_container(..., focus_tracker)`** accepts each object that has a
+  `reset()` method (`MS_CD7_devices.Resettable`). The tracker is in a layer
+  above, thus the device layer cannot name its class.
+- **The module names are a first proposal.** Mike said "go for it" to the
+  split; he did not select the names. To change a name, change the file name,
+  the imports and the docs.
 
 ---
 

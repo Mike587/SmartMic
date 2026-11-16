@@ -11,6 +11,7 @@ ZEN sends thickness 0 to DF during a tray load. Covered here:
 All hardware calls are MOCKED.
 """
 import os
+import time
 
 import pytest
 
@@ -18,6 +19,7 @@ import zeiss_paths as zp  # noqa: F401  — extends sys.path so zen_api resolves
 pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_CD7_API_LoA as ms  # noqa: E402
+import MS_CD7_devices as devices  # noqa: E402
 import MS_zen_logs           # noqa: E402
 
 
@@ -83,9 +85,9 @@ def test_zen_df_bottom_searches_rotated_logs(tmp_path, monkeypatch):
 @pytest.fixture
 def carrier(monkeypatch):
     def install(api=None, df=None, measure=True):
-        monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: api or _carrier())
-        monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: df)
-        monkeypatch.setattr(ms, "get_live_scan_configuration",
+        monkeypatch.setattr(devices, "get_sample_carrier_info", lambda: api or _carrier())
+        monkeypatch.setattr(MS_zen_logs, "zen_df_bottom", lambda: df)
+        monkeypatch.setattr(devices, "get_live_scan_configuration",
                             lambda: {"measure_bottom_thickness": measure})
     return install
 
@@ -136,10 +138,10 @@ def test_check_warns_if_thickness_is_not_measured_at_load(carrier):
 
 def test_preflight_aborts_on_carrier_check(carrier, monkeypatch):
     carrier(api=_carrier(material="Polystyrene"))
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: False)
     motion = []
-    monkeypatch.setattr(ms, "set_stage_motion_sync",
+    monkeypatch.setattr(devices, "set_stage_motion_sync",
                         lambda s=None, a=None: motion.append(1) or {})
     log = _Log()
     with pytest.raises(ms.PreflightFailed, match="DF carrier check failed"):
@@ -158,9 +160,9 @@ def tracker_env(monkeypatch):
         state["searches"] += 1
         return 1.2e-3
 
-    monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: dict(state["carrier"]))
-    monkeypatch.setattr(ms, "df_find_surface", find)
-    monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: (1, 1))
+    monkeypatch.setattr(devices, "get_sample_carrier_info", lambda: dict(state["carrier"]))
+    monkeypatch.setattr(devices, "df_find_surface", find)
+    monkeypatch.setattr(devices, "get_current_objective_and_optovar", lambda: (1, 1))
     return state
 
 
@@ -216,9 +218,9 @@ def test_tracker_carrier_check_can_be_off(tracker_env):
 def _sequence(monkeypatch, api_values, df_values):
     api = iter(api_values)
     df = iter(df_values)
-    monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: next(api))
-    monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: next(df))
-    monkeypatch.setattr(ms.time, "sleep", lambda s: None)
+    monkeypatch.setattr(devices, "get_sample_carrier_info", lambda: next(api))
+    monkeypatch.setattr(MS_zen_logs, "zen_df_bottom", lambda: next(df))
+    monkeypatch.setattr(time, "sleep", lambda s: None)
 
 
 def test_wait_returns_after_two_stable_non_zero_reads(monkeypatch):
@@ -239,8 +241,8 @@ def test_wait_keeps_waiting_while_df_has_zero(monkeypatch):
 
 def test_wait_times_out(monkeypatch):
     zero = _carrier(thickness=0.0)
-    monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: zero)
-    monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: None)
-    monkeypatch.setattr(ms.time, "sleep", lambda s: None)
+    monkeypatch.setattr(devices, "get_sample_carrier_info", lambda: zero)
+    monkeypatch.setattr(MS_zen_logs, "zen_df_bottom", lambda: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError):
         ms.wait_for_df_bottom(timeout_s=0, poll_s=0)

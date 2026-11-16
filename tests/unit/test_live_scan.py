@@ -177,6 +177,9 @@ def test_load_rpc_sends_request_with_timeout(rpc_calls):
 # LoA wrappers (guards)
 # --------------------------------------------------------------------------
 import MS_CD7_API_LoA as ms                    # noqa: E402
+import MS_CD7_devices as devices  # noqa: E402
+import MS_definite_focus as dfocus  # noqa: E402
+import MS_CD7_procedures as procedures  # noqa: E402
 import MS_zenapi_objectivechanger as oc        # noqa: E402
 
 IMMERSION = oc.IMMERSION_OBJECTIVE_POSITION
@@ -201,17 +204,17 @@ def loa(monkeypatch):
         ev.append(("optics", obj, opt))
         state["optics"] = (obj, opt)
 
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: state["busy"])
-    monkeypatch.setattr(ms, "get_current_objective_and_optovar", lambda: state["optics"])
-    monkeypatch.setattr(ms, "_immersion_objective_active",
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: state["busy"])
+    monkeypatch.setattr(devices, "get_current_objective_and_optovar", lambda: state["optics"])
+    monkeypatch.setattr(devices, "immersion_objective_active",
                         lambda: state["optics"][0] == IMMERSION)
-    monkeypatch.setattr(ms, "set_optics_verified", fake_optics)
-    monkeypatch.setattr(ms, "get_current_z_position", lambda: 7e-6)
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(devices, "set_optics_verified", fake_optics)
+    monkeypatch.setattr(devices, "get_current_z_position", lambda: 7e-6)
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "PLATE")
     monkeypatch.setattr(ls, "eject_tray", fake_eject)
     monkeypatch.setattr(ls, "load_tray_and_prescan", fake_load)
     # The wait for the DF carrier thickness after a load is tested in test_df_carrier.py.
-    monkeypatch.setattr(ms, "wait_for_df_bottom", lambda *a, **k: {})
+    monkeypatch.setattr(dfocus, "wait_for_df_bottom", lambda *a, **k: {})
     return ev, state
 
 
@@ -225,7 +228,7 @@ def test_eject_on_50x_changes_to_5x_first_keeping_optovar(loa):
     ev, state = loa
     state["optics"] = (IMMERSION, 2)
     ms.eject_tray()
-    assert ev == [("optics", ms.EJECT_DRY_OBJECTIVE, 2), "eject"]
+    assert ev == [("optics", procedures.EJECT_DRY_OBJECTIVE, 2), "eject"]
 
 
 def test_eject_on_50x_without_switch_ejects_directly(loa):
@@ -242,7 +245,7 @@ def test_eject_not_sent_if_optics_change_fails(loa, monkeypatch):
     def never_settles(obj, opt):
         raise RuntimeError("Optics never settled")
 
-    monkeypatch.setattr(ms, "set_optics_verified", never_settles)
+    monkeypatch.setattr(devices, "set_optics_verified", never_settles)
     with pytest.raises(RuntimeError, match="never settled"):
         ms.eject_tray()
     assert ev == []
@@ -271,6 +274,6 @@ def test_load_sends_rpc_and_survives_unreadable_readback(loa, monkeypatch):
     def boom():
         raise RuntimeError("gateway hiccup")
 
-    monkeypatch.setattr(ms, "get_current_z_position", boom)
+    monkeypatch.setattr(devices, "get_current_z_position", boom)
     assert ms.load_tray_and_prescan() == []   # the read-back is log only
     assert ev == ["load"]

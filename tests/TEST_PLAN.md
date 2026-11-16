@@ -126,6 +126,15 @@ These are the bulk of the value. Grouped by module.
 - `validate_z_position`: numeric check + the ±0.01 m safe range boundaries.
 - `validate_xy_position`: numeric + the stage-limit boundaries (X 0–0.12, Y 0–0.09).
 
+### Where a test replaces a function *(rule since 2026-11-16)*
+`MS_CD7_API_LoA` only imports names. The code is in `MS_CD7_devices`,
+`MS_definite_focus` and `MS_CD7_procedures`. A test calls a public function
+as `ms.<name>`, but it replaces a function in the module that has it, for
+example `monkeypatch.setattr(devices, "get_sample_carrier_info", ...)`. A
+replacement on `ms` has no effect on the code. `tests/unit/test_entry_point.py`
+checks that each exported name is the object of its module, that each public
+function and class is exported, and that each one is in the index docstring.
+
 ### `tests/unit/test_loa_wrappers.py` — sync wrappers with the async layer **mocked**
 Monkeypatch the `MS_zenapi_*` async functions so we test orchestration without a scope:
 - `df_find_surface`: returns the read-back Z (m). The async fn raises after

@@ -4,6 +4,8 @@
 These pull in the LoA module, which transitively imports zen_api; importorskip
 lets the suite run (skipping this module) on a machine without the Zeiss tree.
 """
+import asyncio
+
 import pytest
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
@@ -93,7 +95,7 @@ def test_non_finite_moves_raise_before_any_rpc(monkeypatch, bad):
         coro.close()
         raise AssertionError("an RPC was started")
 
-    monkeypatch.setattr(ms.asyncio, "run", no_rpc)
+    monkeypatch.setattr(asyncio, "run", no_rpc)
     with pytest.raises(ValueError):
         ms.move_focus_to_new_z_position(bad)
     with pytest.raises(ValueError):

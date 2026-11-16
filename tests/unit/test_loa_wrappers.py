@@ -5,16 +5,23 @@ These exercise the orchestration logic (retry/exception handling, routing,
 validate-before-call) without a microscope by monkeypatching the underlying
 MS_zenapi_* async functions.
 """
+import asyncio
+import time
+
 import pytest
 
 import zeiss_paths  # noqa: F401  — extends sys.path so zen_api resolves
 pytest.importorskip("zen_api", reason="zen_api not resolvable on this machine")
 
 import MS_CD7_API_LoA as ms                 # noqa: E402
+import MS_CD7_devices as devices            # noqa: E402
+import MS_run_log                            # noqa: E402
+import MS_zen_logs                           # noqa: E402
 import MS_zenapi_focus                       # noqa: E402
 import MS_zenapi_experiment_methods          # noqa: E402
 import MS_zenapi_objectivechanger            # noqa: E402
 import MS_zenapi_stage_LM                     # noqa: E402
+import MS_zenapi_swaf                        # noqa: E402
 
 
 def _async_return(value):
@@ -42,7 +49,7 @@ def test_run_experiment_from_path_passes_the_default_folder(monkeypatch):
     monkeypatch.setattr(MS_zenapi_experiment_methods, "run_experiment_from_path", from_path)
     assert ms.run_experiment_from_path("e.czexp", custom_filename="f") == {"exp_result_path": "x"}
     assert calls["czexp_path"] == "e.czexp" and calls["custom_filename"] == "f"
-    assert calls["custom_image_folder"] == ms.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
+    assert calls["custom_image_folder"] == MS_run_log.DEFAULT_EXPERIMENT_OUTPUT_FOLDER
 
 
 # --------------------------------------------------------------------------
@@ -95,7 +102,7 @@ def test_set_optics_happy_path(monkeypatch):
     monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
     monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
     # Target already matches what get_current reports → confirms on first poll.
-    assert ms._change_optics(2, 2) is True
+    assert devices._change_optics(2, 2) is True
 
 
 def test_set_optics_config_error_is_not_retried(monkeypatch):
@@ -114,7 +121,7 @@ def test_set_optics_config_error_is_not_retried(monkeypatch):
     monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
     monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
     with pytest.raises(ValueError, match="not in the inventory"):
-        ms._change_optics(3, 1)
+        devices._change_optics(3, 1)
     assert calls["n"] == 1
 
 
@@ -136,8 +143,8 @@ def test_set_optics_transient_error_is_still_retried(monkeypatch):
 
     monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
     monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
-    monkeypatch.setattr(ms.asyncio, "sleep", no_sleep)
-    assert ms._change_optics(3, 1) is True
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    assert devices._change_optics(3, 1) is True
     assert state["n"] == 2
 
 
@@ -182,12 +189,12 @@ _LIVE_SCAN_CFG = {
 @pytest.fixture(autouse=True)
 def _no_live_scan_rpc(monkeypatch):
     # preflight reads the live-scan config over gRPC; keep every test offline.
-    monkeypatch.setattr(ms, "get_live_scan_configuration", lambda: dict(_LIVE_SCAN_CFG))
+    monkeypatch.setattr(devices, "get_live_scan_configuration", lambda: dict(_LIVE_SCAN_CFG))
     # preflight checks the DF carrier bottom (API + ZEN log); a valid carrier here.
-    monkeypatch.setattr(ms, "get_sample_carrier_info", lambda: {
+    monkeypatch.setattr(devices, "get_sample_carrier_info", lambda: {
         "name": "PLATE", "rows": 2, "columns": 3, "material": "Glass", "thickness": 170.0,
         "skirt": 1044.0, "refractive_index": 1.52})
-    monkeypatch.setattr(ms.MS_zen_logs, "zen_df_bottom", lambda: None)
+    monkeypatch.setattr(MS_zen_logs, "zen_df_bottom", lambda: None)
 
 
 def test_preflight_happy_sets_stage_motion(monkeypatch):
@@ -197,9 +204,9 @@ def test_preflight_happy_sets_stage_motion(monkeypatch):
         calls["motion"] += 1
         return _FULL_MOTION
 
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
-    monkeypatch.setattr(ms, "set_stage_motion_sync", fake_motion)
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(devices, "set_stage_motion_sync", fake_motion)
 
     log = _Log()
     ms.preflight("PLATE", log)
@@ -214,9 +221,9 @@ def test_preflight_wrong_carrier_aborts_before_stage_motion(monkeypatch):
         calls["motion"] += 1
         return _FULL_MOTION
 
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "OTHER")
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
-    monkeypatch.setattr(ms, "set_stage_motion_sync", fake_motion)
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "OTHER")
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(devices, "set_stage_motion_sync", fake_motion)
 
     log = _Log()
     with pytest.raises(ms.PreflightFailed):
@@ -227,9 +234,9 @@ def test_preflight_wrong_carrier_aborts_before_stage_motion(monkeypatch):
 
 
 def test_preflight_busy_aborts(monkeypatch):
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: True)
-    monkeypatch.setattr(ms, "set_stage_motion_sync",
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: True)
+    monkeypatch.setattr(devices, "set_stage_motion_sync",
                         lambda speed=None, accel=None: _FULL_MOTION)
 
     log = _Log()
@@ -242,7 +249,7 @@ def test_preflight_gateway_down_aborts(monkeypatch):
     def boom():
         raise RuntimeError("no gateway")
 
-    monkeypatch.setattr(ms, "get_sample_carrier_name", boom)
+    monkeypatch.setattr(devices, "get_sample_carrier_name", boom)
 
     log = _Log()
     with pytest.raises(ms.PreflightFailed):
@@ -257,9 +264,9 @@ def test_preflight_notes_speed_unsupported_but_still_passes(monkeypatch):
     # parameter that matters — was applied) and its log should say so.
     partial_motion = {"speed_x": None, "speed_y": None,
                        "acceleration_x": 40, "acceleration_y": 40}
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
-    monkeypatch.setattr(ms, "set_stage_motion_sync",
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(devices, "set_stage_motion_sync",
                         lambda speed=None, accel=None: partial_motion)
 
     log = _Log()
@@ -274,10 +281,10 @@ def test_preflight_passes_when_immersion_settings_unreadable(monkeypatch):
     def boom():
         raise RuntimeError("log locked")
 
-    monkeypatch.setattr(ms.MS_zen_logs, "zen_auto_immersion_settings", boom)
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: "PLATE")
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
-    monkeypatch.setattr(ms, "set_stage_motion_sync",
+    monkeypatch.setattr(MS_zen_logs, "zen_auto_immersion_settings", boom)
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: "PLATE")
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(devices, "set_stage_motion_sync",
                         lambda speed=None, accel=None: _FULL_MOTION)
 
     log = _Log()
@@ -287,9 +294,9 @@ def test_preflight_passes_when_immersion_settings_unreadable(monkeypatch):
 
 
 def _passing_preflight_mocks(monkeypatch, carrier="PLATE"):
-    monkeypatch.setattr(ms, "get_sample_carrier_name", lambda: carrier)
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: False)
-    monkeypatch.setattr(ms, "set_stage_motion_sync",
+    monkeypatch.setattr(devices, "get_sample_carrier_name", lambda: carrier)
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: False)
+    monkeypatch.setattr(devices, "set_stage_motion_sync",
                         lambda speed=None, accel=None: _FULL_MOTION)
 
 
@@ -306,7 +313,7 @@ def test_preflight_logs_live_scan_config(monkeypatch):
 def test_preflight_flags_live_scan_template_mismatch_but_passes(monkeypatch):
     _passing_preflight_mocks(monkeypatch)
     cfg = dict(_LIVE_SCAN_CFG, sample_holder_template="Multiwell 6 - 250um.czsht")
-    monkeypatch.setattr(ms, "get_live_scan_configuration", lambda: cfg)
+    monkeypatch.setattr(devices, "get_live_scan_configuration", lambda: cfg)
     log = _Log()
     ms.preflight("PLATE", log)   # log only, never aborts
     assert log.errors == []
@@ -319,7 +326,7 @@ def test_preflight_passes_when_live_scan_unreadable(monkeypatch):
         raise RuntimeError("UNIMPLEMENTED")
 
     _passing_preflight_mocks(monkeypatch)
-    monkeypatch.setattr(ms, "get_live_scan_configuration", boom)
+    monkeypatch.setattr(devices, "get_live_scan_configuration", boom)
     log = _Log()
     ms.preflight("PLATE", log)
     assert log.errors == []
@@ -332,8 +339,8 @@ def test_preflight_gateway_down_skips_live_scan(monkeypatch):
     def boom():
         raise RuntimeError("no gateway")
 
-    monkeypatch.setattr(ms, "get_sample_carrier_name", boom)
-    monkeypatch.setattr(ms, "get_live_scan_configuration",
+    monkeypatch.setattr(devices, "get_sample_carrier_name", boom)
+    monkeypatch.setattr(devices, "get_live_scan_configuration",
                         lambda: calls.append(1) or dict(_LIVE_SCAN_CFG))
     with pytest.raises(ms.PreflightFailed):
         ms.preflight("PLATE", _Log())
@@ -407,10 +414,10 @@ def test_set_optics_uses_the_long_timeout_for_an_api_immersion_slot(monkeypatch)
 
     monkeypatch.setattr(MS_zenapi_objectivechanger, "get_current_objective_and_optovar", get_current)
     monkeypatch.setattr(MS_zenapi_objectivechanger, "set_objective_set_optovar", set_oo)
-    monkeypatch.setattr(ms.asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr(ms.time, "time", lambda: clock["t"])
-    assert ms._change_optics(1, 2, timeout_seconds=1.0, max_retries=1) is False
-    assert clock["t"] >= ms.IMMERSION_OBJECTIVE_TIMEOUT
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(time, "time", lambda: clock["t"])
+    assert devices._change_optics(1, 2, timeout_seconds=1.0, max_retries=1) is False
+    assert clock["t"] >= devices.IMMERSION_OBJECTIVE_TIMEOUT
 
 
 def test_stop_experiment_wraps_the_async_stop(monkeypatch):
@@ -431,7 +438,7 @@ def test_df_find_surface_returns_z_in_metres(monkeypatch):
         return True, 1
 
     monkeypatch.setattr(MS_zenapi_focus, "definite_focus_find_surface", fake_find)
-    monkeypatch.setattr(ms, "get_current_z_position", lambda: 0.000123)
+    monkeypatch.setattr(devices, "get_current_z_position", lambda: 0.000123)
     assert ms.df_find_surface(2, 0.0002, True) == 0.000123
     assert seen == {"max_retries": 2, "start_z_m": 0.0002, "store_focus": True}
 
@@ -444,7 +451,7 @@ def test_df_find_surface_default_start_is_left_to_the_async_layer(monkeypatch):
         return True, 1
 
     monkeypatch.setattr(MS_zenapi_focus, "definite_focus_find_surface", fake_find)
-    monkeypatch.setattr(ms, "get_current_z_position", lambda: 0.001)
+    monkeypatch.setattr(devices, "get_current_z_position", lambda: 0.001)
     ms.df_find_surface()
     assert "start_z_m" not in seen
 
@@ -454,7 +461,7 @@ def test_df_find_surface_raises_on_a_failed_search(monkeypatch):
     exc = RuntimeError("surface not found")
     exc.attempts_used = 3
     monkeypatch.setattr(MS_zenapi_focus, "definite_focus_find_surface", _async_raise(exc))
-    monkeypatch.setattr(ms, "get_current_z_position",
+    monkeypatch.setattr(devices, "get_current_z_position",
                         lambda: pytest.fail("Z was read after a failed search"))
     with pytest.raises(ms.FocusSearchFailed, match="surface not found") as e:
         ms.df_find_surface()
@@ -495,7 +502,7 @@ def test_swaf_find_focus_metres_and_raise(monkeypatch):
         async def fake(path, timeout=30, max_retries=2):
             seen.update(path=path, timeout=timeout, max_retries=max_retries)
             return result
-        monkeypatch.setattr(ms.MS_zenapi_swaf, "run_software_autofocus", fake)
+        monkeypatch.setattr(MS_zenapi_swaf, "run_software_autofocus", fake)
 
     install((1234.5, 1))
     assert ms.swaf_find_focus("x/swaf.czexp") == pytest.approx(1234.5e-6)
@@ -529,6 +536,6 @@ def test_preflight_reports_the_check_that_stopped_it(monkeypatch):
     # the exception must be the check that did (here: the busy microscope).
     _passing_preflight_mocks(monkeypatch)
     _immersion_slots(monkeypatch, [1])
-    monkeypatch.setattr(ms, "is_microscope_busy", lambda: True)
+    monkeypatch.setattr(devices, "is_microscope_busy", lambda: True)
     with pytest.raises(ms.PreflightFailed, match="busy"):
         ms.preflight("PLATE", _Log())
