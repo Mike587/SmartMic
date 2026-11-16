@@ -265,53 +265,44 @@ async def set_objective_set_optovar(obj_new_position: int, opt_new_position: int
         objchanger_service, optovar_service = _services(channel, metadata)
 
         objectives, optovars = await _read_inventory(objchanger_service, optovar_service)
+        logger.info("Objective changer inventory (position=name): "
+                    + _inventory_summary(objectives.objectives))
+        logger.info("Optovar inventory (position=name): "
+                    + _inventory_summary(optovars.optovars))
 
-        logger.info("-------- Available objectives and Optovars  ----------------------------")
+        # The objective first, then the optovar (the same RPC order as before).
+        await _move_changer(logger, "objective", objchanger_service, objectives,
+                            _require_objective,
+                            ObjectiveChangerServiceGetPositionRequest(),
+                            ObjectiveChangerServiceMoveToRequest, obj_new_position)
+        await _move_changer(logger, "optovar", optovar_service, optovars,
+                            _require_optovar,
+                            OptovarServiceGetPositionRequest(),
+                            OptovarServiceMoveToRequest, opt_new_position)
 
-        used_obj_positions = get_used_objective_positions(objectives)
-        used_opt_positions = get_used_optovar_positions(optovars)
-        logger.info(f"Used objective positions: {used_obj_positions}")
-        logger.info(f"Used optovar positions: {used_opt_positions}")
 
-        for obj in objectives.objectives:
-            logger.info(f"Objective: {obj.name} - Position: {obj.position}")
+def _inventory_summary(items: Any) -> str:
+    """Format inventory items as ``position=name`` pairs on one line."""
+    return ", ".join(f"{item.position}={item.name}" for item in items)
 
-        for opt in optovars.optovars:
-            logger.info(f"Optovar: {opt.name} - Position: {opt.position}")
 
-        logger.info("------------------ Move Objectives -----------------------")
+async def _move_changer(logger: Any, label: str, service: Any, inventory: Any,
+                        require_fn: Callable[[Any, int, str], Any],
+                        position_request: Any, move_request_cls: Any,
+                        new_position: int) -> None:
+    """Send one changer (objective or optovar) to *new_position* and log the change.
 
-        pos_obj = await objchanger_service.get_position(ObjectiveChangerServiceGetPositionRequest())
-        current_objective = _require_objective(objectives, pos_obj.value, "Current objective")
-        logger.info(
-            f"Current Objective: {current_objective.name} Position: {current_objective.position}"
-        )
-
-        await objchanger_service.move_to(
-            ObjectiveChangerServiceMoveToRequest(position_index=obj_new_position)
-        )
-        requested_objective = _require_objective(objectives, obj_new_position, "New objective")
-        logger.info(
-            f"Requested Objective: {requested_objective.name} "
-            f"Position: {requested_objective.position} (not a read-back)"
-        )
-
-        logger.info("------------------ Move Optovars -----------------------")
-
-        pos_optovar = await optovar_service.get_position(OptovarServiceGetPositionRequest())
-        current_optovar = _require_optovar(optovars, pos_optovar.value, "Current optovar")
-        logger.info(
-            f"Current Optovar: {current_optovar.name} Position: {current_optovar.position}"
-        )
-
-        await optovar_service.move_to(
-            OptovarServiceMoveToRequest(position_index=opt_new_position)
-        )
-        requested_optovar = _require_optovar(optovars, opt_new_position, "New optovar")
-        logger.info(
-            f"Requested Optovar: {requested_optovar.name} "
-            f"Position: {requested_optovar.position} (not a read-back)"
-        )
+    The current position is read and checked against *inventory* before the
+    move request. The requested position is checked after the request is sent.
+    Both checks raise ``ValueError`` for a position that is not in *inventory*.
+    The log line reports the request; it does not read the position back.
+    """
+    reported = await service.get_position(position_request)
+    before = require_fn(inventory, reported.value, f"Current {label}")
+    await service.move_to(move_request_cls(position_index=new_position))
+    after = require_fn(inventory, new_position, f"New {label}")
+    logger.info(f"{label} change sent: {before.position} ({before.name}) -> "
+                f"{after.position} ({after.name}); final position not yet confirmed")
 
 
 async def get_current_objective_and_optovar() -> Tuple[int, int]:
