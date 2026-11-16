@@ -1376,8 +1376,9 @@ used the old API are frozen at tag `freeze-2026-11-11`.
 ## Module tidy (2026-11-13)
 
 Some functions were in a module that did not agree with their subject. They
-moved. The behaviour did not change. The offline suite passes. None of it is
-tested on the scope yet.
+moved. The behaviour did not change. The offline suite passes. Mike ran the
+tests on the scope machine on 2026-11-16, with all the changes of this section
+(commit `e60f725`): all the tests passed.
 
 ### Rule: no backward compatibility in the library (Mike, 2026-11-13)
 
