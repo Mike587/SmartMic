@@ -322,7 +322,52 @@ If you would like to run your experiment with SmartMic, get in touch.
 SmartMic is released under the [MIT License](LICENSE), © 2026 ETH Zurich
 (ScopeM). It comes without warranty of any kind.
 
-Some `MS_zenapi_*` modules are derived from the ZEISS ZEN-API example scripts
-and keep their original `Copyright(c) 2025 Carl Zeiss AG` header and permission
-notice, as ZEISS's grant requires. Those notices stand alongside the MIT
-license; keep them in any derivative.
+Created by: Michael Stebler
+
+### Third-party code
+
+Some modules are derived from code in the ZEISS
+[OAD repository](https://github.com/zeiss-microscopy/OAD) (ZEN-API). Each one
+keeps its original "Based on" header with the ZEISS author, copyright and
+permission notice. Those notices stand alongside the MIT license; keep them in
+any derivative.
+
+- **`MS_zenapi_helpers.py`**: derived from
+  [`zen_api_utils`](https://github.com/zeiss-microscopy/OAD/tree/master/ZEN-API/zen_api_utils),
+  MIT License, © 2026 Sebastian Rhode (notice below).
+- **`MS_zenapi_focus.py`, `MS_zenapi_experiment_methods.py`,
+  `MS_zenapi_stage_LM.py`, `MS_zenapi_swaf.py`,
+  `MS_zenapi_objectivechanger.py`**: derived from the ZEN-API
+  [`python_examples`](https://github.com/zeiss-microscopy/OAD/tree/master/ZEN-API/python_examples).
+  Copyright (c) 2025 Carl Zeiss AG. Permission is granted to use, modify and
+  distribute this code, as long as this copyright notice remains part of the
+  code.
+
+<details>
+<summary>MIT License notice for <code>zen_api_utils</code></summary>
+
+```
+MIT License
+
+Copyright (c) 2026 Sebastian Rhode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+</details>
