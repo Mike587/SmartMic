@@ -295,14 +295,18 @@ async def _move_changer(logger: Any, label: str, service: Any, inventory: Any,
     The current position is read and checked against *inventory* before the
     move request. The requested position is checked after the request is sent.
     Both checks raise ``ValueError`` for a position that is not in *inventory*.
-    The log line reports the request; it does not read the position back.
+    The current position is logged before the move request. Thus the log
+    shows it also when the request or the second check raises. The log lines
+    report the request; they do not read the position back.
     """
     reported = await service.get_position(position_request)
     before = require_fn(inventory, reported.value, f"Current {label}")
+    logger.info(f"{label} change: current {before.position} ({before.name}), "
+                f"requesting {new_position}")
     await service.move_to(move_request_cls(position_index=new_position))
     after = require_fn(inventory, new_position, f"New {label}")
-    logger.info(f"{label} change sent: {before.position} ({before.name}) -> "
-                f"{after.position} ({after.name}); final position not yet confirmed")
+    logger.info(f"{label} change sent: -> {after.position} ({after.name}); "
+                f"final position not yet confirmed")
 
 
 async def get_current_objective_and_optovar() -> Tuple[int, int]:
