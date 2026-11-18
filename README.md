@@ -343,6 +343,15 @@ any derivative.
   distribute this code, as long as this copyright notice remains part of the
   code.
 
+These files were adapted from the ZEN-API python_examples in
+https://github.com/zeiss-microscopy/OAD. Each keeps its original Carl Zeiss
+notice, which permits use, modification and distribution as long as the
+notice remains part of the code. SmartMic uses and distributes these files
+under that permission. The OAD repository as a whole also contains a GPL-3.0
+license file, so license scanners may report these files as GPL-3.0; the
+per-file ZEISS notice is the permission they were obtained and are
+distributed under.
+
 <details>
 <summary>MIT License notice for <code>zen_api_utils</code></summary>
 
